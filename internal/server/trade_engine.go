@@ -52,6 +52,25 @@ type tradeActor struct {
 	UserID *string // nil for the external-party bot
 	Name   string  // shown in audit, evidence, reviews, notifications
 	OrgID  *string // the org acting through a member (audit org_id: the org's activity on the trade)
+	File   *upload // the step's attachment, claimed by the caller (tradeFile); the bot attaches by bare name (in.File)
+}
+
+// tradeFilePurpose is the upload purpose of the actions that take a file.
+var tradeFilePurpose = map[api.TradeAction]api.UploadPurpose{
+	api.TradeActionUploadProof: api.UploadPurposeTradeProof,
+	api.TradeActionDispute:     api.UploadPurposeDisputeEvidence,
+	api.TradeActionAddEvidence: api.UploadPurposeDisputeEvidence,
+}
+
+// tradeFile claims in.UploadId for userID when the action takes a file (nil: none sent, or the action takes none).
+// Runs in the action's transaction, so a refused step leaves the upload unclaimed.
+func (s *Server) tradeFile(ctx context.Context, tx pgx.Tx, userID string, in api.TradeActionInput) (*upload, error) {
+	purpose, ok := tradeFilePurpose[in.Action]
+	if !ok || strings.TrimSpace(deref(in.UploadId)) == "" {
+		return nil, nil
+	}
+	u, err := s.claimUpload(ctx, tx, userID, strings.TrimSpace(*in.UploadId), purpose, "uploadId")
+	return &u, err
 }
 
 type tradeRow struct {
@@ -136,12 +155,17 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 	}
 	note := tradeActionLabel[action]
 	inputNote := strings.TrimSpace(deref(in.Note))
-	file := strings.TrimSpace(deref(in.File))
+	var file tradeFileRef // users attach verified uploads; only the bot (no user) attaches a bare name
+	if actor.File != nil {
+		file = tradeFileRef{actor.File.FileName, actor.File.ObjectKey}
+	} else if actor.UserID == nil {
+		file.Name = strings.TrimSpace(deref(in.File))
+	}
 	codeTail := strings.TrimPrefix(t.Code, "TRX-")
-	doc := func(kind, name string) (string, error) {
+	doc := func(kind string, f tradeFileRef) (string, error) {
 		var id string
-		err := tx.QueryRow(ctx, `INSERT INTO trade_documents (trade_id, kind, name, uploaded_by) VALUES ($1, $2, $3, $4) RETURNING id`,
-			t.ID, kind, name, actor.UserID).Scan(&id)
+		err := tx.QueryRow(ctx, `INSERT INTO trade_documents (trade_id, kind, name, object_key, uploaded_by) VALUES ($1, $2, $3, nullif($4, ''), $5) RETURNING id`,
+			t.ID, kind, f.Name, f.Key, actor.UserID).Scan(&id)
 		return id, err
 	}
 	allDelivered := false
@@ -153,7 +177,7 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 		if _, err := tx.Exec(ctx, `INSERT INTO trade_acceptances (trade_id, side, accepted_by) VALUES ($1, $2, $3)`, t.ID, side, actor.UserID); err != nil {
 			return err
 		}
-		if _, err := doc("agreement", fmt.Sprintf("Agreement-%s-%s.pdf", codeTail, side)); err != nil {
+		if _, err := doc("agreement", tradeFileRef{Name: fmt.Sprintf("Agreement-%s-%s.pdf", codeTail, side)}); err != nil {
 			return err
 		}
 		note = "Agreement disetujui"
@@ -173,7 +197,7 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 		if _, err := tx.Exec(ctx, `UPDATE trades SET due_at = $2 WHERE id = $1`, t.ID, due); err != nil {
 			return err
 		}
-		if _, err := doc("invoice", number+".pdf"); err != nil {
+		if _, err := doc("invoice", tradeFileRef{Name: number + ".pdf"}); err != nil {
 			return err
 		}
 
@@ -241,8 +265,8 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 		} else if err != nil {
 			return err
 		}
-		if file == "" {
-			return fieldErr("file", "Pilih file bukti pengiriman")
+		if file.Name == "" {
+			return fieldErr("uploadId", "Pilih file bukti pengiriman")
 		}
 		docID, err := doc("proof", file)
 		if err != nil {
@@ -280,7 +304,7 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 		}
 		switch qc {
 		case "rejected":
-			if err := openDispute(ctx, tx, t, actor, "QC menolak barang: "+qcNote, qcNote, ""); err != nil {
+			if err := openDispute(ctx, tx, t, actor, "QC menolak barang: "+qcNote, qcNote, tradeFileRef{}); err != nil {
 				return err
 			}
 			note = "Barang ditolak saat QC, dispute dibuka"
@@ -649,7 +673,7 @@ func refundEscrow(ctx context.Context, q dbtx, t tradeRow, amount int64, by *str
 
 // ── Disputes ─────────────────────────────────────────────────────
 
-func openDispute(ctx context.Context, tx pgx.Tx, t tradeRow, actor tradeActor, reason, evidence, file string) error {
+func openDispute(ctx context.Context, tx pgx.Tx, t tradeRow, actor tradeActor, reason, evidence string, file tradeFileRef) error {
 	var id string
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO disputes (trade_id, reason, opened_by_side, opened_by, market_id) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
@@ -661,10 +685,14 @@ func openDispute(ctx context.Context, tx pgx.Tx, t tradeRow, actor tradeActor, r
 	return addEvidence(ctx, tx, id, actor, evidence, file)
 }
 
-func addEvidence(ctx context.Context, tx pgx.Tx, disputeID string, actor tradeActor, text, file string) error {
+// tradeFileRef is a file attached to a trade step: its name, and its object key when it was uploaded ("" for the bot's
+// name-only files).
+type tradeFileRef struct{ Name, Key string }
+
+func addEvidence(ctx context.Context, tx pgx.Tx, disputeID string, actor tradeActor, text string, file tradeFileRef) error {
 	_, err := tx.Exec(ctx, `
-		INSERT INTO dispute_evidence (dispute_id, side, author_user_id, author_name, text, file_name) VALUES ($1, $2, $3, $4, $5, nullif($6, ''))`,
-		disputeID, actor.Side, actor.UserID, actor.Name, text, file)
+		INSERT INTO dispute_evidence (dispute_id, side, author_user_id, author_name, text, file_name, file_key) VALUES ($1, $2, $3, $4, $5, nullif($6, ''), nullif($7, ''))`,
+		disputeID, actor.Side, actor.UserID, actor.Name, text, file.Name, file.Key)
 	return err
 }
 

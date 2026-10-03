@@ -95,8 +95,36 @@ func scanTx(row pgx.Row) (api.TransactionDetail, error) {
 	return d, nil
 }
 
-// loadTransaction is the full TransactionDetail of trade `id` as seen by `party` (not_found when not a party).
-func loadTransaction(ctx context.Context, q dbtx, party, id string) (api.TransactionDetail, error) {
+// fileURL presigns object keys for the read models; nil gives no URLs (storage off, or a viewer who may not open the
+// trade's files).
+type fileURL func(key string) *string
+
+const fileURLTTL = time.Hour
+
+// fileURLs signs for viewers who may open a trade's files: its two sides and admins on its dispute case.
+func (s *Server) fileURLs(ctx context.Context) fileURL {
+	if s.Storage == nil {
+		return nil
+	}
+	return func(key string) *string {
+		url, err := s.Storage.PresignGet(ctx, key, fileURLTTL)
+		if err != nil { // ponytail: presigning is a local HMAC and does not fail in practice; the file just shows unlinked
+			return nil
+		}
+		return &url
+	}
+}
+
+func (f fileURL) of(key *string) *string {
+	if f == nil || key == nil || *key == "" {
+		return nil
+	}
+	return f(*key)
+}
+
+// loadTransaction is the full TransactionDetail of trade `id` as seen by `party` (not_found when not a party), with
+// uploaded files signed by `files` (nil: no URLs).
+func loadTransaction(ctx context.Context, q dbtx, party, id string, files fileURL) (api.TransactionDetail, error) {
 	if party == "" || !isUUID(id) {
 		return api.TransactionDetail{}, errTradeNotFound
 	}
@@ -161,26 +189,25 @@ func loadTransaction(ctx context.Context, q dbtx, party, id string) (api.Transac
 		d.Timeline = slices.Insert(d.Timeline, at, step{Status: api.TransactionStatus(e.status), At: &e.at, Note: e.note})
 	}
 
-	d.Documents = []struct {
+	type document = struct {
 		At   time.Time                          `json:"at"`
 		Id   string                             `json:"id"`
 		Kind api.TransactionDetailDocumentsKind `json:"kind"`
 		Name string                             `json:"name"`
-	}{}
-	rows, err = q.Query(ctx, `SELECT id::text, kind, name, created_at FROM trade_documents WHERE trade_id = $1 AND kind <> 'other' ORDER BY created_at, id`, id)
+		Url  *string                            `json:"url,omitempty"`
+	}
+	d.Documents = []document{}
+	rows, err = q.Query(ctx, `SELECT id::text, kind, name, object_key, created_at FROM trade_documents WHERE trade_id = $1 AND kind <> 'other' ORDER BY created_at, id`, id)
 	if err != nil {
 		return d, err
 	}
 	for rows.Next() {
-		var x struct {
-			At   time.Time                          `json:"at"`
-			Id   string                             `json:"id"`
-			Kind api.TransactionDetailDocumentsKind `json:"kind"`
-			Name string                             `json:"name"`
-		}
-		if err := rows.Scan(&x.Id, &x.Kind, &x.Name, &x.At); err != nil {
+		var x document
+		var key *string
+		if err := rows.Scan(&x.Id, &x.Kind, &x.Name, &key, &x.At); err != nil {
 			return d, err
 		}
+		x.Url = files.of(key)
 		d.Documents = append(d.Documents, x)
 	}
 	if err := rows.Err(); err != nil {
@@ -189,7 +216,7 @@ func loadTransaction(ctx context.Context, q dbtx, party, id string) (api.Transac
 
 	shipments := []api.Shipment{}
 	rows, err = q.Query(ctx, `
-		SELECT s.id::text, s.quantity::float8, s.drop_point, s.carrier, s.scheduled_at, s.status, s.delivered_at, doc.name
+		SELECT s.id::text, s.quantity::float8, s.drop_point, s.carrier, s.scheduled_at, s.status, s.delivered_at, doc.name, doc.object_key
 		FROM shipments s LEFT JOIN trade_documents doc ON doc.id = s.proof_document_id
 		WHERE s.trade_id = $1 ORDER BY s.created_at, s.id`, id)
 	if err != nil {
@@ -197,9 +224,11 @@ func loadTransaction(ctx context.Context, q dbtx, party, id string) (api.Transac
 	}
 	for rows.Next() {
 		var x api.Shipment
-		if err := rows.Scan(&x.Id, &x.Quantity, &x.DropPoint, &x.Carrier, &x.ScheduledAt, &x.Status, &x.DeliveredAt, &x.Proof); err != nil {
+		var key *string
+		if err := rows.Scan(&x.Id, &x.Quantity, &x.DropPoint, &x.Carrier, &x.ScheduledAt, &x.Status, &x.DeliveredAt, &x.Proof, &key); err != nil {
 			return d, err
 		}
+		x.ProofUrl = files.of(key)
 		shipments = append(shipments, x)
 		d.Delivery.Eta = &x.ScheduledAt
 		if x.Proof != nil {
@@ -259,19 +288,22 @@ func loadTransaction(ctx context.Context, q dbtx, party, id string) (api.Transac
 		Id   string                                 `json:"id"`
 		Name string                                 `json:"name"`
 		Text string                                 `json:"text"`
+		Url  *string                                `json:"url,omitempty"`
 	}
 	list := []evidence{}
 	rows, err = q.Query(ctx, `
-		SELECT id::text, side, author_name, text, file_name, created_at FROM dispute_evidence
+		SELECT id::text, side, author_name, text, file_name, file_key, created_at FROM dispute_evidence
 		WHERE dispute_id = $1 AND side IN ('buyer','supplier') ORDER BY created_at, id`, disputeID)
 	if err != nil {
 		return d, err
 	}
 	for rows.Next() {
 		var x evidence
-		if err := rows.Scan(&x.Id, &x.By, &x.Name, &x.Text, &x.File, &x.At); err != nil {
+		var key *string
+		if err := rows.Scan(&x.Id, &x.By, &x.Name, &x.Text, &x.File, &key, &x.At); err != nil {
 			return d, err
 		}
+		x.Url = files.of(key)
 		list = append(list, x)
 	}
 	if err := rows.Err(); err != nil {
@@ -354,7 +386,7 @@ func (s *Server) GetMyTransaction(ctx context.Context, req api.GetMyTransactionR
 	if err != nil {
 		return nil, err
 	}
-	d, err := loadTransaction(ctx, q, party, req.Id)
+	d, err := loadTransaction(ctx, q, party, req.Id, s.fileURLs(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -380,10 +412,14 @@ func (s *Server) ApplyMyTransactionAction(ctx context.Context, req api.ApplyMyTr
 		if req.Body.Action == "pay" {
 			return errPayViaGateway
 		}
-		if err := applyTradeAction(ctx, tx, req.Id, tradeActor{Side: side, UserID: &sess.UserID, Name: sess.Name}, *req.Body); err != nil {
+		file, err := s.tradeFile(ctx, tx, sess.UserID, *req.Body)
+		if err != nil {
 			return err
 		}
-		d, err = loadTransaction(ctx, tx, party, req.Id)
+		if err := applyTradeAction(ctx, tx, req.Id, tradeActor{Side: side, UserID: &sess.UserID, Name: sess.Name, File: file}, *req.Body); err != nil {
+			return err
+		}
+		d, err = loadTransaction(ctx, tx, party, req.Id, s.fileURLs(ctx))
 		return err
 	})
 	if err != nil {

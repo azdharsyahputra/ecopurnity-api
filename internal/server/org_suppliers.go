@@ -291,7 +291,7 @@ func supplierHistory(ctx context.Context, q dbtx, orgID, supplierID string) ([]a
 	}
 	out := []api.TransactionDetail{}
 	for _, id := range ids {
-		d, err := loadTransaction(ctx, q, party, id)
+		d, err := loadTransaction(ctx, q, party, id, nil) // supplier history: no file links (not gated by transactions.view)
 		if err != nil {
 			return nil, err
 		}

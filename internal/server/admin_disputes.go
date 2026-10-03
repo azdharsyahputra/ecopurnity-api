@@ -172,7 +172,7 @@ func loadDisputeRow(ctx context.Context, q dbtx, id string, forUpdate bool) (dis
 }
 
 // disputeCase is the full case: the trade from the buyer's side, evidence and the case timeline.
-func disputeCase(ctx context.Context, q dbtx, r disputeRow) (api.DisputeCase, error) {
+func disputeCase(ctx context.Context, q dbtx, r disputeRow, files fileURL) (api.DisputeCase, error) {
 	var c api.DisputeCase
 	if err := widen(r.Summary, &c); err != nil {
 		return c, err
@@ -185,20 +185,22 @@ func disputeCase(ctx context.Context, q dbtx, r disputeRow) (api.DisputeCase, er
 	}
 	// The trade from the buyer's side, with the parties' evidence of its latest dispute (transactions read model).
 	var err error
-	if c.Transaction, err = loadTransaction(ctx, q, r.BuyerParty, r.TradeID); err != nil {
+	if c.Transaction, err = loadTransaction(ctx, q, r.BuyerParty, r.TradeID, files); err != nil {
 		return c, err
 	}
 
 	c.Evidence = []api.Evidence{}
-	rows, err := q.Query(ctx, `SELECT id::text, side, author_name, text, file_name, created_at FROM dispute_evidence WHERE dispute_id = $1 ORDER BY created_at`, c.Id)
+	rows, err := q.Query(ctx, `SELECT id::text, side, author_name, text, file_name, file_key, created_at FROM dispute_evidence WHERE dispute_id = $1 ORDER BY created_at`, c.Id)
 	if err != nil {
 		return c, err
 	}
 	for rows.Next() {
 		var e api.Evidence
-		if err := rows.Scan(&e.Id, &e.Side, &e.By, &e.Text, &e.File, &e.At); err != nil {
+		var key *string
+		if err := rows.Scan(&e.Id, &e.Side, &e.By, &e.Text, &e.File, &key, &e.At); err != nil {
 			return c, err
 		}
+		e.Url = files.of(key)
 		c.Evidence = append(c.Evidence, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -248,7 +250,7 @@ func (s *Server) GetAdminDispute(ctx context.Context, req api.GetAdminDisputeReq
 	if err != nil {
 		return nil, err
 	}
-	c, err := disputeCase(ctx, q, r)
+	c, err := disputeCase(ctx, q, r, s.fileURLs(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -386,7 +388,7 @@ func (s *Server) ActOnAdminDispute(ctx context.Context, req api.ActOnAdminDisput
 		if err != nil {
 			return err
 		}
-		out, err = disputeCase(ctx, tx, r)
+		out, err = disputeCase(ctx, tx, r, s.fileURLs(ctx))
 		return err
 	})
 	if err != nil {

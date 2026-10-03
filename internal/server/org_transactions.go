@@ -58,9 +58,9 @@ func (s *Server) ListOrgTransactions(ctx context.Context, req api.ListOrgTransac
 }
 
 // orgTxPage is the trade from the org's side with the team's activity on it and, for a pool sub-PO, the pool split.
-func orgTxPage(ctx context.Context, q dbtx, orgID, party, tradeID string) (api.OrgTransactionPage, error) {
+func orgTxPage(ctx context.Context, q dbtx, orgID, party, tradeID string, files fileURL) (api.OrgTransactionPage, error) {
 	var p api.OrgTransactionPage
-	d, err := loadTransaction(ctx, q, party, tradeID)
+	d, err := loadTransaction(ctx, q, party, tradeID, files)
 	if err != nil {
 		return p, err
 	}
@@ -99,7 +99,7 @@ func (s *Server) GetOrgTransaction(ctx context.Context, req api.GetOrgTransactio
 	if err != nil {
 		return nil, err
 	}
-	p, err := orgTxPage(ctx, q, c.OrgID, party, req.Tid)
+	p, err := orgTxPage(ctx, q, c.OrgID, party, req.Tid, s.fileURLs(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -129,10 +129,18 @@ func (s *Server) ActOnOrgTransaction(ctx context.Context, req api.ActOnOrgTransa
 		if req.Body.Action == "pay" {
 			return errPayViaGateway
 		}
-		if err := applyTradeAction(ctx, tx, req.Tid, tradeActor{Side: side, UserID: &c.sess.UserID, Name: c.actor(), OrgID: &c.OrgID}, *req.Body); err != nil {
+		file, err := s.tradeFile(ctx, tx, c.sess.UserID, *req.Body)
+		if err != nil {
 			return err
 		}
-		p, err = orgTxPage(ctx, tx, c.OrgID, party, req.Tid)
+		if err := applyTradeAction(ctx, tx, req.Tid, tradeActor{Side: side, UserID: &c.sess.UserID, Name: c.actor(), OrgID: &c.OrgID, File: file}, *req.Body); err != nil {
+			return err
+		}
+		var files fileURL // the page's file links only for members who may view transactions
+		if c.can("transactions", "view") {
+			files = s.fileURLs(ctx)
+		}
+		p, err = orgTxPage(ctx, tx, c.OrgID, party, req.Tid, files)
 		return err
 	})
 	if err != nil {

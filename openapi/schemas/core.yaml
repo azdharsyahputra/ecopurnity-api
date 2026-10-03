@@ -1680,6 +1680,9 @@ Shipment:
       format: date-time
     proof:
       type: string
+    proofUrl:
+      type: string
+      description: Short-lived (1 h) presigned GET for the proof file; absent for name-only (legacy/demo) proofs.
 Review:
   type: object
   required:
@@ -1815,6 +1818,9 @@ TransactionDetail:
                   - proof
               name:
                 type: string
+              url:
+                type: string
+                description: Short-lived (1 h) presigned GET for an uploaded file (delivery proofs); absent for generated documents and name-only proofs.
               at:
                 type: string
                 format: date-time
@@ -1883,6 +1889,9 @@ TransactionDetail:
                     type: string
                   file:
                     type: string
+                  url:
+                    type: string
+                    description: Short-lived (1 h) presigned GET for the attached file; absent for name-only (legacy/demo) attachments.
                   at:
                     type: string
                     format: date-time
