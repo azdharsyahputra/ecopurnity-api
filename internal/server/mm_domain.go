@@ -105,12 +105,9 @@ func activeVersion(versions []ruleVersion, round int) ruleVersion {
 	return versions[0]
 }
 
-// wib is the frontend's clock for date-only rule windows.
-var wib = time.FixedZone("WIB", 7*3600)
-
 // defaultRules: this week's Mon–Fri window, 1% of demand as minimum order, 40% of supply as cap.
 func defaultRules(demand, supply float64, region, mechanism string, today time.Time) marketRules {
-	today = today.In(wib)
+	today = today.In(wib) // the frontend's clock for date-only rule windows (wib: contracts.go)
 	monday := today.AddDate(0, 0, -((int(today.Weekday()) + 6) % 7))
 	visibility := "full"
 	if mechanism == "sealed_bid" {

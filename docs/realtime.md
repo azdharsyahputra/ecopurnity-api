@@ -46,7 +46,7 @@ Client frames are `{ type, id?, ... }`. `id` is any string the client picks; whe
 | `subscribe` | `channel`, `sinceSeq?` | `{ok: true, headSeq?}` after any replayed frames |
 | `unsubscribe` | `channel` | `{ok: true}` (also when not subscribed) |
 | `ping` | | `{ok: true}` |
-| `chat.send` | `conversationId`, `clientMsgId` (uuid), `text` (1..4000 chars, trimmed) | `{ok: true, result: {messageId, seq}}`. **Not built yet:** answers `not_implemented` until the conversations REST exists |
+| `chat.send` | `conversationId`, `clientMsgId` (uuid), `text` (1..4000 chars, trimmed) | `{ok: true, result: {messageId, seq}}` |
 | `chat.typing` | `conversationId` | `{ok: true}` (also when throttled and dropped) |
 | `chat.read` | `conversationId`, `seq` | `{ok: true}` |
 
@@ -57,8 +57,7 @@ Server frames:
 - **`error`**: `{ type: "error", code, message }`.
 
 Error codes (`ack.error.code` / `error.code`): `bad_frame`, `unauthenticated`, `forbidden`, `not_found`,
-`validation`, `rate_limited`, `subscription_limit`, `resync_required`, `internal`, and for now `not_implemented`
-(`chat.send` only).
+`validation`, `rate_limited`, `subscription_limit`, `resync_required`, `internal`.
 
 ## Channels
 
@@ -140,10 +139,15 @@ bid transaction rejects a bid when `now() >= ends_at` under the auction row lock
 | `read` | `{conversationId, userId, seq, at}` | the participant's read position advanced |
 
 `chat.send` follows the REST POST exactly: trimmed non-blank text, participant check, `updatedAt` bump, a
-`transaction_update` notification to every other platform participant, a fictional participant's reply after about
-5 s. It is idempotent by (conversation, sender, `clientMsgId`): a retry, on the socket or through the REST fallback
-with the same `clientMsgId`, returns the stored message and broadcasts nothing new. The sender gets its own
-`message.created` (with `clientMsgId`) and swaps its optimistic copy.
+`transaction_update` notification to every other platform participant (and, only with the demo
+`SIMULATE_COUNTERPARTIES=true`, a fictional participant's reply after about 5 s). Both call `sendMessage` in
+`internal/server/conversations.go`. It is idempotent by (sender, `clientMsgId`): a retry, on the socket or through the
+REST fallback with the same `clientMsgId`, returns the stored message and broadcasts nothing new (the same key in
+another conversation is a `validation` error on `clientMsgId`). The sender gets its own `message.created` (with
+`clientMsgId`) and swaps its optimistic copy; its read position moves to the new message.
+
+REST snapshot fields for resuming: `Conversation.seq` (head), `lastReadSeq`, `unread`, and `messages[].seq` /
+`clientMsgId`. `GET /me/conversations/{id}` also marks the conversation read to its head (as `chat.read`).
 
 `chat.read {seq}` stores `max(last_read_seq, min(seq, head))` and broadcasts `read` only when it advanced.
 

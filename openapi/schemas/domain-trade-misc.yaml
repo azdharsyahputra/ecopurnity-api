@@ -513,6 +513,11 @@ VerificationRequest:
       type: array
       description: What the applicant typed into the form.
       items: { $ref: '#/components/schemas/LabeledValue' }
+    nik:
+      type: string
+      description: >-
+        Personal requests, detail endpoint only: the full NIK, decrypted for the reviewer. Never in lists, never stored in
+        clear (`form` and OCR fields carry it masked).
     documents:
       type: array
       description: What the uploaded documents say (OCR in the real BE). Labels that also appear in `form` are compared.
@@ -522,6 +527,9 @@ VerificationRequest:
         properties:
           kind: { $ref: '#/components/schemas/DocKind' }
           fileName: { type: string }
+          url:
+            type: string
+            description: Detail endpoint only, when the file is in object storage. Presigned GET URL for the reviewer, valid 5 minutes.
           fields:
             type: array
             items: { $ref: '#/components/schemas/LabeledValue' }
@@ -1057,7 +1065,7 @@ Finance:
       required: [bank, accountNo, holder]
       properties:
         bank: { type: string }
-        accountNo: { type: string }
+        accountNo: { type: string, description: 'Masked (four dots plus the last 4 digits); the full number is never returned.' }
         holder: { type: string }
     withdrawals:
       type: array

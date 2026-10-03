@@ -41,11 +41,6 @@ func (e *testEnv) createMarket(c *http.Client, body map[string]any) string {
 	return r.Body["id"].(string)
 }
 
-func (e *testEnv) notified(userID, title string) bool {
-	e.t.Helper()
-	return e.scalar(`SELECT count(*) FROM notifications WHERE user_id = $1 AND title LIKE $2`, userID, title).(int64) > 0
-}
-
 // org: an organization (owned by the first member) with its party and the other members as active procurement members.
 func (e *testEnv) org(name string, owner string, members ...string) (orgID, partyID string) {
 	e.t.Helper()
@@ -182,7 +177,7 @@ func TestMmRoundsRulesAndStatus(t *testing.T) {
 	member, memberID := e.bidder("Peserta")
 	_ = member
 	e.exec(`INSERT INTO market_participants (market_id, party_id, role, status)
-		VALUES ($1, (SELECT id FROM parties WHERE user_id = $2), 'supplier', 'active')`, id, e.partyOf(memberID))
+		VALUES ($1, $2, 'supplier', 'active')`, id, e.partyOf(memberID))
 
 	round := map[string]any{"title": "Lot minggu ini", "quantity": 100, "openingPriceIdr": 10000, "durationMinutes": 60}
 	if r := e.call(mm, "POST", "/mm/markets/"+id+"/rounds", map[string]any{"title": " ", "quantity": 0, "openingPriceIdr": 0, "durationMinutes": 0}); r.Status != 422 ||
@@ -215,7 +210,7 @@ func TestMmRoundsRulesAndStatus(t *testing.T) {
 		t.Fatalf("invalid rules: %d %v", r.Status, r.Body)
 	}
 	rules["minQuantity"], rules["visibility"], rules["eligibility"] = 20, "rank_only", "verified"
-	if status, vs := e.callList(mm, "PUT", "/mm/markets/"+id+"/rules", map[string]any{"rules": rules, "reason": "Perketat"}); status != 200 || len(vs) != 2 ||
+	if status, vs := e.mmList(mm, "PUT", "/mm/markets/"+id+"/rules", map[string]any{"rules": rules, "reason": "Perketat"}); status != 200 || len(vs) != 2 ||
 		vs[1].(map[string]any)["effectiveFromRound"] != float64(2) || vs[1].(map[string]any)["reason"] != "Perketat" {
 		t.Fatalf("rules: %d %v", status, vs)
 	}
@@ -273,14 +268,14 @@ func TestMmRoundsRulesAndStatus(t *testing.T) {
 		t.Fatalf("rules on closed: %d %v", r.Status, r.Body)
 	}
 	// Publish, 2 rounds, rules v2, pause, resume, close; newest first.
-	if status, log := e.callList(mm, "GET", "/mm/markets/"+id+"/audit"); status != 200 || len(log) != 7 || log[0].(map[string]any)["action"] != "Tutup market" ||
+	if status, log := e.mmList(mm, "GET", "/mm/markets/"+id+"/audit"); status != 200 || len(log) != 7 || log[0].(map[string]any)["action"] != "Tutup market" ||
 		log[0].(map[string]any)["reason"] != "Musim selesai" || log[0].(map[string]any)["actor"] != "Dimas (Market Maker)" {
 		t.Fatalf("audit: %d %v", status, log)
 	}
 }
 
-// callList is call for endpoints that answer a JSON array.
-func (e *testEnv) callList(c *http.Client, method, path string, body ...any) (int, []any) {
+// mmList is call for endpoints that answer a JSON array.
+func (e *testEnv) mmList(c *http.Client, method, path string, body ...any) (int, []any) {
 	e.t.Helper()
 	var b any
 	if len(body) > 0 {
@@ -308,20 +303,10 @@ func jsonBody(v any) io.Reader {
 	return bytes.NewReader(b)
 }
 
-// partyOf makes sure the user has a party and returns the user id (for subqueries by user_id).
-func (e *testEnv) partyOf(userID string) string {
-	e.t.Helper()
-	return e.scalar(`INSERT INTO parties (kind, user_id, name, display_kind) SELECT 'user', id, name, 'person' FROM users WHERE id = $1
-		ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name RETURNING user_id::text`, userID).(string)
-}
-
 func TestMmParticipantsAndDisputes(t *testing.T) {
 	e := newEnv(t)
 	mm, _ := e.maker("Dimas")
-	admin, adminID := e.signedIn("Admin")
-	_ = admin
-	adminID = e.scalar(`SELECT id::text FROM users WHERE email = $1`, adminID).(string)
-	e.exec(`INSERT INTO user_capabilities (user_id, capability) VALUES ($1, 'admin')`, adminID)
+	admin, adminID := e.admin("Admin")
 	tag := fmt.Sprint(time.Now().UnixNano())
 	in := marketInput("Karton " + tag)
 	in["approval"] = "manual"
@@ -388,6 +373,9 @@ func TestMmParticipantsAndDisputes(t *testing.T) {
 	if !e.notified(adminID, "Eskalasi dispute dari Karton "+tag) {
 		t.Fatal("admins not notified")
 	}
+	if r := e.call(admin, "GET", "/admin/disputes/"+caseID, nil); r.Status != 200 {
+		t.Fatalf("admin case readable: %d %v", r.Status, r.Body)
+	}
 	if r := dact("resolve", "x"); r.Status != 409 || r.code() != "escalated" {
 		t.Fatalf("resolve escalated: %d %v", r.Status, r.Body)
 	}
@@ -414,7 +402,7 @@ func TestMmPipeline(t *testing.T) {
 		suggested_mechanism, confidence, mechanism_reason, description, required_contribution)
 		VALUES ($1, 'supply_gap', 'food', 'Bali', 'kg', 10, 5, 1000, 'reverse_auction', 0.5, 'alasan', 'd', 'k') RETURNING id::text`, "Opp "+tag).(string)
 	card := func() map[string]any {
-		status, list := e.callList(mm, "GET", "/mm/opportunities")
+		status, list := e.mmList(mm, "GET", "/mm/opportunities")
 		if status != 200 {
 			t.Fatalf("list: %d", status)
 		}
@@ -631,7 +619,7 @@ func TestMmPoolMarketAndSettlement(t *testing.T) {
 		VALUES ($1, 'Gula', 'food', 60, 'kg', 300000, now() + interval '14 days', 'Gudang A, Bandung', 'aggregate', 'in_collective', $2, $3) RETURNING id::text`, orgA, pool, uA).(string)
 
 	findPool := func() map[string]any {
-		status, list := e.callList(mm, "GET", "/mm/pools")
+		status, list := e.mmList(mm, "GET", "/mm/pools")
 		if status != 200 {
 			t.Fatalf("pools: %d", status)
 		}

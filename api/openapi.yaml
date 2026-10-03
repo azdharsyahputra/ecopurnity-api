@@ -205,14 +205,12 @@ components:
       type: object
       required:
         - action
-        - reason
       properties:
         action:
           $ref: "#/components/schemas/AuctionAction"
         reason:
           type: string
-          minLength: 10
-          description: Required for every action (trimmed length at least 10). For `open_case` it becomes the first investigation note.
+          description: Required for every action (trimmed length at least 10, else 422 `reason_required`). For `open_case` it becomes the first investigation note.
         type:
           allOf:
             - $ref: "#/components/schemas/AlertType"
@@ -301,7 +299,6 @@ components:
           $ref: "#/components/schemas/MarketAction"
         reason:
           type: string
-          minLength: 10
           description: Required for `flag`, `suspend`, `restore` (trimmed length at least 10); optional for `review`. For `flag` it becomes the flag label.
     AdminMarketDetail:
       description: AdminMarket plus the market's auctions (with findings) and its audit entries, newest first.
@@ -447,14 +444,12 @@ components:
       type: object
       required:
         - action
-        - reason
       properties:
         action:
           $ref: "#/components/schemas/UserAction"
         reason:
           type: string
-          minLength: 10
-          description: Trimmed length at least 10; recorded in the audit trail (and as the appeal decision note when an appeal is decided).
+          description: "Required: trimmed length at least 10 (checked by the handler: 422 `reason_required`); recorded in the audit trail (and as the appeal decision note when an appeal is decided)."
     AdminUserDetail:
       allOf:
         - $ref: "#/components/schemas/AdminUser"
@@ -492,7 +487,6 @@ components:
           $ref: "#/components/schemas/VerificationAction"
         reason:
           type: string
-          minLength: 10
           description: Required for `reject` and `reupload` (trimmed length at least 10). Optional for `approve` (decision note defaults to "Dokumen sesuai").
     AdminVerificationStatus:
       description: Declared as `VerificationStatus` in features/admin/types.ts; renamed because org.ts exports an unrelated `VerificationStatus`.
@@ -1604,27 +1598,47 @@ components:
         messages:
           type: array
           items:
-            type: object
-            required:
-              - id
-              - by
-              - text
-              - at
-            properties:
-              id:
-                type: string
-              by:
-                type: string
-              userId:
-                type: string
-              text:
-                type: string
-              at:
-                type: string
-                format: date-time
+            $ref: "#/components/schemas/ConversationMessage"
         updatedAt:
           type: string
           format: date-time
+        seq:
+          type: integer
+          description: Channel head (`conversations.message_seq`), the seq of the newest message. Subscribe to `conversation:{id}` with `sinceSeq` = this value (docs/realtime.md).
+        lastReadSeq:
+          type: integer
+          description: The caller's read position (`conversation_participants.last_read_seq`).
+        unread:
+          type: integer
+          description: Messages after the caller's read position (`seq - lastReadSeq`).
+    ConversationMessage:
+      type: object
+      description: One message of a conversation. The realtime `message.created` payload is this plus `conversationId`.
+      required:
+        - id
+        - by
+        - text
+        - at
+      properties:
+        id:
+          type: string
+        by:
+          type: string
+          description: Display name of the author.
+        userId:
+          type: string
+          description: Author's user id; absent for external (non-platform) participants.
+        text:
+          type: string
+        at:
+          type: string
+          format: date-time
+        seq:
+          type: integer
+          description: Position in the conversation (`messages.seq`), gapless from 1.
+        clientMsgId:
+          type: string
+          description: The sender's idempotency key (uuid), present on messages posted with one.
     CreateAuctionInput:
       type: object
       required:
@@ -2318,6 +2332,7 @@ components:
               type: string
             accountNo:
               type: string
+              description: Masked (four dots plus the last 4 digits); the full number is never returned.
             holder:
               type: string
         withdrawals:
@@ -6752,7 +6767,12 @@ components:
         text:
           type: string
           minLength: 1
+          maxLength: 4000
           description: Non-blank after trim; stored trimmed.
+        clientMsgId:
+          type: string
+          format: uuid
+          description: Idempotency key chosen by the client. A retry with the same key (REST or `chat.send`) returns the stored message and creates, broadcasts and notifies nothing new.
     RfqQuoteActionInput:
       type: object
       required:
@@ -6786,6 +6806,7 @@ components:
           exclusiveMinimum: 0
         leadTimeDays:
           type: integer
+          minimum: 0
         terms:
           $ref: "#/components/schemas/PaymentTerms"
         note:
@@ -6837,8 +6858,7 @@ components:
             - reject
         reason:
           type: string
-          minLength: 10
-          description: Required (min 10 chars after trim) for `reject`; optional note for `approve`.
+          description: Required (min 10 chars after trim, else 422 `reason_required`) for `reject`; optional note for `approve`.
     RoundResult:
       type: object
       description: "A round's recorded prices. Closed rounds are history: read-only everywhere."
@@ -7889,6 +7909,9 @@ components:
           description: What the applicant typed into the form.
           items:
             $ref: "#/components/schemas/LabeledValue"
+        nik:
+          type: string
+          description: "Personal requests, detail endpoint only: the full NIK, decrypted for the reviewer. Never in lists, never stored in clear (`form` and OCR fields carry it masked)."
         documents:
           type: array
           description: What the uploaded documents say (OCR in the real BE). Labels that also appear in `form` are compared.
@@ -7903,6 +7926,9 @@ components:
                 $ref: "#/components/schemas/DocKind"
               fileName:
                 type: string
+              url:
+                type: string
+                description: Detail endpoint only, when the file is in object storage. Presigned GET URL for the reviewer, valid 5 minutes.
               fields:
                 type: array
                 items:
@@ -8011,7 +8037,7 @@ paths:
       tags:
         - Admin
       x-access: capability:admin
-      x-note: The audit filter is a substring match on the action text (`FRD-1041` would also match `FRD-10410`); the real backend should filter by entity id.
+      x-note: The mock matches the alert code as a substring of the action text (`FRD-1041` would also match `FRD-10410`); the API returns entries on this alert entity plus the escalated actions tagged "(eskalasi {code})".
       parameters:
         - name: id
           in: path
@@ -8057,7 +8083,7 @@ paths:
         - Admin
       x-access: capability:admin
       x-audit: true
-      x-note: "Mock does not validate `action`: an unknown value is treated as `close` (reason required). `escalate` with an auction subject that no longer exists in the economy would throw (500); `suspend_market` does not check the market is already suspended (no 409 no_change, unlike the market action endpoint). A user escalation that would not change the status (already suspended) still succeeds here, the 409 no_change of the user endpoint is not applied."
+      x-note: The mock treats an unknown `action` as `close`; the API answers 422 `validation`. An escalation subject (user, auction or market) that no longer exists is 404 `not_found` (the mock throws for auctions); `suspend_market` does not check the market is already suspended (no 409 no_change, unlike the market action endpoint). A user escalation that would not change the status (already suspended) still succeeds here, the 409 no_change of the user endpoint is not applied.
       parameters:
         - name: id
           in: path
@@ -8150,19 +8176,20 @@ paths:
       description: |
         Reason is required for every action (422 `reason_required`, checked before the 409s).
         - `freeze`: only auctions in scheduled/qualification/live/extended. Remembers the previous status, sets status
-          `frozen` (bids and winner selection are held), publishes an `auction.closed` event with status `frozen` on channel
-          `auction:{id}`, notifies the auction owner (`auction_ending` "{title} dibekukan Admin"), audit "Freeze auction".
-          409 `not_active` otherwise.
-        - `unfreeze`: only when `frozen` (409 `not_frozen` otherwise). Restores the remembered status (default `closed`);
-          a remembered `live`/`extended` auction whose `endsAt` has passed reopens as `closed`. Audit "Cabut freeze auction".
-        - `open_case`: creates a manual FraudAlert (code `FRD-{1040+n}`, status `investigating`, score 0, confidence 0,
-          evidence = current findings, first note = reason) with this auction as subject, audit "Buka kasus {code}".
-          Returns `{ caseId }`.
+          `frozen` (bids, the auction clock and winner selection are held), publishes an `auction.state` frame (status
+          `frozen`) on channel `auction:{id}`, notifies the owner of a personal buyer auction (`auction_ending` "{title}
+          dibekukan Admin"), audit "Freeze auction". 409 `not_active` otherwise.
+        - `unfreeze`: only when `frozen` (409 `not_frozen` otherwise). Restores the remembered status and publishes
+          `auction.state`; an auction whose `endsAt` passed while frozen is closed by the auction clock on its next tick
+          (with the normal close: results, bidder statuses, `auction.closed`). Audit "Cabut freeze auction".
+        - `open_case`: creates a manual FraudAlert (code `FRD-…` from the public code sequence, status `investigating`,
+          score 0, confidence 0, evidence = current findings, first note = reason) with this auction as subject, audit
+          "Buka kasus {code}". Returns `{ caseId }`.
       tags:
         - Admin
       x-access: capability:admin
       x-audit: true
-      x-note: "`open_case` responds 200 (not 201) with `{ caseId }`, unlike the `{ ok: true }` of the other actions. Mock does not validate `action` or `type`: an unknown action behaves like `open_case`, an unknown `type` is stored as given."
+      x-note: "`open_case` responds 200 (not 201) with `{ caseId }`, unlike the `{ ok: true }` of the other actions. The mock does not validate `action` or `type`; the API answers 422 `validation` for unknown values. The mock reopens an expired live auction as `closed` directly, skipping the close bookkeeping; the API leaves it to the auction clock."
       parameters:
         - name: id
           in: path
@@ -8202,11 +8229,57 @@ paths:
       operationId: listAdminAudit
       summary: List the audit trail
       description: |
-        Platform-wide audit entries, newest first. Not paginated and not filterable; the mock keeps the latest 500 entries.
-        Includes entries written by admin, market maker and organization actions.
+        Platform-wide audit entries, newest first, at most `limit` (default 500). Includes entries written by admin, market
+        maker and organization actions. Optional filters combine with AND.
       tags:
         - Admin
       x-access: capability:admin
+      x-note: The mock is not filterable and returns its latest 500 entries; with no query parameters the API does the same.
+      parameters:
+        - name: q
+          in: query
+          description: Case-insensitive substring over actor, action, entity label and reason.
+          schema:
+            type: string
+        - name: entityType
+          in: query
+          schema:
+            type: string
+            enum:
+              - user
+              - business
+              - opportunity
+              - market
+              - auction
+              - alert
+              - transaction
+              - dispute
+              - rule
+              - procurement
+              - supplier
+        - name: entityId
+          in: query
+          schema:
+            type: string
+        - name: from
+          in: query
+          description: Entries at or after this time.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: Entries before this time.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 500
       responses:
         "200":
           description: Audit entries.
@@ -8278,8 +8351,8 @@ paths:
       summary: Request evidence, start review or resolve a dispute
       description: |
         Workflow (status -> action): `open|evidence` -> `request_evidence` (-> `evidence`) or `start_review` (-> `review`);
-        `review` -> `resolve` (-> `resolved`). Any other combination is 409 `invalid_transition`; this check runs before
-        body validation.
+        `review` -> `resolve` (-> `resolved`). Any other combination is 409 `invalid_transition` (after schema validation of the
+        body, before the reason check).
         - `request_evidence`: `from` (buyer | supplier | both) and `reason` (min 10 chars) required. Adds a timeline entry
           "Bukti diminta dari {pembeli|supplier|kedua pihak}: {reason}" and sends a `transaction_update` notification
           "{code}: Admin meminta bukti" (body = reason) to the selected platform-user parties.
@@ -8293,11 +8366,13 @@ paths:
           timeline "Diputuskan: ...", notification "{code} diputuskan" to both parties, audit "Putuskan dispute (refund penuh |
           lepas dana | refund sebagian)" with status diffs.
         Audit is written for every action ("Minta bukti dispute", "Mulai review dispute", resolve).
+        Money: the resolution row is stored on the case and the trade side (trade status, invoice payment state, escrow
+        ledger journal) is settled in the same transaction by the transactions area.
       tags:
         - Admin
       x-access: capability:admin
       x-audit: true
-      x-note: Mock does not validate `from` on request_evidence (a missing value makes the handler throw) nor the shape of `resolution` on resolve beyond the partial amount. Real backend should return 422 `validation` for those. `request_evidence` while already in `evidence` is allowed and repeats the request.
+      x-note: The mock does not validate `from` on request_evidence nor the shape of `resolution`; the API answers 422 `validation` (schema). `request_evidence` while already in `evidence` is allowed and repeats the request. `partial` amounts are against the trade total before tax (`totalIdr`), like the mock.
       parameters:
         - name: id
           in: path
@@ -8398,7 +8473,7 @@ paths:
         - Admin
       x-access: capability:admin
       x-audit: true
-      x-note: "Mock does not validate `action`: an unknown value behaves like `restore`. Suspend/restore set the market's status to exactly `suspended`/`active`, even if the market had another status (e.g. `closed`) before."
+      x-note: The mock treats an unknown `action` as `restore`; the API answers 422 `validation` (fields.action). Suspend/restore set the market's status to exactly `suspended`/`active`, even if the market had another status (e.g. `closed`) before.
       parameters:
         - name: id
           in: path
@@ -8469,7 +8544,7 @@ paths:
         - Roles
       x-access: capability:admin
       x-audit: true
-      x-note: The reason error code is `reason_required` (not `validation`), same shape as other admin punitive actions. Any `action` other than `approve` is treated as a rejection, but without the reason check unless it is exactly `reject`.
+      x-note: The reason error code is `reason_required` (not `validation`), same shape as other admin punitive actions. The mock treats any `action` other than `approve` as a rejection; the API answers 422 `validation` for unknown values.
       requestBody:
         required: true
         content:
@@ -8598,13 +8673,16 @@ paths:
         - `suspend` / `restrict` / `restore`: sets status `suspended` / `restricted` / `active`. 409 `no_change` when the
           account already has that status. `restore` on an account with a pending appeal also marks the appeal `granted`
           (note = reason), before the no_change check.
+        `suspend` sets `suspended_at` (a new suspension episode, appealable once) and signs the user out everywhere (all
+        sessions deleted; open WebSockets close at their next session check). Leaving `suspended` clears it.
+        `restore` grants the pending appeal of the current suspension (decision note = reason).
         Side effects: audit entry (verify: "Verifikasi identitas"; status: "Suspend akun" / "Batasi akun" / "Pulihkan akun" with
         a status before/after diff; deny_appeal: "Tolak banding suspend"). No notification is sent to the user.
       tags:
         - Admin
       x-access: capability:admin
       x-audit: true
-      x-note: "Mock does not validate `action`: an unknown value falls through to the status branch and behaves like `restore`. Real backend should reject it with 422 `validation` (fields.action). Also, `restore` marks a pending appeal granted even when the call then fails with `no_change`."
+      x-note: The mock does not validate `action` (an unknown value behaves like `restore`); the API answers 422 `validation` (fields.action). A pending appeal only exists while the account is suspended, so `restore` never grants an appeal and then fails with `no_change` (the mock could).
       parameters:
         - name: id
           in: path
@@ -8675,7 +8753,7 @@ paths:
             type: string
       responses:
         "200":
-          description: Verification request with the applicant's form and the documents' extracted fields.
+          description: Verification request with the applicant's form and the documents' extracted fields, plus a short-lived presigned `url` per document and, for personal requests, the decrypted `nik` (detail only; lists never carry them).
           content:
             application/json:
               schema:
@@ -8700,13 +8778,16 @@ paths:
         - audit entry ("Setujui verifikasi bisnis" / "Tolak verifikasi bisnis" / "Minta unggah ulang dokumen") with a status diff;
         - when `owner` matches a platform user name: a `transaction_update` notification "Verifikasi {business}: disetujui | ditolak |
           perlu unggah ulang" (body = decision note, href `/app/settings`);
-        - when additionally `kind` is `personal`: approve sets the admin-verified flag on the user and the user's identity
-          verification to `verified`; reject/reupload sets identity verification back to `none`.
+        - `personal`: approve marks the user's identity verified (KYC level 2) and stores the NIK hash (one verified account per
+          NIK: 409 `nik_in_use` when another account was verified with the same NIK); reject/reupload leaves the identity
+          `none` so the user can submit again.
+        - `business`: the organization's verification becomes `verified` (approve), `rejected` (reject) or `unverified`
+          (reupload); the notification goes to the member who submitted it.
       tags:
         - Admin
       x-access: capability:admin
       x-audit: true
-      x-note: "Mock does not validate `action`: an unknown value makes the handler throw (500). Real backend should return 422 `validation` (fields.action)."
+      x-note: The mock throws (500) on an unknown `action`; the API answers 422 `validation` (fields.action). Personal requests are audited on the user entity ("Setujui verifikasi KTP" / "Tolak verifikasi KTP" / "Minta unggah ulang dokumen"), business ones on the request.
       parameters:
         - name: id
           in: path
@@ -8735,7 +8816,7 @@ paths:
           description: "not_found: request does not exist."
         "409":
           $ref: "#/components/responses/Conflict"
-          description: "decided: the request is no longer pending."
+          description: "decided: the request is no longer pending. nik_in_use: (personal approve) the NIK is already verified on another account."
         "422":
           $ref: "#/components/responses/Validation"
           description: "reason_required: fields.reason (required for reject and reupload, min 10 chars after trim)."
@@ -9575,7 +9656,7 @@ paths:
         "422":
           $ref: "#/components/responses/Validation"
           description: "fields: quantity (must be > 0 and at most the listing's remaining quantity)."
-      x-note: An unknown market id returns 409 not_direct rather than 404. Listings from the seeded market catalog (no owner userId) have their in-memory quantity decremented without a stored history.
+      x-note: An unknown market id returns 409 not_direct rather than 404. Listings owned by an external party (seeded catalog) are decremented and get the same history entry.
   /me/auctions:
     get:
       operationId: listMyAuctions
@@ -9659,9 +9740,11 @@ paths:
         Copies item (title before ` · `), quantity, unit price and payment terms (default `escrow`) from one of the caller's
         completed transactions; the caller proposes in their own role (`proposedBy`) and the other side must accept. The
         first run is at 08:00 on `startAt`. Status starts `proposed`, code `CTR-xxxx`. Writes an audit entry
-        and notifies the counterparty when they are a platform account. With a fictional counterparty the mock auto-accepts
-        after ~8 seconds (status `active`) and notifies the proposer; when due, an order (a normal two-sided trade titled
-        `<item> · order n/runs (<code>)`) is placed automatically, `nextAt` advances by the frequency, and the contract `ended`s after the last run.
+        and notifies the counterparty when they are a platform account. A counterparty that is not on the platform accepts
+        only when the server simulates counterparties (`SIMULATE_COUNTERPARTIES`, demo: after ~8 seconds, status `active`,
+        the proposer is notified). When due, an order (a normal two-sided trade titled `<item> · order n/runs (<code>)`) is
+        placed automatically, `nextAt` advances by the frequency, and the contract `ended`s after the last run. The first
+        run is at 08:00 Jakarta time (WIB).
       tags:
         - Personal
       x-access: session
@@ -9762,7 +9845,7 @@ paths:
     get:
       operationId: listConversations
       summary: List my conversations
-      description: Conversations the caller participates in, newest `updatedAt` first. Not paginated.
+      description: Conversations the caller participates in, newest `updatedAt` first. Not paginated. Each carries only its latest message in `messages` (the inbox preview); `GET /me/conversations/{id}` has them all. `unread` counts messages after the caller's read position.
       tags:
         - RFQ
       x-access: session
@@ -9780,7 +9863,7 @@ paths:
     post:
       operationId: startConversation
       summary: Start (or reopen) a conversation
-      description: Creates a conversation between the caller and `with`, optionally linked to an RFQ, match or transaction, with an optional opening message. When the caller already has a conversation with the same `link` (type and id) that one is returned with 200 instead. A fictional counterpart (no `userId`) answers the latest human message once, after about 5 seconds.
+      description: "Creates a conversation between the caller and `with`, optionally linked to an RFQ, match or transaction, with an optional opening message. When the caller already has a conversation with the same `link` (type and id) that one is returned with 200 instead. `with.userId` must be an existing user; without it the counterpart is an external party (matched by name). `link.href` is ignored and rebuilt by the API. The opening `text` is posted like `POST /me/conversations/{id}/messages` (frame, notification). Demo simulation, only with `SIMULATE_COUNTERPARTIES=true`: an external counterpart answers the latest human message once, after about 5 seconds."
       tags:
         - RFQ
       x-access: session
@@ -9808,7 +9891,7 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "422":
           $ref: "#/components/responses/Validation"
-          description: "validation: subject is blank or `with.name` is missing (no `fields` in the body)."
+          description: "validation: subject is blank, `with.name` is missing, `with.userId` is unknown or `link.id` is not a uuid (no `fields` in the body)."
   /me/conversations/{id}:
     parameters:
       - name: id
@@ -9820,6 +9903,7 @@ paths:
     get:
       operationId: getConversation
       summary: Get a conversation with its messages
+      description: All messages in `seq` order. Reading marks the conversation read up to its head for the caller (`lastReadSeq` = `seq`, `unread` 0) and broadcasts a `read` frame on `conversation:{id}` when that advanced, like `chat.read`.
       tags:
         - RFQ
       x-access: session
@@ -9846,7 +9930,7 @@ paths:
     post:
       operationId: sendMessage
       summary: Post a message to a conversation
-      description: Appends the (trimmed) message as the caller and bumps `updatedAt`. Every other participant that is a platform user gets a `transaction_update` notification; a fictional participant replies once after about 5 seconds.
+      description: "Appends the (trimmed) message as the caller and bumps `updatedAt`; the message takes the next `seq` and is broadcast as `message.created` on `conversation:{id}`. The caller's read position moves to it. Every other participant that is a platform user gets a `transaction_update` notification. Idempotent by (caller, `clientMsgId`): a retry returns the conversation with the stored message and changes, broadcasts and notifies nothing. Same code path as the WebSocket `chat.send`. Demo simulation, only with `SIMULATE_COUNTERPARTIES=true`: an external participant replies once after about 5 seconds."
       tags:
         - RFQ
       x-access: session
@@ -9870,7 +9954,7 @@ paths:
           description: "not_found: unknown conversation, or the caller is not a participant."
         "422":
           $ref: "#/components/responses/Validation"
-          description: "fields: text (required, non-blank)."
+          description: "fields: text (required, non-blank, at most 4000 characters); clientMsgId (already used by the caller in another conversation)."
   /me/dashboard:
     get:
       operationId: getMyDashboard
@@ -9898,10 +9982,12 @@ paths:
       operationId: getMyFinance
       summary: Get my escrow, receivable, balance and ledger
       description: |
-        Derived from the caller's transactions. Buyer: `escrowHeldIdr` sums what the buyer paid into escrow (subtotal + 11% PPN).
-        Supplier: `receivableIdr` = amount receivable (escrow held or net terms delivered/accepted) after 1% platform fee and
-        the market maker commission; `availableIdr` = released earnings minus withdrawals. `entries` is a ledger sorted newest first
-        (kinds `escrow`, `payment`, `refund`, `payout`, `fee`, `withdrawal`).
+        Derived from the double-entry ledger. Buyer: `escrowHeldIdr` is what the buyer has in escrow (subtotal + 11% PPN).
+        Supplier: `receivableIdr` = amount receivable (escrowed invoices, or net terms delivered/accepted and unpaid) after the
+        1% platform fee and the market maker commission. `availableIdr` = released earnings (incl. the collected PPN, which the
+        supplier remits) and refunds, minus withdrawals. `entries` is the caller's statement, newest first (kinds `escrow`,
+        `payment`, `refund`, `payout`, `fee`, `withdrawal`; money in positive, money out negative). `bank.accountNo` is
+        masked (`••••` + last 4 digits); the full number is stored encrypted and never returned.
       tags:
         - Personal
       x-access: session
@@ -9967,7 +10053,7 @@ paths:
         "422":
           $ref: "#/components/responses/Validation"
           description: "fields: amountIdr (no bank account yet, amount not positive, or above the available balance; message states the maximum)."
-      x-note: Withdrawal stays `processing` forever in the mock (never becomes `paid`). The 422 field is always amountIdr, even when the problem is the missing bank account. The `no bank` and `over balance` failures share code `validation`.
+      x-note: The withdrawal stays `processing` until finance ops pay it out (no endpoint yet). The 422 field is always amountIdr, even when the problem is the missing bank account. The `no bank` and `over balance` failures share code `validation`.
   /me/identity:
     get:
       operationId: getMyIdentity
@@ -10047,7 +10133,7 @@ paths:
         - Roles
       x-access: session
       x-audit: true
-      x-note: Any `action` other than `accept` behaves as decline (no 422 for unknown values). The role is stored in the OrgRole slot even when it is a custom org role id.
+      x-note: The mock treats any `action` other than `accept` as decline; the API answers 422 `validation` for unknown values. The role is stored in the OrgRole slot even when it is a custom org role id.
       requestBody:
         required: true
         content:
@@ -10865,11 +10951,10 @@ paths:
     get:
       operationId: listRfqs
       summary: List my RFQs
-      description: "`side=buyer` (default) returns RFQs the caller created. Any other `side` value is treated as supplier: RFQs the caller is relevant to (invited, already quoted, or holding supply listings in the RFQ's category, and not the buyer) that are open or already carry a quote of theirs. Not paginated. Each item carries `side`."
+      description: "`side=buyer` (default) returns RFQs the caller created. Any other `side` value is treated as supplier: RFQs the caller is relevant to (invited, already quoted, or holding supply listings in the RFQ's category, and not the buyer) that are open or already carry a quote of theirs. Not paginated. Each item carries `side`. Suppliers only see their own quotes, never competitors' (here, in the detail and in every RFQ returned to them)."
       tags:
         - RFQ
       x-access: session
-      x-note: The supplier list returns each RFQ with all quotes (competitors' included); only the detail endpoint filters quotes to the caller's own.
       parameters:
         - name: side
           in: query
@@ -10893,12 +10978,11 @@ paths:
     post:
       operationId: createRfq
       summary: Create an RFQ
-      description: "Creates the RFQ (`open`, code `RFQ-XXXX`) and a linked conversation with the buyer and invitees. Invitees: `inviteUserIds` (existing users other than the caller) and `inviteNames` (fictional business suppliers). Fictional suppliers (invited ones first, then the category's defaults, max 3) auto-quote after about 6, 11 and 16 seconds, each notifying the buyer. Every platform user relevant to the RFQ gets an `auction_invitation` notification. Writes an audit entry."
+      description: "Creates the RFQ (`open`, code `RFQ-XXXX`) and a linked conversation with the buyer and invitees. Invitees: `inviteUserIds` (existing users other than the caller) and `inviteNames` (fictional business suppliers). Every platform user relevant to the RFQ (invited, or holding supply listings in its category) gets an `auction_invitation` notification. Writes an audit entry. `source.id` must be a trade of the caller (`repeat`, `logistics`), a listing (`listing`) or a match (`match`). Demo simulation, only when the server runs with `SIMULATE_COUNTERPARTIES=true` (off in production): fictional suppliers (invited external names first, then the category's defaults, max 3) quote after about 6, 11 and 16 seconds, each notifying the buyer. Real external parties never answer automatically."
       tags:
         - RFQ
       x-access: session
       x-audit: true
-      x-note: "`categoryId` is not validated; an unknown category makes the mock throw (500) when picking auto-quoting suppliers. `source`, `location`, `spec` are not validated."
       requestBody:
         required: true
         content:
@@ -10916,7 +11000,7 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "422":
           $ref: "#/components/responses/Validation"
-          description: "fields: item (required), quantity (value > 0), deadline (required)."
+          description: "fields: item (required), quantity (value > 0), deadline (required), source (unknown or not the caller's trade)."
   /me/rfqs/{id}:
     parameters:
       - name: id
@@ -10986,11 +11070,11 @@ paths:
     post:
       operationId: submitQuote
       summary: Submit a quote on an RFQ
-      description: Supplier side. The caller must be a relevant supplier (not the buyer). Adds the caller to the RFQ's conversation and notifies the buyer. One active (`submitted` or `countered`) quote per supplier. Not audited.
+      description: Supplier side. The caller must be a relevant supplier (not the buyer). Adds the caller to the RFQ's conversation and notifies the buyer. One active (`submitted` or `countered`) quote per supplier. Checked against the caller's KYC commitment limit (price × quantity). Not audited.
       tags:
         - RFQ
       x-access: session
-      x-note: The 201 body is the RFQ with only the new quote in `quotes` (supplier view). `leadTimeDays`, `terms` and `note` are not validated.
+      x-note: The 201 body is the supplier view (the caller's own quotes, the new one included).
       requestBody:
         required: true
         content:
@@ -11006,6 +11090,9 @@ paths:
                 $ref: "#/components/schemas/RfqView"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+          description: "kyc_limit: price × quantity exceeds the caller's verification limit."
         "404":
           $ref: "#/components/responses/NotFound"
           description: "not_found: unknown RFQ, or the caller is not a relevant supplier (the buyer included)."
@@ -11032,12 +11119,12 @@ paths:
     post:
       operationId: actOnQuote
       summary: Accept, counter, decline, revise, accept counter or withdraw a quote
-      description: "Negotiation rules, only while the RFQ is open. Buyer: `accept` (from submitted), `counter` (from submitted), `decline` (from submitted or countered). Supplier (owner of the quote): `revise` (from submitted or countered, back to submitted), `accept_counter` (from countered), `withdraw` (from submitted or countered). A caller who is neither the buyer nor the quote's supplier gets 403. `accept` / `accept_counter` create the trade at the quoted price (the counter price for `accept_counter`) with the quote's terms and quantity, mark the quote accepted, decline the other open quotes, set the RFQ `awarded` with its `transactionId`, write an audit entry and notify the other party (supplier: `winning_bid`). They are checked against the acting user's KYC commitment limit. The other actions update the quote history and notify the other party. A fictional supplier answers a counter after about 6 seconds: accepts when the counter is at least 95% of its price, else revises to the midpoint."
+      description: "Negotiation rules, only while the RFQ is open. Buyer: `accept` (from submitted), `counter` (from submitted), `decline` (from submitted or countered). Supplier (owner of the quote): `revise` (from submitted or countered, back to submitted), `accept_counter` (from countered), `withdraw` (from submitted or countered). A caller who is neither the buyer nor the quote's supplier gets 403. `accept` / `accept_counter` create the trade at the quoted price (the counter price for `accept_counter`) with the quote's terms and quantity, mark the quote accepted, decline the other open quotes, set the RFQ `awarded` with its `transactionId`, write an audit entry and notify the other party (supplier: `winning_bid`). They are checked against the buyer's KYC commitment limit, as is `counter` (the counter price is a commitment the supplier can accept alone); `revise` against the supplier's, as a new quote is. The other actions update the quote history and notify the other party. Demo simulation, only with `SIMULATE_COUNTERPARTIES=true`: a fictional (external) supplier answers a counter after about 6 seconds, accepting when the counter is at least 95% of its price, else revising to the midpoint."
       tags:
         - RFQ
       x-access: session
       x-audit: true
-      x-note: The transition (409) is checked before the price (422). Audit is only written when the quote is accepted. The response is the full RFQ for the caller's side, including other suppliers' quotes when a supplier acts.
+      x-note: The transition (409) is checked before the price (422). Audit is only written when the quote is accepted. The response is the RFQ for the caller's side (a supplier sees only their own quotes).
       requestBody:
         required: true
         content:
@@ -11055,7 +11142,7 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "403":
           $ref: "#/components/responses/Forbidden"
-          description: "forbidden: the caller is neither the RFQ buyer nor the quote supplier; kyc_limit: the deal value exceeds the acting user's verification limit (accept, accept_counter)."
+          description: "forbidden: the caller is neither the RFQ buyer nor the quote supplier; kyc_limit: the deal value exceeds the buyer's verification limit (accept, counter, accept_counter) or the supplier's (revise)."
         "404":
           $ref: "#/components/responses/NotFound"
           description: "not_found: unknown RFQ or quote."
@@ -11146,10 +11233,13 @@ paths:
         - `add_evidence`: either side, status `disputed`. Needs `note`; optional `file`. Moves the dispute from `open` to `evidence`.
         - `review`: either side, status `completed` and the caller's side has not reviewed yet. Needs `review` {rating 1-5, quality, timeliness, communication, text}.
 
-        Side effects: the new state is mirrored to the counterparty's record when they are a platform account (`peer`) and
-        they are notified (`payment` for pay, `delivery` for ship/upload_proof, else `transaction_update`). For fictional counterparties
-        a bot plays the other side on a timer. A timeline step timestamp is set when the status changes; an audit entry
-        is written (reason = `note`).
+        Side effects: one trade row serves both sides, so the counterparty sees the new state at once (`peer.txId` is the
+        same id); a counterparty that is a platform account is notified (`payment` for pay, `delivery` for ship/upload_proof,
+        else `transaction_update`) and both sides get a `trade.updated` frame on `user:{id}`. A timeline step timestamp is
+        set when the status changes; an audit entry is written (reason = `note`). Money moves as balanced ledger journals
+        (pay into escrow; release to the supplier minus the platform and maker fees on confirm_receipt (escrow) or pay (net
+        terms); partial QC refunds the short quantity incl. PPN to the buyer's available balance). External counterparties
+        (not on the platform) are played by a bot only when the server runs with `SIMULATE_COUNTERPARTIES` (demo).
       tags:
         - Personal
       x-access: session

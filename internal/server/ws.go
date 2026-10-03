@@ -83,6 +83,8 @@ type clientFrame struct {
 	SinceSeq       *int64 `json:"sinceSeq"`
 	ConversationID string `json:"conversationId"`
 	Seq            *int64 `json:"seq"`
+	ClientMsgID    string `json:"clientMsgId"` // chat.send
+	Text           string `json:"text"`        // chat.send
 }
 
 var frameMessages = map[string]string{
@@ -94,7 +96,6 @@ var frameMessages = map[string]string{
 	"subscription_limit": "Maksimal 100 channel per koneksi",
 	"resync_required":    "Terlalu banyak event terlewat, muat ulang data",
 	"internal":           "Terjadi kesalahan di server",
-	"not_implemented":    "Kirim pesan lewat socket belum tersedia",
 }
 
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
@@ -472,9 +473,7 @@ func (c *wsConn) chat(ctx context.Context, f clientFrame) {
 			c.drop(f.ID)
 			return
 		}
-		// ponytail: conversations (REST and their message model) are not built yet, so chat.send has nothing to
-		// write to. It becomes the REST POST's insert + emitFrame("message.created") once that exists.
-		c.answer(f.ID, nil, "not_implemented")
+		c.chatSend(ctx, f) // conversations.go: the REST POST's sendMessage
 	case f.Type != "chat.typing" && f.Type != "chat.read":
 		c.answer(f.ID, nil, "bad_frame")
 	case !uuidPattern.MatchString(conv):

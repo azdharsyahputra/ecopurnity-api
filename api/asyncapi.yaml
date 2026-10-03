@@ -210,8 +210,9 @@ operations:
       Idempotent by (`conversationId`, sender, `clientMsgId`): a retry returns the original message's id and seq and
       broadcasts nothing new. The sender does not need to be subscribed to the conversation. On success every
       subscriber of `conversation:{id}` (the sender's other tabs included) receives `message.created` carrying the
-      `clientMsgId`, other platform participants get a `transaction_update` notification, and a fictional participant
-      answers once after about 5 s (a later `message.created`).
+      `clientMsgId`, other platform participants get a `transaction_update` notification, and (only with the demo flag
+      `SIMULATE_COUNTERPARTIES=true`) a fictional participant answers once after about 5 s (a later `message.created`).
+      `clientMsgId` is required on the socket.
     messages:
       - $ref: '#/channels/control/messages/chatSend'
     reply:
@@ -535,7 +536,6 @@ components:
         - subscription_limit     # more than 100 channels on one connection
         - resync_required        # replay impossible; refetch over REST and subscribe with the new seq
         - internal               # server failure; retry later
-        - not_implemented        # chat.send, until the conversations REST exists
     AckFrame:
       type: object
       required: [type, ref, ok]

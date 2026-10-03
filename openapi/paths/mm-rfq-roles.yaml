@@ -388,10 +388,10 @@
     description: >-
       `side=buyer` (default) returns RFQs the caller created. Any other `side` value is treated as supplier: RFQs the
       caller is relevant to (invited, already quoted, or holding supply listings in the RFQ's category, and not the buyer)
-      that are open or already carry a quote of theirs. Not paginated. Each item carries `side`.
+      that are open or already carry a quote of theirs. Not paginated. Each item carries `side`. Suppliers only see
+      their own quotes, never competitors' (here, in the detail and in every RFQ returned to them).
     tags: [RFQ]
     x-access: session
-    x-note: The supplier list returns each RFQ with all quotes (competitors' included); only the detail endpoint filters quotes to the caller's own.
     parameters:
       - { name: side, in: query, schema: { type: string, enum: [buyer, supplier], default: buyer } }
     responses:
@@ -405,12 +405,15 @@
     description: >-
       Creates the RFQ (`open`, code `RFQ-XXXX`) and a linked conversation with the buyer and invitees. Invitees:
       `inviteUserIds` (existing users other than the caller) and `inviteNames` (fictional business suppliers).
-      Fictional suppliers (invited ones first, then the category's defaults, max 3) auto-quote after about 6, 11 and 16 seconds, each
-      notifying the buyer. Every platform user relevant to the RFQ gets an `auction_invitation` notification. Writes an audit entry.
+      Every platform user relevant to the RFQ (invited, or holding supply listings in its category) gets an
+      `auction_invitation` notification. Writes an audit entry. `source.id` must be a trade of the caller (`repeat`,
+      `logistics`), a listing (`listing`) or a match (`match`).
+      Demo simulation, only when the server runs with `SIMULATE_COUNTERPARTIES=true` (off in production): fictional
+      suppliers (invited external names first, then the category's defaults, max 3) quote after about 6, 11 and 16
+      seconds, each notifying the buyer. Real external parties never answer automatically.
     tags: [RFQ]
     x-access: session
     x-audit: true
-    x-note: '`categoryId` is not validated; an unknown category makes the mock throw (500) when picking auto-quoting suppliers. `source`, `location`, `spec` are not validated.'
     requestBody:
       required: true
       content: { application/json: { schema: { $ref: '#/components/schemas/NewRfq' } } }
@@ -419,7 +422,7 @@
         description: The created RFQ.
         content: { application/json: { schema: { $ref: '#/components/schemas/RfqView' } } }
       '401': { $ref: '#/components/responses/Unauthenticated' }
-      '422': { $ref: '#/components/responses/Validation', description: 'fields: item (required), quantity (value > 0), deadline (required).' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: item (required), quantity (value > 0), deadline (required), source (unknown or not the caller''s trade).' }
 
 /me/rfqs/{id}:
   parameters:
@@ -445,10 +448,11 @@
     summary: Submit a quote on an RFQ
     description: >-
       Supplier side. The caller must be a relevant supplier (not the buyer). Adds the caller to the RFQ's
-      conversation and notifies the buyer. One active (`submitted` or `countered`) quote per supplier. Not audited.
+      conversation and notifies the buyer. One active (`submitted` or `countered`) quote per supplier. Checked against the
+      caller's KYC commitment limit (price × quantity). Not audited.
     tags: [RFQ]
     x-access: session
-    x-note: The 201 body is the RFQ with only the new quote in `quotes` (supplier view). `leadTimeDays`, `terms` and `note` are not validated.
+    x-note: The 201 body is the supplier view (the caller's own quotes, the new one included).
     requestBody:
       required: true
       content: { application/json: { schema: { $ref: '#/components/schemas/RfqQuoteInput' } } }
@@ -457,6 +461,7 @@
         description: The RFQ containing only the submitted quote.
         content: { application/json: { schema: { $ref: '#/components/schemas/RfqView' } } }
       '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'kyc_limit: price × quantity exceeds the caller''s verification limit.' }
       '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown RFQ, or the caller is not a relevant supplier (the buyer included).' }
       '409': { $ref: '#/components/responses/Conflict', description: 'closed: RFQ is not open; duplicate: the caller already has an active quote (revise it instead).' }
       '422': { $ref: '#/components/responses/Validation', description: 'fields: priceIdr (> 0), quantity (> 0); the first failing field is reported alone.' }
@@ -476,12 +481,14 @@
       `accept` / `accept_counter` create the trade at the quoted price (the counter price for `accept_counter`) with the quote's
       terms and quantity, mark the quote accepted, decline the other open quotes, set the RFQ `awarded` with its
       `transactionId`, write an audit entry and notify the other party (supplier: `winning_bid`). They are checked against the
-      acting user's KYC commitment limit. The other actions update the quote history and notify the other party. A
-      fictional supplier answers a counter after about 6 seconds: accepts when the counter is at least 95% of its price, else revises to the midpoint.
+      buyer's KYC commitment limit, as is `counter` (the counter price is a commitment the supplier can accept alone);
+      `revise` against the supplier's, as a new quote is. The other actions update the quote history and notify the other party. Demo simulation, only with
+      `SIMULATE_COUNTERPARTIES=true`: a fictional (external) supplier answers a counter after about 6 seconds, accepting when
+      the counter is at least 95% of its price, else revising to the midpoint.
     tags: [RFQ]
     x-access: session
     x-audit: true
-    x-note: The transition (409) is checked before the price (422). Audit is only written when the quote is accepted. The response is the full RFQ for the caller's side, including other suppliers' quotes when a supplier acts.
+    x-note: The transition (409) is checked before the price (422). Audit is only written when the quote is accepted. The response is the RFQ for the caller's side (a supplier sees only their own quotes).
     requestBody:
       required: true
       content: { application/json: { schema: { $ref: '#/components/schemas/RfqQuoteActionInput' } } }
@@ -490,7 +497,7 @@
         description: The updated RFQ.
         content: { application/json: { schema: { $ref: '#/components/schemas/RfqView' } } }
       '401': { $ref: '#/components/responses/Unauthenticated' }
-      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: the caller is neither the RFQ buyer nor the quote supplier; kyc_limit: the deal value exceeds the acting user''s verification limit (accept, accept_counter).' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: the caller is neither the RFQ buyer nor the quote supplier; kyc_limit: the deal value exceeds the buyer''s verification limit (accept, counter, accept_counter) or the supplier''s (revise).' }
       '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown RFQ or quote.' }
       '409': { $ref: '#/components/responses/Conflict', description: 'invalid_transition: action not available for this side, quote status or RFQ status.' }
       '422': { $ref: '#/components/responses/Validation', description: 'fields: priceIdr (> 0, required for counter and revise).' }
@@ -518,7 +525,10 @@
   get:
     operationId: listConversations
     summary: List my conversations
-    description: Conversations the caller participates in, newest `updatedAt` first. Not paginated.
+    description: >-
+      Conversations the caller participates in, newest `updatedAt` first. Not paginated. Each carries only its latest
+      message in `messages` (the inbox preview); `GET /me/conversations/{id}` has them all. `unread` counts messages
+      after the caller's read position.
     tags: [RFQ]
     x-access: session
     responses:
@@ -532,7 +542,10 @@
     description: >-
       Creates a conversation between the caller and `with`, optionally linked to an RFQ, match or transaction, with an optional
       opening message. When the caller already has a conversation with the same `link` (type and id) that one is returned
-      with 200 instead. A fictional counterpart (no `userId`) answers the latest human message once, after about 5 seconds.
+      with 200 instead. `with.userId` must be an existing user; without it the counterpart is an external party (matched
+      by name). `link.href` is ignored and rebuilt by the API. The opening `text` is posted like
+      `POST /me/conversations/{id}/messages` (frame, notification). Demo simulation, only with `SIMULATE_COUNTERPARTIES=true`:
+      an external counterpart answers the latest human message once, after about 5 seconds.
     tags: [RFQ]
     x-access: session
     x-note: Reuse is only detected when `link` is given. A reused conversation is returned with 200, a new one with 201. The 422 has no `fields`.
@@ -547,7 +560,7 @@
         description: Conversation created.
         content: { application/json: { schema: { $ref: '#/components/schemas/Conversation' } } }
       '401': { $ref: '#/components/responses/Unauthenticated' }
-      '422': { $ref: '#/components/responses/Validation', description: 'validation: subject is blank or `with.name` is missing (no `fields` in the body).' }
+      '422': { $ref: '#/components/responses/Validation', description: 'validation: subject is blank, `with.name` is missing, `with.userId` is unknown or `link.id` is not a uuid (no `fields` in the body).' }
 
 /me/conversations/{id}:
   parameters:
@@ -555,6 +568,9 @@
   get:
     operationId: getConversation
     summary: Get a conversation with its messages
+    description: >-
+      All messages in `seq` order. Reading marks the conversation read up to its head for the caller (`lastReadSeq` =
+      `seq`, `unread` 0) and broadcasts a `read` frame on `conversation:{id}` when that advanced, like `chat.read`.
     tags: [RFQ]
     x-access: session
     responses:
@@ -571,8 +587,12 @@
     operationId: sendMessage
     summary: Post a message to a conversation
     description: >-
-      Appends the (trimmed) message as the caller and bumps `updatedAt`. Every other participant that is a platform
-      user gets a `transaction_update` notification; a fictional participant replies once after about 5 seconds.
+      Appends the (trimmed) message as the caller and bumps `updatedAt`; the message takes the next `seq` and is
+      broadcast as `message.created` on `conversation:{id}`. The caller's read position moves to it. Every other
+      participant that is a platform user gets a `transaction_update` notification. Idempotent by (caller,
+      `clientMsgId`): a retry returns the conversation with the stored message and changes, broadcasts and notifies
+      nothing. Same code path as the WebSocket `chat.send`. Demo simulation, only with `SIMULATE_COUNTERPARTIES=true`:
+      an external participant replies once after about 5 seconds.
     tags: [RFQ]
     x-access: session
     requestBody:
@@ -584,7 +604,7 @@
         content: { application/json: { schema: { $ref: '#/components/schemas/Conversation' } } }
       '401': { $ref: '#/components/responses/Unauthenticated' }
       '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown conversation, or the caller is not a participant.' }
-      '422': { $ref: '#/components/responses/Validation', description: 'fields: text (required, non-blank).' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: text (required, non-blank, at most 4000 characters); clientMsgId (already used by the caller in another conversation).' }
 
 # ───────────────────────── Roles ─────────────────────────
 /me/mm-application:
@@ -652,7 +672,7 @@
     tags: [Roles]
     x-access: capability:admin
     x-audit: true
-    x-note: The reason error code is `reason_required` (not `validation`), same shape as other admin punitive actions. Any `action` other than `approve` is treated as a rejection, but without the reason check unless it is exactly `reject`.
+    x-note: The reason error code is `reason_required` (not `validation`), same shape as other admin punitive actions. The mock treats any `action` other than `approve` as a rejection; the API answers 422 `validation` for unknown values.
     requestBody:
       required: true
       content: { application/json: { schema: { $ref: '#/components/schemas/RolesMmDecisionInput' } } }
@@ -692,7 +712,7 @@
     tags: [Roles]
     x-access: session
     x-audit: true
-    x-note: Any `action` other than `accept` behaves as decline (no 422 for unknown values). The role is stored in the OrgRole slot even when it is a custom org role id.
+    x-note: The mock treats any `action` other than `accept` as decline; the API answers 422 `validation` for unknown values. The role is stored in the OrgRole slot even when it is a custom org role id.
     requestBody:
       required: true
       content: { application/json: { schema: { $ref: '#/components/schemas/RolesInvitationAnswerInput' } } }
