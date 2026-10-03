@@ -27,7 +27,7 @@ const txSelect = `
 	       (SELECT accepted_at FROM trade_acceptances WHERE trade_id = t.id AND side = 'supplier'),
 	       i.number, i.issued_at, i.due_at, coalesce(i.status, 'unpaid'), i.paid_at,
 	       q.outcome, q.accepted_quantity::float8, q.note, q.at,
-	       sl.settlement_id::text, t.group_label, t.group_share::float8, t.delivery_address
+	       coalesce((SELECT cp.id::text FROM collective_pools cp WHERE cp.settlement_id = sl.settlement_id), sl.settlement_id::text), t.group_label, t.group_share::float8, t.delivery_address
 	FROM trades t
 	JOIN parties cp ON cp.id = CASE WHEN t.buyer_party_id = $1 THEN t.supplier_party_id ELSE t.buyer_party_id END
 	LEFT JOIN invoices i ON i.trade_id = t.id

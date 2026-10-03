@@ -73,6 +73,20 @@ func (s *Server) startOne(ctx context.Context) (bool, error) {
 		if _, err := tx.Exec(ctx, `UPDATE auctions SET status = 'live' WHERE id = $1`, id); err != nil {
 			return err
 		}
+		// Market rounds were announced on the public feed when the maker opened them (mmAudit "Round n dibuka").
+		var title string
+		var market *string
+		var round *int32
+		var value int64
+		if err := tx.QueryRow(ctx, `SELECT title, market_id::text, round_no, round(quantity * opening_price_idr)::bigint FROM auctions WHERE id = $1`, id).
+			Scan(&title, &market, &round, &value); err != nil {
+			return err
+		}
+		if round == nil {
+			if err := emitActivity(ctx, tx, "auction_started", "Auction dimulai: "+title, &value, market); err != nil {
+				return err
+			}
+		}
 		return emitAuctionState(ctx, tx, id)
 	})
 	return did, err
@@ -131,6 +145,9 @@ func (s *Server) closeOne(ctx context.Context) (bool, error) {
 			return err
 		}
 		if err := emitAuction(ctx, tx, id, "auction.closed", map[string]any{"kind": "closed", "status": "closed"}); err != nil {
+			return err
+		}
+		if err := emitActivity(ctx, tx, "auction_closed", "Auction ditutup: "+r.Title, nil, r.MarketID); err != nil {
 			return err
 		}
 		owned := r.OwnerUserID != nil || r.OwnerOrgID != nil

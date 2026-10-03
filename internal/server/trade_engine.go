@@ -50,6 +50,7 @@ type tradeActor struct {
 	Side   string  // buyer | supplier
 	UserID *string // nil for the external-party bot
 	Name   string  // shown in audit, evidence, reviews, notifications
+	OrgID  *string // the org acting through a member (audit org_id: the org's activity on the trade)
 }
 
 type tradeRow struct {
@@ -373,7 +374,7 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 		if _, err := tx.Exec(ctx, `INSERT INTO trade_events (trade_id, status, note, actor_user_id) VALUES ($1, $2, $3, $4)`, t.ID, after, note, actor.UserID); err != nil {
 			return err
 		}
-		if err := emitTradeFact(ctx, tx, t.ID, "trade.status"); err != nil {
+		if err := tradeStatusChanged(ctx, tx, t.ID, after); err != nil {
 			return err
 		}
 	}
@@ -382,7 +383,7 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 		reason = &inputNote
 	}
 	if err := writeAudit(ctx, tx, audit{ActorUserID: actor.UserID, ActorLabel: actor.Name, Action: note, EntityType: "transaction",
-		EntityID: t.ID, EntityLabel: t.label(), MarketID: t.MarketID, Reason: reason, Changes: changes}); err != nil {
+		EntityID: t.ID, EntityLabel: t.label(), OrgID: actor.OrgID, MarketID: t.MarketID, Reason: reason, Changes: changes}); err != nil {
 		return err
 	}
 	typ := "transaction_update"
@@ -437,10 +438,15 @@ func fanoutTrade(ctx context.Context, q dbtx, tradeID, notifySide string, n noti
 	return nil
 }
 
-// orgTradeFanout notifies (when n has a title) and sends `trade.updated` to every active member of an org party.
-// ponytail: every active member; narrow to members with the transactions permission once the org area exposes it.
+// orgTradeFanout notifies (when n has a title; linked to the org's transaction page) and sends `trade.updated` to every
+// active member of an org whose role may see transactions (owner, or transactions.view).
 func orgTradeFanout(ctx context.Context, q dbtx, orgID, tradeID string, n notification) error {
-	rows, err := q.Query(ctx, `SELECT user_id::text FROM org_members WHERE org_id = $1 AND status = 'active' AND user_id IS NOT NULL`, orgID)
+	if n.Title != "" {
+		n.Href = "/org/" + orgID + "/transactions/" + tradeID
+	}
+	rows, err := q.Query(ctx, `
+		SELECT m.user_id::text FROM org_members m JOIN org_roles r ON r.org_id = m.org_id AND r.key = m.role
+		WHERE m.org_id = $1 AND m.status = 'active' AND m.user_id IS NOT NULL AND (m.role = 'owner' OR 'transactions.view' = ANY(r.permissions))`, orgID)
 	if err != nil {
 		return err
 	}
@@ -549,10 +555,27 @@ func (s *Server) settleDisputeResolution(ctx context.Context, tx pgx.Tx, d dispu
 		t.ID, status, "Putusan dispute: "+d.Note, by); err != nil {
 		return err
 	}
-	if err := emitTradeFact(ctx, tx, t.ID, "trade.status"); err != nil {
+	if err := tradeStatusChanged(ctx, tx, t.ID, status); err != nil {
 		return err
 	}
 	return emitTradeUpdated(ctx, tx, t.ID)
+}
+
+// tradeStatusChanged publishes a new trade status: the trade.status fact and, on completion, the public activity.
+func tradeStatusChanged(ctx context.Context, tx pgx.Tx, tradeID, status string) error {
+	if err := emitTradeFact(ctx, tx, tradeID, "trade.status"); err != nil {
+		return err
+	}
+	if status != "completed" {
+		return nil
+	}
+	var title string
+	var total int64
+	var market *string
+	if err := tx.QueryRow(ctx, `SELECT title, total_idr, market_id::text FROM trades WHERE id = $1`, tradeID).Scan(&title, &total, &market); err != nil {
+		return err
+	}
+	return emitActivity(ctx, tx, "transaction_completed", "Transaksi selesai: "+title, &total, market)
 }
 
 // ── Money movements ──────────────────────────────────────────────
