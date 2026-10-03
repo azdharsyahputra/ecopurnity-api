@@ -351,5 +351,5 @@ func placeContractOrder(ctx context.Context, tx pgx.Tx, contractID string, actor
 			return err
 		}
 	}
-	return emitTradeUpdated(ctx, tx, t.ID)
+	return nil
 }

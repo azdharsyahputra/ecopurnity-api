@@ -28,9 +28,9 @@ import (
 //     is internal; the caller rolls back.
 //   - On success, in the same transaction: the trade, its child rows (acceptances, invoice, shipments, documents, QC,
 //     dispute + evidence, reviews), the ledger journals below, a trade_events row and a `trade.status` analytics fact
-//     when the status changed, an audit entry (reason = note), a notification to the other side's user, and a
-//     `trade.updated` frame on `user:{id}` for each side that is a user. Org parties get no notification/frame here
-//     (the org workspace adds its own fan-out).
+//     when the status changed, an audit entry (reason = note), a notification to the users behind the other side, and a
+//     `trade.updated` frame on `user:{id}` for the users behind both sides (fanoutTrade: a user party's user, an org
+//     party's active members).
 //
 // Ledger postings (finance.go explains signs; B = buyer pays, S = subtotal, fees on the current subtotal):
 //   - pay, escrow terms:  bank_clearing +B / escrow(buyer) −B                        [escrow]  "Bayar TRX · title"
@@ -43,8 +43,8 @@ import (
 //     (no maker party → the maker fee goes to platform_revenue)
 //   - pay, net terms (after acceptance): bank_clearing +B / escrow(buyer) −B [payment], then release R = B as above.
 //   - cancel never moves money: it is only open before an escrow payment (agreement/invoiced).
-//   - QC rejected / dispute: the escrow stays held; the admin dispute decision releases or refunds (releaseEscrow,
-//     refundEscrow are the building blocks).
+//   - QC rejected / dispute: the escrow stays held until the admin decision (settleDisputeResolution): refund and/or
+//     release with the same journals.
 
 type tradeActor struct {
 	Side   string  // buyer | supplier
@@ -212,10 +212,10 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 		if drop == "" {
 			return fieldErr("dropPoint", "Isi titik tujuan")
 		}
-		carrier := nonEmpty(strings.TrimSpace(sh.Carrier), carrierDflt)
-		at := sh.ScheduledAt
-		if at.IsZero() {
-			at = time.Now()
+		carrier := nonEmpty(strings.TrimSpace(deref(sh.Carrier)), carrierDflt)
+		at := time.Now()
+		if sh.ScheduledAt != nil {
+			at = *sh.ScheduledAt
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO shipments (trade_id, quantity, drop_point, carrier, scheduled_at, status) VALUES ($1, $2, $3, $4, $5, 'in_transit')`,
 			t.ID, sh.Quantity, drop, carrier, at); err != nil {
@@ -385,52 +385,89 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 		EntityID: t.ID, EntityLabel: t.label(), MarketID: t.MarketID, Reason: reason, Changes: changes}); err != nil {
 		return err
 	}
-	if peer := t.User[otherSide(side)]; peer != nil {
-		typ := "transaction_update"
-		switch action {
-		case "pay":
-			typ = "payment"
-		case "ship", "upload_proof":
-			typ = "delivery"
-		}
-		if err := notify(ctx, tx, *peer, notification{Type: typ, Title: t.Code + ": " + note, Body: actor.Name + " · " + t.Title,
-			Href: "/app/transactions/" + t.ID}); err != nil {
-			return err
-		}
+	typ := "transaction_update"
+	switch action {
+	case "pay":
+		typ = "payment"
+	case "ship", "upload_proof":
+		typ = "delivery"
 	}
-	return emitTradeUpdated(ctx, tx, t.ID)
+	return fanoutTrade(ctx, tx, t.ID, otherSide(side), notification{Type: typ, Title: t.Code + ": " + note, Body: actor.Name + " · " + t.Title,
+		Href: "/app/transactions/" + t.ID})
 }
 
-// emitTradeUpdated sends `trade.updated` to every side of the trade that is a user.
+// emitTradeUpdated sends `trade.updated` to everyone behind both parties of the trade (no notification).
 func emitTradeUpdated(ctx context.Context, q dbtx, tradeID string) error {
+	return fanoutTrade(ctx, q, tradeID, "", notification{})
+}
+
+// fanoutTrade sends `trade.updated` to the users behind both parties (a user party's user, an org party's active
+// members) and notification n to the ones behind side `notifySide` ("" = nobody).
+func fanoutTrade(ctx context.Context, q dbtx, tradeID, notifySide string, n notification) error {
+	type party struct{ side, user, org string }
 	rows, err := q.Query(ctx, `
-		SELECT p.user_id::text, t.status, t.updated_at FROM trades t JOIN parties p ON p.id IN (t.buyer_party_id, t.supplier_party_id)
-		WHERE t.id = $1 AND p.user_id IS NOT NULL`, tradeID)
+		SELECT 'buyer', coalesce(p.user_id::text, ''), coalesce(p.org_id::text, '') FROM trades t JOIN parties p ON p.id = t.buyer_party_id WHERE t.id = $1
+		UNION ALL
+		SELECT 'supplier', coalesce(p.user_id::text, ''), coalesce(p.org_id::text, '') FROM trades t JOIN parties p ON p.id = t.supplier_party_id WHERE t.id = $1`, tradeID)
 	if err != nil {
 		return err
 	}
-	type target struct {
-		user, status string
-		at           time.Time
-	}
-	var ts []target
-	for rows.Next() {
-		var x target
-		if err := rows.Scan(&x.user, &x.status, &x.at); err != nil {
-			return err
-		}
-		ts = append(ts, x)
-	}
-	if err := rows.Err(); err != nil {
+	ps, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (party, error) {
+		var p party
+		return p, r.Scan(&p.side, &p.user, &p.org)
+	})
+	if err != nil {
 		return err
 	}
-	for _, x := range ts {
-		if err := emitFrame(ctx, q, "user:"+x.user, "trade.updated", nil,
-			map[string]any{"transactionId": tradeID, "status": x.status, "updatedAt": x.at.UTC()}); err != nil {
+	for _, p := range ps {
+		m := notification{}
+		if p.side == notifySide {
+			m = n
+		}
+		switch {
+		case p.user != "":
+			err = notifyTradeUser(ctx, q, p.user, tradeID, m)
+		case p.org != "":
+			err = orgTradeFanout(ctx, q, p.org, tradeID, m)
+		}
+		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// orgTradeFanout notifies (when n has a title) and sends `trade.updated` to every active member of an org party.
+// ponytail: every active member; narrow to members with the transactions permission once the org area exposes it.
+func orgTradeFanout(ctx context.Context, q dbtx, orgID, tradeID string, n notification) error {
+	rows, err := q.Query(ctx, `SELECT user_id::text FROM org_members WHERE org_id = $1 AND status = 'active' AND user_id IS NOT NULL`, orgID)
+	if err != nil {
+		return err
+	}
+	users, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for _, u := range users {
+		if err := notifyTradeUser(ctx, q, u, tradeID, n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func notifyTradeUser(ctx context.Context, q dbtx, userID, tradeID string, n notification) error {
+	if n.Title != "" {
+		if err := notify(ctx, q, userID, n); err != nil {
+			return err
+		}
+	}
+	var status string
+	var at time.Time
+	if err := q.QueryRow(ctx, `SELECT status, updated_at FROM trades WHERE id = $1`, tradeID).Scan(&status, &at); err != nil {
+		return err
+	}
+	return emitFrame(ctx, q, "user:"+userID, "trade.updated", nil, map[string]any{"transactionId": tradeID, "status": status, "updatedAt": at.UTC()})
 }
 
 // emitTradeFact publishes the trade snapshot (migrations/clickhouse/README.md, topic trade.status).
@@ -456,6 +493,66 @@ func emitTradeFact(ctx context.Context, q dbtx, tradeID, topic string) error {
 		return err
 	}
 	return emit(ctx, q, topic, tradeID, payload)
+}
+
+// settleDisputeResolution applies an admin dispute decision to its trade, in the admin's transaction after the dispute
+// row is resolved (admin_disputes.go). Escrowed money: refund d.RefundIdr plus its PPN to the buyer's wallet and release
+// the rest of the escrow to the supplier for a subtotal of d.ReleaseIdr (fees on that subtotal); the invoice becomes
+// d.Payment. Net terms with nothing paid yet: a refund cancels (nothing to move, invoice stays unpaid), a release sends
+// the trade to `accepted` with a fresh payment due date (the buyer still pays through `pay`), and a partial amount is
+// refused (422 refundIdr: there is no money to split). The trade gets the status, a "Putusan dispute: …" event, a
+// trade.status fact and trade.updated frames; the admin flow notifies the parties and writes the audit entry.
+func (s *Server) settleDisputeResolution(ctx context.Context, tx pgx.Tx, d disputeSettlement) error {
+	t, err := lockTrade(ctx, tx, d.TradeID)
+	if err != nil {
+		return err
+	}
+	held, err := escrowHeld(ctx, tx, t.ID)
+	if err != nil {
+		return err
+	}
+	by := &d.ActorUserID
+	status := d.TradeStatus
+	switch {
+	case held > 0:
+		var refund int64
+		switch d.Kind {
+		case "refund":
+			refund = held
+		case "partial":
+			refund = min(held, breakdown(d.RefundIdr, 0, 0).BuyerPays)
+		}
+		if refund > 0 {
+			if err := refundEscrow(ctx, tx, t, refund, by); err != nil {
+				return err
+			}
+		}
+		if err := releaseEscrow(ctx, tx, t, held-refund, d.ReleaseIdr, by); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE invoices SET status = $2, paid_at = coalesce(paid_at, now()) WHERE trade_id = $1`, t.ID, d.Payment); err != nil {
+			return err
+		}
+	case d.Kind == "partial":
+		msg := "Belum ada dana di escrow untuk dibagi; pilih refund penuh atau lepas dana"
+		return &Error{Status: http.StatusUnprocessableEntity, Code: "validation", Message: msg, Fields: map[string]string{"refundIdr": msg}}
+	case d.Kind == "release" && t.PaymentStatus == "unpaid":
+		status = "accepted"
+		if _, err := tx.Exec(ctx, `UPDATE trades SET due_at = now() + $2::interval WHERE id = $1`, t.ID, fmt.Sprintf("%d days", termsDays[t.Terms])); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE trades SET status = $2 WHERE id = $1`, t.ID, status); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO trade_events (trade_id, status, note, actor_user_id) VALUES ($1, $2, $3, $4)`,
+		t.ID, status, "Putusan dispute: "+d.Note, by); err != nil {
+		return err
+	}
+	if err := emitTradeFact(ctx, tx, t.ID, "trade.status"); err != nil {
+		return err
+	}
+	return emitTradeUpdated(ctx, tx, t.ID)
 }
 
 // ── Money movements ──────────────────────────────────────────────
@@ -530,12 +627,9 @@ func openDispute(ctx context.Context, tx pgx.Tx, t tradeRow, actor tradeActor, r
 		t.ID, reason, actor.Side, actor.UserID, t.MarketID).Scan(&id); err != nil {
 		return err
 	}
-	if err := addEvidence(ctx, tx, id, actor, evidence, file); err != nil {
-		return err
-	}
-	_, err := tx.Exec(ctx, `INSERT INTO dispute_events (dispute_id, actor_user_id, actor_label, label) VALUES ($1, $2, $3, 'Dispute dibuka')`,
-		id, actor.UserID, actor.Name)
-	return err
+	// The opening statement is the first evidence row; the "Dispute dibuka" step is derived from the dispute row
+	// (admin case timeline), so no dispute_events row here.
+	return addEvidence(ctx, tx, id, actor, evidence, file)
 }
 
 func addEvidence(ctx context.Context, tx pgx.Tx, disputeID string, actor tradeActor, text, file string) error {

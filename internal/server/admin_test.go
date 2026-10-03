@@ -351,8 +351,8 @@ func TestAdminMarketsAndAuctions(t *testing.T) {
 func TestAdminDisputes(t *testing.T) {
 	e := newEnv(t)
 	a, _ := e.admin("Sari Admin")
-	_, buyerID := e.bidder("Budi Pembeli")
-	_, supplierID := e.bidder("Sinta Supplier")
+	buyer, buyerID := e.bidder("Budi Pembeli")
+	supplier, supplierID := e.bidder("Sinta Supplier")
 	var bp, sp string
 	var err error
 	if bp, err = userParty(t0(), e.db.Primary(), buyerID); err != nil {
@@ -366,9 +366,13 @@ func TestAdminDisputes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.exec(`UPDATE trades SET status = 'disputed' WHERE id = $1`, tr.ID)
-	dsp := e.scalar(`INSERT INTO disputes (trade_id, reason, opened_by_side, opened_by) VALUES ($1, 'Barang tidak sesuai', 'buyer', $2) RETURNING id::text`, tr.ID, buyerID).(string)
-	e.exec(`INSERT INTO dispute_evidence (dispute_id, side, author_user_id, author_name, text) VALUES ($1, 'buyer', $2, 'Budi Pembeli', 'Barang tidak sesuai')`, dsp, buyerID)
+	// Through the real flow: paid into escrow, then the buyer opens the dispute (its reason is the first evidence).
+	e.mustAct(buyer, tr.ID, map[string]any{"action": "accept_agreement"}, "agreement")
+	e.mustAct(supplier, tr.ID, map[string]any{"action": "accept_agreement"}, "agreement")
+	e.mustAct(supplier, tr.ID, map[string]any{"action": "issue_invoice"}, "invoiced")
+	e.mustAct(buyer, tr.ID, map[string]any{"action": "pay"}, "paid")
+	e.mustAct(buyer, tr.ID, map[string]any{"action": "dispute", "note": "Barang tidak sesuai"}, "disputed")
+	dsp := e.scalar(`SELECT id::text FROM disputes WHERE trade_id = $1`, tr.ID).(string)
 
 	if s := find(e.list(a, "/admin/disputes"), "id", dsp); s == nil || s["totalIdr"] != float64(10_000_000) || s["openedBy"] != "Budi Pembeli" || s["title"] != "Beras 1 ton" {
 		t.Fatalf("summary: %v", s)
@@ -409,7 +413,7 @@ func TestAdminDisputes(t *testing.T) {
 		t.Fatalf("timeline: %v", tl)
 	}
 	tx := r.Body["transaction"].(map[string]any)
-	if tx["role"] != "buyer" || tx["payment"].(map[string]any)["status"] != "unpaid" || len(tx["dispute"].(map[string]any)["evidence"].([]any)) != 1 {
+	if tx["role"] != "buyer" || tx["payment"].(map[string]any)["status"] != "released" || len(tx["dispute"].(map[string]any)["evidence"].([]any)) != 1 {
 		t.Fatalf("transaction: %v", tx)
 	}
 	if !e.notified(buyerID, code+" diputuskan") || !e.notified(supplierID, code+" diputuskan") {

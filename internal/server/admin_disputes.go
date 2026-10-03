@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -85,16 +84,7 @@ type disputeSettlement struct {
 	ActorUserID           string
 }
 
-// settleDisputeResolution applies a resolution to the trade, in the caller's transaction, after the dispute row is
-// resolved.
-//
-// TODO(transactions): money hook owned by the transactions engineer. It must, in tx: move the trade to d.TradeStatus
-// (trade_events row; the `completed` step noted "Putusan dispute: "+d.Note) and its invoice to d.Payment; post the
-// escrow ledger journal (refund d.RefundIdr to the buyer, release d.ReleaseIdr to the supplier, with PPN/fees per the
-// invoice breakdown); emit trade.status / trade.updated. Until then it is a no-op and only the case is resolved.
-func (s *Server) settleDisputeResolution(ctx context.Context, tx pgx.Tx, d disputeSettlement) error {
-	return nil
-}
+// settleDisputeResolution (the money side of a resolution) lives with the trade engine: trade_engine.go.
 
 // ── Read model ───────────────────────────────────────────────────
 
@@ -193,64 +183,14 @@ func disputeCase(ctx context.Context, q dbtx, r disputeRow) (api.DisputeCase, er
 			return c, err
 		}
 	}
-	txs, err := loadTransactions(ctx, q, r.BuyerParty, `t.id = $2`, r.TradeID)
-	if err != nil || len(txs) == 0 {
-		return c, err
-	}
-	t := &c.Transaction
-	if err := widen(txs[0], t); err != nil {
-		return c, err
-	}
-	t.Delivery.Address = r.Address
-	t.Payment.Status = api.TransactionDetailPaymentStatusUnpaid
-	err = q.QueryRow(ctx, `SELECT status, paid_at FROM invoices WHERE trade_id = $1`, r.TradeID).Scan(&t.Payment.Status, &t.Payment.PaidAt)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return c, err
-	}
-	rows, err := q.Query(ctx, `SELECT status, at, note FROM trade_events WHERE trade_id = $1 ORDER BY at, id`, r.TradeID)
-	if err != nil {
-		return c, err
-	}
-	type timelineStep = struct {
-		At     *time.Time            `json:"at,omitempty"`
-		Note   *string               `json:"note,omitempty"`
-		Status api.TransactionStatus `json:"status"`
-	}
-	t.Timeline = []timelineStep{}
-	for rows.Next() {
-		var e timelineStep
-		if err := rows.Scan(&e.Status, &e.At, &e.Note); err != nil {
-			return c, err
-		}
-		t.Timeline = append(t.Timeline, e)
-	}
-	if err := rows.Err(); err != nil {
-		return c, err
-	}
-	rows, err = q.Query(ctx, `SELECT id::text, kind, name, created_at FROM trade_documents WHERE trade_id = $1 AND kind <> 'other' ORDER BY created_at`, r.TradeID)
-	if err != nil {
-		return c, err
-	}
-	type document = struct {
-		At   time.Time                          `json:"at"`
-		Id   string                             `json:"id"`
-		Kind api.TransactionDetailDocumentsKind `json:"kind"`
-		Name string                             `json:"name"`
-	}
-	t.Documents = []document{}
-	for rows.Next() {
-		var d document
-		if err := rows.Scan(&d.Id, &d.Kind, &d.Name, &d.At); err != nil {
-			return c, err
-		}
-		t.Documents = append(t.Documents, d)
-	}
-	if err := rows.Err(); err != nil {
+	// The trade from the buyer's side, with the parties' evidence of its latest dispute (transactions read model).
+	var err error
+	if c.Transaction, err = loadTransaction(ctx, q, r.BuyerParty, r.TradeID); err != nil {
 		return c, err
 	}
 
 	c.Evidence = []api.Evidence{}
-	rows, err = q.Query(ctx, `SELECT id::text, side, author_name, text, file_name, created_at FROM dispute_evidence WHERE dispute_id = $1 ORDER BY created_at`, c.Id)
+	rows, err := q.Query(ctx, `SELECT id::text, side, author_name, text, file_name, created_at FROM dispute_evidence WHERE dispute_id = $1 ORDER BY created_at`, c.Id)
 	if err != nil {
 		return c, err
 	}
@@ -264,27 +204,6 @@ func disputeCase(ctx context.Context, q dbtx, r disputeRow) (api.DisputeCase, er
 	if err := rows.Err(); err != nil {
 		return c, err
 	}
-	type txEvidence = struct {
-		At   time.Time                              `json:"at"`
-		By   api.TransactionDetailDisputeEvidenceBy `json:"by"`
-		File *string                                `json:"file,omitempty"`
-		Id   string                                 `json:"id"`
-		Name string                                 `json:"name"`
-		Text string                                 `json:"text"`
-	}
-	partyEvidence := []txEvidence{}
-	for _, e := range c.Evidence {
-		if e.Side != api.EvidenceSideAdmin {
-			partyEvidence = append(partyEvidence, txEvidence{At: e.At, By: api.TransactionDetailDisputeEvidenceBy(e.Side), File: e.File, Id: e.Id, Name: e.By, Text: e.Text})
-		}
-	}
-	t.Dispute = &struct {
-		Evidence *[]txEvidence     `json:"evidence,omitempty"`
-		OpenedAt time.Time         `json:"openedAt"`
-		Reason   string            `json:"reason"`
-		Status   api.DisputeStatus `json:"status"`
-	}{Evidence: &partyEvidence, OpenedAt: c.OpenedAt, Reason: c.Reason, Status: c.Status}
-
 	// The opening is part of the case row; dispute_events holds the steps after it.
 	type step = struct {
 		At    time.Time `json:"at"`

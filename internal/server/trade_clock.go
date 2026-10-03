@@ -153,11 +153,11 @@ func (s *Server) TradeCounterpartyTick(ctx context.Context, delay time.Duration)
 				return false, err
 			}
 			in.Shipment = &struct {
-				Carrier     string    `json:"carrier"`
-				DropPoint   string    `json:"dropPoint"`
-				Quantity    float64   `json:"quantity"`
-				ScheduledAt time.Time `json:"scheduledAt"`
-			}{carrierDflt, address, st.UnscheduledQty, time.Now()}
+				Carrier     *string    `json:"carrier,omitempty"`
+				DropPoint   string     `json:"dropPoint"`
+				Quantity    float64    `json:"quantity"`
+				ScheduledAt *time.Time `json:"scheduledAt,omitempty"`
+			}{DropPoint: address, Quantity: st.UnscheduledQty}
 		case "upload_proof":
 			in.File = ptr("surat-jalan-ttd.jpg")
 		case "review":
