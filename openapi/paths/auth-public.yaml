@@ -673,7 +673,7 @@
   get:
     operationId: getMyKyc
     summary: Get my verification level and limits
-    description: Level 0 email (Rp 10 jt), 1 email + phone (Rp 100 jt), 2 KTP verified (Rp 2 M). The limit applies per commitment (bid, Dutch accept, buyer auction, accepted quote, direct order); exceeding it fails with `403 kyc_limit`.
+    description: Level 0 email verified (Rp 10 jt), 1 KTP verified by an admin (Rp 2 M). There is no phone verification (email only). The limit applies per commitment (bid, Dutch accept, buyer auction, accepted quote, direct order); exceeding it fails with `403 kyc_limit`.
     tags: [Verification]
     x-access: session
     responses:
@@ -684,64 +684,6 @@
             schema: { $ref: '#/components/schemas/Kyc' }
       '401': { $ref: '#/components/responses/Unauthenticated' }
 
-/me/kyc/phone:
-  post:
-    operationId: requestPhoneOtp
-    summary: Send a phone verification code
-    description: |
-      Sends a 6-digit code to the number (SMS/WhatsApp provider), valid for 5 minutes; a new request replaces the
-      pending one. At most one request per 60 seconds. Only an HMAC of the code is stored. The frontend mock does not
-      send anything and accepts only the fixed code `246810`.
-    tags: [Verification]
-    x-access: session
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/AuthPublicKycPhoneRequest' }
-    responses:
-      '200':
-        description: 'Status with `otpPending: true`.'
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/Kyc' }
-      '401': { $ref: '#/components/responses/Unauthenticated' }
-      '422': { $ref: '#/components/responses/Validation', description: 'fields: phone (Indonesian mobile number, 08... or 628..., 9 to 13 digits).' }
-      '429':
-        description: '`otp_cooldown`: a code was sent less than 60 seconds ago. `Retry-After` gives the seconds left.'
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/ApiError' }
-
-/me/kyc/phone/verify:
-  post:
-    operationId: verifyPhoneOtp
-    summary: Verify the phone code
-    description: |
-      Marks the phone verified (level 1) and stores the verified number. Checks run in this order: pending and
-      unexpired OTP, then the code. 5 wrong codes burn the OTP.
-    tags: [Verification]
-    x-access: session
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/AuthPublicKycPhoneVerifyRequest' }
-    responses:
-      '200':
-        description: Updated status.
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/Kyc' }
-      '401': { $ref: '#/components/responses/Unauthenticated' }
-      '409': { $ref: '#/components/responses/Conflict', description: 'otp_expired: no pending OTP or it expired; request a new one.' }
-      '422': { $ref: '#/components/responses/Validation', description: 'invalid_code with fields.code ("Kode salah. Sisa N percobaan."); the OTP stays pending.' }
-      '429':
-        description: '`too_many_attempts`: the 5th wrong code; the OTP is burned and a new one must be requested.'
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/ApiError' }
-
 /me/kyc/identity:
   post:
     operationId: submitKtpVerification
@@ -749,7 +691,7 @@
     description: |
       Puts the submission in the admin verification queue as a pending `personal` verification (documents `ktp` and
       `selfie`) and sets the identity status to `pending`. Admins approve or reject it from the verification queue,
-      which sets level 2. Writes an audit entry (`Ajukan verifikasi KTP`).
+      which sets level 1. Writes an audit entry (`Ajukan verifikasi KTP`).
 
       The photos are uploaded first with `POST /uploads` (purposes `kyc_ktp` and `kyc_selfie`) and referenced here by
       upload id. The server checks that each upload belongs to the caller, has that purpose, exists in storage with the

@@ -21,7 +21,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/db"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/secure"
-	"github.com/azdharsyahputra/ecopurnity-api/internal/sms"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/storage"
 )
 
@@ -43,7 +42,6 @@ type Server struct {
 	GoogleDevLogin bool           // mock-compatible POST /auth/google (dev only)
 	Keys           secure.Keys    // derived from APP_SECRET: OTP HMAC, NIK hash/cipher
 	Storage        *storage.Store // object storage (nil: uploads answer 503)
-	SMS            sms.Sender     // phone OTP delivery
 
 	SimulateCounterparties bool // a bot plays external trade/contract counterparties (trade_clock.go); demo only
 
@@ -104,7 +102,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	creds := newLimiter(6*time.Second, 10).limitPaths(
 		BasePath+"/auth/login", BasePath+"/auth/register", BasePath+"/auth/appeal",
 		BasePath+"/auth/forgot-password", BasePath+"/auth/reset-password", BasePath+"/auth/verify-email",
-		BasePath+"/auth/resend-verification", BasePath+"/me/kyc/phone/verify",
+		BasePath+"/auth/resend-verification",
 	)
 	// The WebSocket is not in the OpenAPI spec: mounted ahead of the validator (more specific pattern wins).
 	mux.Handle("GET "+BasePath+"/ws", s.withSession(http.HandlerFunc(s.serveWS)))

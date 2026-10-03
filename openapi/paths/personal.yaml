@@ -57,7 +57,7 @@
             schema: { $ref: '#/components/schemas/Identity' }
       '401': { $ref: '#/components/responses/Unauthenticated' }
       '422': { $ref: '#/components/responses/Validation', description: 'fields: name (required, non-blank profile.name).' }
-    x-note: The mock performs no other validation (phone/KTP verification state in the body is trusted; the BE should not accept `profile.verification` changes from this endpoint, those go through /me/kyc).
+    x-note: The mock performs no other validation (KTP verification state in the body is trusted; the BE should not accept `profile.verification` changes from this endpoint, those go through /me/kyc).
 
 /me/listings:
   get:

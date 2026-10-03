@@ -988,12 +988,9 @@ Identity:
           type: object
           required:
             - email
-            - phone
             - identity
           properties:
             email:
-              type: boolean
-            phone:
               type: boolean
             identity:
               type: string

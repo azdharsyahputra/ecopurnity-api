@@ -25,7 +25,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/db"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/secure"
-	"github.com/azdharsyahputra/ecopurnity-api/internal/sms"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/storage"
 	"github.com/azdharsyahputra/ecopurnity-api/migrations"
 )
@@ -106,7 +105,7 @@ func newEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{DB: cluster, Mail: mem, SMS: &sms.Memory{}, Keys: keys, Storage: testStorage(),
+	s := &Server{DB: cluster, Mail: mem, Keys: keys, Storage: testStorage(),
 		Log: slog.New(slog.NewTextHandler(testLog{t}, nil)), AppURL: "http://app.test", SessionTTL: 24 * time.Hour, GoogleDevLogin: true}
 	h, err := s.Handler()
 	if err != nil {
@@ -226,8 +225,6 @@ func testStorage() *storage.Store {
 	})
 	return store
 }
-
-func (e *testEnv) sms() *sms.Memory { return e.server.SMS.(*sms.Memory) }
 
 func t0() context.Context { return context.Background() }
 

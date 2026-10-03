@@ -169,7 +169,7 @@
       - audit entry ("Setujui verifikasi bisnis" / "Tolak verifikasi bisnis" / "Minta unggah ulang dokumen") with a status diff;
       - when `owner` matches a platform user name: a `transaction_update` notification "Verifikasi {business}: disetujui | ditolak |
         perlu unggah ulang" (body = decision note, href `/app/settings`);
-      - `personal`: approve marks the user's identity verified (KYC level 2) and stores the NIK hash (one verified account per
+      - `personal`: approve marks the user's identity verified (KYC level 1) and stores the NIK hash (one verified account per
         NIK: 409 `nik_in_use` when another account was verified with the same NIK); reject/reupload leaves the identity
         `none` so the user can submit again.
       - `business`: the organization's verification becomes `verified` (approve), `rejected` (reject) or `unverified`

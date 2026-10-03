@@ -58,7 +58,7 @@ make gen                        # regenerate internal/api (commit the result)
 Integration tests against a real Postgres (a throwaway database per `go test` run, see `testdb_test.go`):
 `e := newEnv(t)`, `c, email := e.signedIn("Nama")` (registered + session), `e.bidder("Nama")` (also email-verified),
 `e.call(c, method, path, body)` → `resp{Status, Body, Header}` with `.code() .field() .message()`, `e.exec / e.scalar`
-for direct SQL, `e.seedMarket(...)`, `e.frames(channel)` (queued realtime frames), `e.lastMail(to)`, `e.sms()`,
+for direct SQL, `e.seedMarket(...)`, `e.frames(channel)` (queued realtime frames), `e.lastMail(to)`,
 `e.server` (call jobs directly, e.g. `AuctionTick`). Tests share one database per run: make names/units unique per
 test (no global counts). Server logs show up in the failing test's output.
 

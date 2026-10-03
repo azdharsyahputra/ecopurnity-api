@@ -2,72 +2,55 @@ package server
 
 import (
 	"context"
-	"crypto/hmac"
-	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
-	"github.com/azdharsyahputra/ecopurnity-api/internal/auth"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/secure"
 )
 
-// KYC (spec tag Verification): commitment limits by verification level, phone OTP, KTP + selfie review.
+// KYC (spec tag Verification): commitment limits by verification level (email, then KTP + selfie review). Email only:
+// no phone/SMS verification (phone_verifications from migration 00002 is no longer read or written).
 
 // kycLevels mirrors the frontend's src/domain/kyc.ts KYC_LEVELS.
-var kycLevels = [3]struct {
+var kycLevels = [2]struct {
 	Label string
 	Limit int
 	Next  string
 }{
-	{"Email", 10_000_000, "Verifikasi nomor HP untuk naik ke Rp 100 jt per transaksi."},
-	{"Email + HP", 100_000_000, "Verifikasi KTP untuk naik ke Rp 2 M per transaksi."},
-	{"KTP terverifikasi", 2_000_000_000, ""},
+	{"Email", 10_000_000, "Verifikasi KTP untuk naik ke Rp 2 M per transaksi."},
+	{"KTP", 2_000_000_000, ""},
 }
-
-const (
-	phoneCodeTTL      = 5 * time.Minute
-	phoneCodeAttempts = 5
-	phoneCodeCooldown = 60 * time.Second
-)
 
 // verification is the user's current verification state (Identity.profile.verification).
 type verification struct {
-	Email, Phone bool
-	Identity     string // none | pending | verified
-	OTPPending   bool
+	Email    bool
+	Identity string // none | pending | verified
 }
 
 func loadVerification(ctx context.Context, q dbtx, userID string) (verification, error) {
 	var v verification
 	err := q.QueryRow(ctx, `
 		SELECT u.email_verified_at IS NOT NULL,
-		       EXISTS (SELECT 1 FROM phone_verifications p WHERE p.user_id = u.id AND p.verified_at IS NOT NULL),
 		       CASE WHEN i.identity_verified_at IS NOT NULL THEN 'verified'
 		            WHEN EXISTS (SELECT 1 FROM verification_requests r WHERE r.submitted_by = u.id AND r.kind = 'personal' AND r.status = 'pending') THEN 'pending'
-		            ELSE 'none' END,
-		       EXISTS (SELECT 1 FROM phone_verifications p WHERE p.user_id = u.id AND p.verified_at IS NULL AND p.expires_at > now() AND p.attempts < $2)
-		FROM users u LEFT JOIN identities i ON i.user_id = u.id WHERE u.id = $1`, userID, phoneCodeAttempts).
-		Scan(&v.Email, &v.Phone, &v.Identity, &v.OTPPending)
+		            ELSE 'none' END
+		FROM users u LEFT JOIN identities i ON i.user_id = u.id WHERE u.id = $1`, userID).
+		Scan(&v.Email, &v.Identity)
 	return v, err
 }
 
-// kycLevel: 2 when the KTP is verified, 1 with a verified phone, else 0 (frontend kycLevel()).
+// kycLevel: 1 when the KTP is verified, else 0 (frontend kycLevel()).
 func (v verification) level() int {
-	switch {
-	case v.Identity == "verified":
-		return 2
-	case v.Phone:
+	if v.Identity == "verified" {
 		return 1
-	default:
-		return 0
 	}
+	return 0
 }
 
 func (s *Server) kycStatus(ctx context.Context, q dbtx, userID string) (api.Kyc, error) {
@@ -76,11 +59,11 @@ func (s *Server) kycStatus(ctx context.Context, q dbtx, userID string) (api.Kyc,
 		return api.Kyc{}, err
 	}
 	l := v.level()
-	k := api.Kyc{Level: api.KycLevel(l), Label: kycLevels[l].Label, LimitIdr: kycLevels[l].Limit, OtpPending: v.OTPPending}
+	k := api.Kyc{Level: api.KycLevel(l), Label: kycLevels[l].Label, LimitIdr: kycLevels[l].Limit}
 	if kycLevels[l].Next != "" {
 		k.Next = ptr(kycLevels[l].Next)
 	}
-	k.Verification.Email, k.Verification.Phone = v.Email, v.Phone
+	k.Verification.Email = v.Email
 	k.Verification.Identity = api.KycVerificationIdentity(v.Identity)
 	return k, nil
 }
@@ -114,125 +97,6 @@ func (s *Server) GetMyKyc(ctx context.Context, _ api.GetMyKycRequestObject) (api
 		return nil, err
 	}
 	return api.GetMyKyc200JSONResponse(k), nil
-}
-
-var phonePattern = regexp.MustCompile(`^(62|0)8\d{7,11}$`)
-
-// normalizePhone returns the number as 628…, or "" when it is not an Indonesian mobile number.
-func normalizePhone(in string) string {
-	digits := strings.Map(func(r rune) rune {
-		if r >= '0' && r <= '9' {
-			return r
-		}
-		return -1
-	}, in)
-	if !phonePattern.MatchString(digits) {
-		return ""
-	}
-	if strings.HasPrefix(digits, "0") {
-		return "62" + digits[1:]
-	}
-	return digits
-}
-
-func (s *Server) RequestPhoneOtp(ctx context.Context, req api.RequestPhoneOtpRequestObject) (api.RequestPhoneOtpResponseObject, error) {
-	sess, err := requireUser(ctx)
-	if err != nil {
-		return nil, err
-	}
-	phone := normalizePhone(req.Body.Phone)
-	if phone == "" {
-		return nil, &Error{Status: 422, Code: "validation", Message: "Nomor HP tidak valid", Fields: map[string]string{"phone": "Contoh: 0812xxxxxxxx"}}
-	}
-	code := auth.NewOTP()
-	var out api.Kyc
-	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		// Serialise per user so two quick requests can't both pass the cooldown.
-		if _, err := tx.Exec(ctx, `SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, sess.UserID); err != nil {
-			return err
-		}
-		var wait float64
-		if err := tx.QueryRow(ctx, `
-			SELECT coalesce(extract(epoch FROM $2 - (now() - max(created_at))), 0) FROM phone_verifications WHERE user_id = $1`,
-			sess.UserID, phoneCodeCooldown).Scan(&wait); err != nil {
-			return err
-		}
-		if wait > 0 {
-			secs := int(wait) + 1
-			if w := state(ctx).w; w != nil {
-				w.Header().Set("Retry-After", strconv.Itoa(secs))
-			}
-			return &Error{Status: 429, Code: "otp_cooldown", Message: fmt.Sprintf("Tunggu %d detik sebelum minta kode baru.", secs)}
-		}
-		if _, err := tx.Exec(ctx, `DELETE FROM phone_verifications WHERE user_id = $1 AND verified_at IS NULL`, sess.UserID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO phone_verifications (user_id, phone, code_hash, expires_at) VALUES ($1, $2, $3, now() + $4)`,
-			sess.UserID, phone, auth.OTPHash(s.Keys.OTP, "phone", sess.UserID, code), phoneCodeTTL); err != nil {
-			return err
-		}
-		out, err = s.kycStatus(ctx, tx, sess.UserID)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	if s.SMS != nil {
-		text := fmt.Sprintf("Kode verifikasi Ecopurnity: %s. Berlaku 5 menit. Jangan bagikan kode ini ke siapa pun.", code)
-		if err := s.SMS.Send(ctx, phone, text); err != nil {
-			return nil, err
-		}
-	}
-	return api.RequestPhoneOtp200JSONResponse(out), nil
-}
-
-func (s *Server) VerifyPhoneOtp(ctx context.Context, req api.VerifyPhoneOtpRequestObject) (api.VerifyPhoneOtpResponseObject, error) {
-	sess, err := requireUser(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var out api.Kyc
-	var codeErr *Error
-	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		var id string
-		var hash []byte
-		var attempts int
-		err := tx.QueryRow(ctx, `
-			SELECT id, code_hash, attempts FROM phone_verifications
-			WHERE user_id = $1 AND verified_at IS NULL AND expires_at > now() AND attempts < $2 FOR UPDATE`,
-			sess.UserID, phoneCodeAttempts).Scan(&id, &hash, &attempts)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return &Error{Status: http.StatusConflict, Code: "otp_expired", Message: "Kode kedaluwarsa, kirim ulang"}
-		}
-		if err != nil {
-			return err
-		}
-		if !hmac.Equal(hash, auth.OTPHash(s.Keys.OTP, "phone", sess.UserID, strings.TrimSpace(req.Body.Code))) {
-			attempts++
-			if _, err := tx.Exec(ctx, `UPDATE phone_verifications SET attempts = $2 WHERE id = $1`, id, attempts); err != nil {
-				return err
-			}
-			// Committed so the attempt counts.
-			if attempts >= phoneCodeAttempts {
-				codeErr = codeError(429, "too_many_attempts", "Terlalu banyak percobaan. Minta kode baru.")
-			} else {
-				codeErr = codeError(422, "invalid_code", fmt.Sprintf("Kode salah. Sisa %d percobaan.", phoneCodeAttempts-attempts))
-			}
-			return nil
-		}
-		if _, err := tx.Exec(ctx, `UPDATE phone_verifications SET verified_at = now() WHERE id = $1`, id); err != nil {
-			return err
-		}
-		out, err = s.kycStatus(ctx, tx, sess.UserID)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	if codeErr != nil {
-		return nil, codeErr
-	}
-	return api.VerifyPhoneOtp200JSONResponse(out), nil
 }
 
 // maskNIK keeps the region code and the last 4 digits: 3205********0001.

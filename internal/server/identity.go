@@ -51,7 +51,7 @@ func loadIdentity(ctx context.Context, q dbtx, userID string) (api.Identity, err
 	if err != nil {
 		return id, err
 	}
-	id.Profile.Verification.Email, id.Profile.Verification.Phone = v.Email, v.Phone
+	id.Profile.Verification.Email = v.Email
 	id.Profile.Verification.Identity = api.IdentityProfileVerificationIdentity(v.Identity)
 
 	id.Items = []api.CapacityItem{}
@@ -91,7 +91,7 @@ func completeness(i api.Identity) float64 {
 		return false
 	}
 	checks := []bool{
-		i.Profile.Bio != "", i.Profile.Location != "", i.Profile.Verification.Email, i.Profile.Verification.Phone,
+		i.Profile.Bio != "", i.Profile.Location != "", i.Profile.Verification.Email,
 		i.Profile.Verification.Identity == "verified", has("skill", "capacity"), has("asset", "resource"),
 		len(i.Preferences.Categories) > 0, len(i.Availability.Days) > 0,
 	}

@@ -74,19 +74,6 @@ AuthPublicMatchActionRequest:
       enum: [connect, save, dismiss, reset]
       description: connect sets the match to `connected`, save to `saved`, dismiss to `dismissed`, reset back to `new`.
     reason: { type: string, description: 'Optional free text; trimmed, stored with the match state.' }
-AuthPublicKycPhoneRequest:
-  type: object
-  required: [phone]
-  properties:
-    phone:
-      type: string
-      description: Non-digits are stripped; the digits must match `^(62|0)8\d{7,11}$`.
-      examples: ['0812xxxxxxxx']
-AuthPublicKycPhoneVerifyRequest:
-  type: object
-  required: [code]
-  properties:
-    code: { type: string, description: The OTP sent to the phone. The mock accepts the fixed code `246810`. }
 AuthPublicKycIdentityRequest:
   type: object
   required: [nik, fullName, ktpUploadId, selfieUploadId]

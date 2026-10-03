@@ -42,7 +42,7 @@ func (s *Server) GetPersonProfile(ctx context.Context, req api.GetPersonProfileR
 	if err != nil {
 		return nil, err
 	}
-	p.Verification.Email, p.Verification.Phone, p.Verification.Identity = v.Email, v.Phone, api.PublicProfileVerificationIdentity(v.Identity)
+	p.Verification.Email, p.Verification.Identity = v.Email, api.PublicProfileVerificationIdentity(v.Identity)
 	parties, err := userPartyIDs(ctx, q, userID)
 	if err != nil {
 		return nil, err

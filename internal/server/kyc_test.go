@@ -9,7 +9,6 @@ import (
 	"image/jpeg"
 	"image/png"
 	"net/http"
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -67,61 +66,19 @@ func (e *testEnv) upload(c *http.Client, purpose, contentType string, data []byt
 	return r.Body["uploadId"].(string)
 }
 
-var codeRe = regexp.MustCompile(`\b(\d{6})\b`)
-
-func TestPhoneOTP(t *testing.T) {
+// Email only: two levels and no phone verification endpoints.
+func TestKycLevels(t *testing.T) {
 	e := newEnv(t)
-	c, email := e.signedIn("Pita")
+	c, _ := e.signedIn("Pita")
 
 	r := e.call(c, "GET", "/me/kyc", nil)
-	if r.Status != 200 || r.Body["level"] != float64(0) || r.Body["limitIdr"] != float64(10_000_000) || r.Body["otpPending"] != false {
+	v, _ := r.Body["verification"].(map[string]any)
+	if r.Status != 200 || r.Body["level"] != float64(0) || r.Body["label"] != "Email" || r.Body["limitIdr"] != float64(10_000_000) ||
+		r.Body["next"] != "Verifikasi KTP untuk naik ke Rp 2 M per transaksi." || v["phone"] != nil || r.Body["otpPending"] != nil {
 		t.Fatalf("initial kyc: %d %v", r.Status, r.Body)
 	}
-	if r := e.call(c, "POST", "/me/kyc/phone", map[string]any{"phone": "12345"}); r.Status != 422 || r.field("phone") == "" {
-		t.Fatalf("bad phone: %d %v", r.Status, r.Body)
-	}
-	if r := e.call(c, "POST", "/me/kyc/phone/verify", map[string]any{"code": "123456"}); r.Status != 409 || r.code() != "otp_expired" {
-		t.Fatalf("verify without otp: %d %v", r.Status, r.Body)
-	}
-	if r := e.call(c, "POST", "/me/kyc/phone", map[string]any{"phone": "0812-3456-7890"}); r.Status != 200 || r.Body["otpPending"] != true {
-		t.Fatalf("request otp: %d %v", r.Status, r.Body)
-	}
-	text := e.sms().Last("6281234567890")
-	m := codeRe.FindStringSubmatch(text)
-	if m == nil {
-		t.Fatalf("sms text %q", text)
-	}
-	code := m[1]
-	if r := e.call(c, "POST", "/me/kyc/phone", map[string]any{"phone": "081234567890"}); r.Status != 429 || r.code() != "otp_cooldown" || r.Header.Get("Retry-After") == "" {
-		t.Fatalf("cooldown: %d %v", r.Status, r.Body)
-	}
-	wrong := "000000"
-	if code == wrong {
-		wrong = "111111"
-	}
-	if r := e.call(c, "POST", "/me/kyc/phone/verify", map[string]any{"code": wrong}); r.Status != 422 || r.code() != "invalid_code" || r.field("code") != "Kode salah. Sisa 4 percobaan." {
-		t.Fatalf("wrong code: %d %v", r.Status, r.Body)
-	}
-	r = e.call(c, "POST", "/me/kyc/phone/verify", map[string]any{"code": code})
-	if r.Status != 200 || r.Body["level"] != float64(1) || r.Body["limitIdr"] != float64(100_000_000) {
-		t.Fatalf("verify: %d %v", r.Status, r.Body)
-	}
-	if n := e.scalar(`SELECT phone FROM phone_verifications p JOIN users u ON u.id = p.user_id WHERE u.email = $1 AND verified_at IS NOT NULL`, email); n != "6281234567890" {
-		t.Fatalf("stored phone: %v", n)
-	}
-
-	// Brute force: 5 wrong codes burn the OTP.
-	e.exec(`UPDATE phone_verifications SET created_at = created_at - interval '2 minutes' WHERE user_id = (SELECT id FROM users WHERE email = $1)`, email)
-	e.call(c, "POST", "/me/kyc/phone", map[string]any{"phone": "081299998888"})
-	for i := 0; i < 4; i++ {
-		e.call(c, "POST", "/me/kyc/phone/verify", map[string]any{"code": "999999"})
-	}
-	if r := e.call(c, "POST", "/me/kyc/phone/verify", map[string]any{"code": "999999"}); r.Status != 429 || r.code() != "too_many_attempts" {
-		// (999999 could be the real code once in a million runs)
-		t.Fatalf("5th wrong code: %d %v", r.Status, r.Body)
-	}
-	if r := e.call(c, "POST", "/me/kyc/phone/verify", map[string]any{"code": "999999"}); r.Status != 409 {
-		t.Fatalf("after burn: %d %v", r.Status, r.Body)
+	if r := e.call(c, "POST", "/me/kyc/phone", map[string]any{"phone": "081234567890"}); r.Status != 404 {
+		t.Fatalf("phone endpoint still there: %d %v", r.Status, r.Body)
 	}
 }
 
@@ -196,8 +153,8 @@ func TestUploadsAndKTP(t *testing.T) {
 	e.exec(`UPDATE identities SET identity_verified_at = now(), identity_verified_by = user_id, nik_hash = (SELECT k.nik_hash FROM kyc_submissions k JOIN verification_requests r ON r.id = k.verification_request_id
 	          WHERE r.submitted_by = identities.user_id) WHERE user_id = (SELECT id FROM users WHERE email = $1)`, email)
 	e.exec(`UPDATE verification_requests SET status = 'approved', decided_at = now(), decided_by = submitted_by, decision_note = 'ok' WHERE submitted_by = (SELECT id FROM users WHERE email = $1)`, email)
-	if r := e.call(c, "GET", "/me/kyc", nil); r.Body["level"] != float64(2) || r.Body["limitIdr"] != float64(2_000_000_000) {
-		t.Fatalf("level 2: %v", r.Body)
+	if r := e.call(c, "GET", "/me/kyc", nil); r.Body["level"] != float64(1) || r.Body["label"] != "KTP" || r.Body["limitIdr"] != float64(2_000_000_000) || r.Body["next"] != nil {
+		t.Fatalf("level 1: %v", r.Body)
 	}
 	k2 := e.upload(other, "kyc_ktp", "image/png", pngBytes(t))
 	s2 := e.upload(other, "kyc_selfie", "image/png", pngBytes(t))
@@ -218,7 +175,7 @@ func TestIdentity(t *testing.T) {
 	body := map[string]any{
 		"profile": map[string]any{"name": " Ira Wijaya ", "username": "hacker", "location": "Jawa Barat", "bio": "Pengolah kopi",
 			// Trusted by the mock, ignored here.
-			"verification": map[string]any{"email": true, "phone": true, "identity": "verified"}},
+			"verification": map[string]any{"email": true, "identity": "verified"}},
 		"items": []any{
 			map[string]any{"id": "cap-local-1", "kind": "skill", "name": "Roasting", "detail": "Mahir", "categoryId": "agri"},
 			map[string]any{"id": "cap-local-2", "kind": "asset", "name": "Mesin sangrai", "detail": "5 kg"},
@@ -233,7 +190,7 @@ func TestIdentity(t *testing.T) {
 	}
 	p := r.Body["profile"].(map[string]any)
 	v := p["verification"].(map[string]any)
-	if p["name"] != "Ira Wijaya" || p["username"] == "hacker" || v["phone"] != false || v["identity"] != "none" {
+	if p["name"] != "Ira Wijaya" || p["username"] == "hacker" || v["identity"] != "none" {
 		t.Fatalf("profile: %v", p)
 	}
 	items := r.Body["items"].([]any)
@@ -279,7 +236,7 @@ func TestCommitGuard(t *testing.T) {
 	id := e.scalar(`SELECT id::text FROM users WHERE email = $1`, email).(string)
 	err := e.server.commitGuard(context.Background(), e.db.Primary(), id, 10_000_001)
 	apiErr, ok := err.(*Error)
-	if !ok || apiErr.Code != "kyc_limit" || !strings.Contains(apiErr.Message, "Rp 10.000.000") {
+	if !ok || apiErr.Code != "kyc_limit" || apiErr.Message != "Nilai Rp 10.000.001 melebihi batas Rp 10.000.000 untuk level Email. Verifikasi KTP untuk naik ke Rp 2 M per transaksi." {
 		t.Fatalf("level 0 over limit: %v", err)
 	}
 	if err := e.server.commitGuard(context.Background(), e.db.Primary(), id, 10_000_000); err != nil {
