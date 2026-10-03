@@ -98,7 +98,7 @@ func TestEveryOperationIsRouted(t *testing.T) {
 			n++
 		}
 	}
-	if n != 162 {
-		t.Errorf("operations in spec: %d, want 162", n)
+	if n != 165 {
+		t.Errorf("operations in spec: %d, want 165", n)
 	}
 }

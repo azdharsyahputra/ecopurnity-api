@@ -165,8 +165,8 @@ func (s *Server) GetAdminOverview(ctx context.Context, _ api.GetAdminOverviewReq
 	}
 	q := s.DB.Reader()
 	var o api.AdminOverview
-	var verTotal, verBreached, dspTotal, dspBreached int
-	var verOldest, dspOldest *time.Time
+	var verTotal, verBreached, dspTotal, dspBreached, wdrTotal, wdrBreached int
+	var verOldest, dspOldest, wdrOldest *time.Time
 	if err := q.QueryRow(ctx, `
 		SELECT (SELECT count(*) FROM users u WHERE `+userQueueCond+`),
 		       (SELECT count(*) FROM markets m WHERE `+marketQueueCond+`),
@@ -174,12 +174,16 @@ func (s *Server) GetAdminOverview(ctx context.Context, _ api.GetAdminOverviewReq
 		       count(*) FILTER (WHERE true), count(*) FILTER (WHERE created_at < now() - $1::interval), min(created_at),
 		       (SELECT count(*) FROM disputes WHERE status <> 'resolved'),
 		       (SELECT count(*) FROM disputes WHERE status <> 'resolved' AND opened_at < now() - $2::interval),
-		       (SELECT min(opened_at) FROM disputes WHERE status <> 'resolved')
+		       (SELECT min(opened_at) FROM disputes WHERE status <> 'resolved'),
+		       (SELECT count(*) FROM withdrawals WHERE status = 'processing'),
+		       (SELECT count(*) FROM withdrawals w WHERE w.status = 'processing' AND `+withdrawalDue+` < now()),
+		       (SELECT min(created_at) FROM withdrawals WHERE status = 'processing')
 		FROM verification_requests WHERE status = 'pending'`, verificationSLA, disputeSLA).
-		Scan(&o.Queues.Users, &o.Queues.Markets, &o.Queues.Fraud, &verTotal, &verBreached, &verOldest, &dspTotal, &dspBreached, &dspOldest); err != nil {
+		Scan(&o.Queues.Users, &o.Queues.Markets, &o.Queues.Fraud, &verTotal, &verBreached, &verOldest, &dspTotal, &dspBreached, &dspOldest,
+			&wdrTotal, &wdrBreached, &wdrOldest); err != nil {
 		return nil, err
 	}
-	o.Queues.Verification, o.Queues.Disputes = verTotal, dspTotal
+	o.Queues.Verification, o.Queues.Disputes, o.Queues.Withdrawals = verTotal, dspTotal, wdrTotal
 	findings, err := auctionFindings(ctx, q, `a.status IN ('scheduled','qualification','live','extended')`)
 	if err != nil {
 		return nil, err
@@ -202,6 +206,7 @@ func (s *Server) GetAdminOverview(ctx context.Context, _ api.GetAdminOverviewReq
 	o.Sla = []slaRow{
 		{Module: api.AdminOverviewSlaModuleVerification, Label: "Verifikasi bisnis", SlaHours: verificationSLA.Hours(), Total: verTotal, Breached: verBreached, OldestAt: verOldest},
 		{Module: api.AdminOverviewSlaModuleDisputes, Label: "Dispute", SlaHours: disputeSLA.Hours(), Total: dspTotal, Breached: dspBreached, OldestAt: dspOldest},
+		{Module: api.AdminOverviewSlaModuleWithdrawals, Label: "Pencairan dana", SlaHours: withdrawalSLA.Hours(), Total: wdrTotal, Breached: wdrBreached, OldestAt: wdrOldest},
 	}
 	return api.GetAdminOverview200JSONResponse(o), nil
 }

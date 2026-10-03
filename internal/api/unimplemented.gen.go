@@ -39,6 +39,10 @@ func (Unimplemented) ActOnAdminUser(context.Context, ActOnAdminUserRequestObject
 	return nil, ErrNotImplemented
 }
 
+func (Unimplemented) ActOnAdminWithdrawal(context.Context, ActOnAdminWithdrawalRequestObject) (ActOnAdminWithdrawalResponseObject, error) {
+	return nil, ErrNotImplemented
+}
+
 func (Unimplemented) ActOnMatch(context.Context, ActOnMatchRequestObject) (ActOnMatchResponseObject, error) {
 	return nil, ErrNotImplemented
 }
@@ -212,6 +216,10 @@ func (Unimplemented) GetAdminUser(context.Context, GetAdminUserRequestObject) (G
 }
 
 func (Unimplemented) GetAdminVerification(context.Context, GetAdminVerificationRequestObject) (GetAdminVerificationResponseObject, error) {
+	return nil, ErrNotImplemented
+}
+
+func (Unimplemented) GetAdminWithdrawal(context.Context, GetAdminWithdrawalRequestObject) (GetAdminWithdrawalResponseObject, error) {
 	return nil, ErrNotImplemented
 }
 
@@ -420,6 +428,10 @@ func (Unimplemented) ListAdminUsers(context.Context, ListAdminUsersRequestObject
 }
 
 func (Unimplemented) ListAdminVerifications(context.Context, ListAdminVerificationsRequestObject) (ListAdminVerificationsResponseObject, error) {
+	return nil, ErrNotImplemented
+}
+
+func (Unimplemented) ListAdminWithdrawals(context.Context, ListAdminWithdrawalsRequestObject) (ListAdminWithdrawalsResponseObject, error) {
 	return nil, ErrNotImplemented
 }
 

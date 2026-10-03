@@ -887,7 +887,7 @@ AdminOverview:
   properties:
     queues:
       type: object
-      required: [users, verification, markets, auctions, disputes, fraud]
+      required: [users, verification, markets, auctions, disputes, fraud, withdrawals]
       properties:
         users: { type: integer }
         verification: { type: integer }
@@ -895,6 +895,7 @@ AdminOverview:
         auctions: { type: integer }
         disputes: { type: integer }
         fraud: { type: integer }
+        withdrawals: { type: integer, description: Withdrawals waiting for a manual transfer (`processing`). }
     newAlerts:
       type: array
       items: { $ref: '#/components/schemas/FraudAlert' }
@@ -908,12 +909,78 @@ AdminOverview:
         type: object
         required: [module, label, slaHours, total, breached]
         properties:
-          module: { type: string, enum: [verification, disputes] }
+          module: { type: string, enum: [verification, disputes, withdrawals] }
           label: { type: string }
           slaHours: { type: number }
           total: { type: integer }
           breached: { type: integer }
           oldestAt: { type: string, format: date-time }
+
+WithdrawalStatus:
+  type: string
+  description: '`processing` until an admin records the manual transfer (`paid`) or rejects it (`rejected`, money back in the wallet).'
+  enum: [processing, paid, rejected]
+
+AdminWithdrawal:
+  type: object
+  description: A withdrawal in the admin payout queue. The account number is masked here; the detail decrypts it.
+  required: [id, code, status, amountIdr, requestedAt, dueAt, requester, party, bank, holder, accountLast4]
+  properties:
+    id: { type: string }
+    code: { type: string, description: '"WDR-…"; put it in the transfer description.' }
+    status: { $ref: '#/components/schemas/WithdrawalStatus' }
+    amountIdr: { type: integer }
+    requestedAt: { type: string, format: date-time }
+    dueAt: { type: string, format: date-time, description: 'SLA hint: one working day after the request (Friday to Sunday requests are due Monday).' }
+    requester:
+      type: object
+      required: [id, name, email]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string }
+    party:
+      type: object
+      description: The party whose wallet pays (the requester's own party for personal finance).
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string }
+    bank: { type: string, description: Bank of the account the withdrawal was requested to (a later account change does not move it). }
+    holder: { type: string }
+    accountLast4: { type: string }
+    transferRef: { type: string }
+    paidAt: { type: string, format: date-time }
+    note: { type: string, description: Optional admin note on mark_paid. }
+    reason: { type: string, description: Reject reason. }
+    decidedAt: { type: string, format: date-time }
+    decidedBy: { type: string, description: '"Sari Kusuma (Admin)".' }
+
+AdminWithdrawalDetail:
+  allOf:
+    - $ref: '#/components/schemas/AdminWithdrawal'
+    - type: object
+      required: [nameMismatch, recent]
+      properties:
+        accountNo:
+          type: string
+          description: The full, decrypted account number. Only while `processing` (the admin needs it for the transfer); every response that carries it writes an audit entry.
+        identityName: { type: string, description: Name on the requester's approved KTP; absent when the identity is not verified by KTP. }
+        nameMismatch: { type: boolean, description: 'True when identityName is known and differs from the holder (case, punctuation and spacing ignored).' }
+        recent:
+          type: array
+          description: Up to 10 other withdrawals of the same party, newest first.
+          items: { $ref: '#/components/schemas/AdminWithdrawal' }
+
+WithdrawalActionInput:
+  type: object
+  required: [action]
+  properties:
+    action: { type: string, enum: [mark_paid, reject] }
+    transferRef: { type: string, maxLength: 100, description: 'mark_paid: required (trimmed, non-empty).' }
+    paidAt: { type: string, format: date-time, description: 'mark_paid: when the transfer was made; default now. Not in the future, not before the request.' }
+    note: { type: string, maxLength: 500, description: 'mark_paid: optional note.' }
+    reason: { type: string, description: 'reject: required, trimmed length at least 10 (422 `reason_required`).' }
 
 # ───────────────────────── features/reputation/types.ts ─────────────────────────
 
@@ -1075,7 +1142,10 @@ Finance:
           id: { type: string }
           amountIdr: { type: integer }
           at: { type: string, format: date-time }
-          status: { type: string, enum: [processing, paid] }
+          status: { $ref: '#/components/schemas/WithdrawalStatus' }
+          transferRef: { type: string, description: 'paid: the bank transfer reference the admin recorded.' }
+          paidAt: { type: string, format: date-time, description: 'paid: when the money was transferred.' }
+          reason: { type: string, description: 'rejected: why (the amount went back to availableIdr).' }
     entries:
       type: array
       items:

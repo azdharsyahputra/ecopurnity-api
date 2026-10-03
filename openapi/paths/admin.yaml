@@ -12,7 +12,9 @@
       - `queues.markets`: non-suspended markets with a flag newer than `reviewedAt` (or never reviewed).
       - `queues.auctions`: scheduled/qualification/live/extended auctions that have at least one finding.
       - `queues.disputes`: disputes not `resolved`. `queues.fraud`: alerts `new` or `investigating`.
-      - `sla`: always two rows, verification (48h) and disputes (72h); `breached` counts items older than the SLA.
+      - `queues.withdrawals`: withdrawals `processing` (waiting for a manual transfer).
+      - `sla`: always three rows, verification (48h), disputes (72h) and withdrawals (24h: one working day, `breached`
+        counts those past their `dueAt`); `breached` counts items older than the SLA.
     tags: [Admin]
     x-access: capability:admin
     responses:
@@ -587,3 +589,86 @@
               items: { $ref: '#/components/schemas/AuditEntry' }
       '401': { $ref: '#/components/responses/Unauthenticated' }
       '403': { $ref: '#/components/responses/Forbidden' }
+
+/admin/withdrawals:
+  get:
+    operationId: listAdminWithdrawals
+    summary: List withdrawals (manual payout queue)
+    description: |
+      Payouts are settled by hand: an admin transfers the money from the company bank account and records it here.
+      `processing` is the queue, oldest first; `paid` / `rejected` (and no filter) are newest first. At most 500 rows.
+      The account number is masked (last 4 digits).
+    tags: [Admin]
+    x-access: capability:admin
+    parameters:
+      - name: status
+        in: query
+        description: Only this status. Omitted = all.
+        schema: { $ref: '#/components/schemas/WithdrawalStatus' }
+    responses:
+      '200':
+        description: Withdrawals.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/AdminWithdrawal' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+
+/admin/withdrawals/{id}:
+  get:
+    operationId: getAdminWithdrawal
+    summary: Get a withdrawal with the account number for the transfer
+    description: |
+      While `processing`, `accountNo` is the decrypted full number and the view is audited ("Melihat nomor rekening" on
+      the requester), like the NIK view. Also the requester's KTP name next to the holder (`nameMismatch`) and the
+      party's recent withdrawals.
+    tags: [Admin]
+    x-access: capability:admin
+    x-audit: true
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    responses:
+      '200':
+        description: Withdrawal detail.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminWithdrawalDetail' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: withdrawal does not exist.' }
+
+/admin/withdrawals/{id}/actions:
+  post:
+    operationId: actOnAdminWithdrawal
+    summary: Record a manual payout as paid, or reject it
+    description: |
+      Only `processing` withdrawals. Order of checks: 404, 409 `decided`, then the action's fields.
+      - `mark_paid` {transferRef, paidAt?, note?}: status `paid`; journal payout_pending → bank_clearing (the money left
+        the company bank; the seller's wallet does not change). Audit "Tandai pencairan dibayar"; `payment` notification
+        "Dana Rp X sudah ditransfer ke BCA ••1234" (body: the reference), href `/app/finance`.
+      - `reject` {reason}: status `rejected`; journal payout_pending → the wallet lines the request debited (available
+        again). Audit "Tolak pencairan" with the reason; `payment` notification "Pencairan Rp X ditolak" (body: the
+        reason), href `/app/finance`.
+    tags: [Admin]
+    x-access: capability:admin
+    x-audit: true
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/WithdrawalActionInput' }
+    responses:
+      '200':
+        description: The decided withdrawal (without the account number).
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminWithdrawal' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: withdrawal does not exist.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'decided: the withdrawal is no longer processing.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'validation: fields.transferRef (mark_paid, required), fields.paidAt (future or before the request), fields.action (unknown). reason_required: fields.reason (reject, min 10 chars after trim).' }

@@ -342,6 +342,7 @@ components:
             - auctions
             - disputes
             - fraud
+            - withdrawals
           properties:
             users:
               type: integer
@@ -355,6 +356,9 @@ components:
               type: integer
             fraud:
               type: integer
+            withdrawals:
+              type: integer
+              description: Withdrawals waiting for a manual transfer (`processing`).
         newAlerts:
           type: array
           items:
@@ -380,6 +384,7 @@ components:
                 enum:
                   - verification
                   - disputes
+                  - withdrawals
               label:
                 type: string
               slaHours:
@@ -496,6 +501,108 @@ components:
         - approved
         - rejected
         - reupload
+    AdminWithdrawal:
+      type: object
+      description: A withdrawal in the admin payout queue. The account number is masked here; the detail decrypts it.
+      required:
+        - id
+        - code
+        - status
+        - amountIdr
+        - requestedAt
+        - dueAt
+        - requester
+        - party
+        - bank
+        - holder
+        - accountLast4
+      properties:
+        id:
+          type: string
+        code:
+          type: string
+          description: '"WDR-…"; put it in the transfer description.'
+        status:
+          $ref: "#/components/schemas/WithdrawalStatus"
+        amountIdr:
+          type: integer
+        requestedAt:
+          type: string
+          format: date-time
+        dueAt:
+          type: string
+          format: date-time
+          description: "SLA hint: one working day after the request (Friday to Sunday requests are due Monday)."
+        requester:
+          type: object
+          required:
+            - id
+            - name
+            - email
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            email:
+              type: string
+        party:
+          type: object
+          description: The party whose wallet pays (the requester's own party for personal finance).
+          required:
+            - id
+            - name
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+        bank:
+          type: string
+          description: Bank of the account the withdrawal was requested to (a later account change does not move it).
+        holder:
+          type: string
+        accountLast4:
+          type: string
+        transferRef:
+          type: string
+        paidAt:
+          type: string
+          format: date-time
+        note:
+          type: string
+          description: Optional admin note on mark_paid.
+        reason:
+          type: string
+          description: Reject reason.
+        decidedAt:
+          type: string
+          format: date-time
+        decidedBy:
+          type: string
+          description: '"Sari Kusuma (Admin)".'
+    AdminWithdrawalDetail:
+      allOf:
+        - $ref: "#/components/schemas/AdminWithdrawal"
+        - type: object
+          required:
+            - nameMismatch
+            - recent
+          properties:
+            accountNo:
+              type: string
+              description: The full, decrypted account number. Only while `processing` (the admin needs it for the transfer); every response that carries it writes an audit entry.
+            identityName:
+              type: string
+              description: Name on the requester's approved KTP; absent when the identity is not verified by KTP.
+            nameMismatch:
+              type: boolean
+              description: True when identityName is known and differs from the holder (case, punctuation and spacing ignored).
+            recent:
+              type: array
+              description: Up to 10 other withdrawals of the same party, newest first.
+              items:
+                $ref: "#/components/schemas/AdminWithdrawal"
     AggregateRow:
       type: object
       required:
@@ -2335,10 +2442,17 @@ components:
                 type: string
                 format: date-time
               status:
+                $ref: "#/components/schemas/WithdrawalStatus"
+              transferRef:
                 type: string
-                enum:
-                  - processing
-                  - paid
+                description: "paid: the bank transfer reference the admin recorded."
+              paidAt:
+                type: string
+                format: date-time
+                description: "paid: when the money was transferred."
+              reason:
+                type: string
+                description: "rejected: why (the amount went back to availableIdr)."
         entries:
           type: array
           items:
@@ -7947,6 +8061,38 @@ components:
           type: number
         reliability:
           type: number
+    WithdrawalActionInput:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum:
+            - mark_paid
+            - reject
+        transferRef:
+          type: string
+          maxLength: 100
+          description: "mark_paid: required (trimmed, non-empty)."
+        paidAt:
+          type: string
+          format: date-time
+          description: "mark_paid: when the transfer was made; default now. Not in the future, not before the request."
+        note:
+          type: string
+          maxLength: 500
+          description: "mark_paid: optional note."
+        reason:
+          type: string
+          description: "reject: required, trimmed length at least 10 (422 `reason_required`)."
+    WithdrawalStatus:
+      type: string
+      description: "`processing` until an admin records the manual transfer (`paid`) or rejects it (`rejected`, money back in the wallet)."
+      enum:
+        - processing
+        - paid
+        - rejected
     WithdrawRule:
       type: string
       enum:
@@ -8532,7 +8678,9 @@ paths:
         - `queues.markets`: non-suspended markets with a flag newer than `reviewedAt` (or never reviewed).
         - `queues.auctions`: scheduled/qualification/live/extended auctions that have at least one finding.
         - `queues.disputes`: disputes not `resolved`. `queues.fraud`: alerts `new` or `investigating`.
-        - `sla`: always two rows, verification (48h) and disputes (72h); `breached` counts items older than the SLA.
+        - `queues.withdrawals`: withdrawals `processing` (waiting for a manual transfer).
+        - `sla`: always three rows, verification (48h), disputes (72h) and withdrawals (24h: one working day, `breached`
+          counts those past their `dueAt`); `breached` counts items older than the SLA.
       tags:
         - Admin
       x-access: capability:admin
@@ -8769,6 +8917,116 @@ paths:
         "422":
           $ref: "#/components/responses/Validation"
           description: "reason_required: fields.reason (required for reject and reupload, min 10 chars after trim)."
+  /admin/withdrawals:
+    get:
+      operationId: listAdminWithdrawals
+      summary: List withdrawals (manual payout queue)
+      description: |
+        Payouts are settled by hand: an admin transfers the money from the company bank account and records it here.
+        `processing` is the queue, oldest first; `paid` / `rejected` (and no filter) are newest first. At most 500 rows.
+        The account number is masked (last 4 digits).
+      tags:
+        - Admin
+      x-access: capability:admin
+      parameters:
+        - name: status
+          in: query
+          description: Only this status. Omitted = all.
+          schema:
+            $ref: "#/components/schemas/WithdrawalStatus"
+      responses:
+        "200":
+          description: Withdrawals.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AdminWithdrawal"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /admin/withdrawals/{id}:
+    get:
+      operationId: getAdminWithdrawal
+      summary: Get a withdrawal with the account number for the transfer
+      description: |
+        While `processing`, `accountNo` is the decrypted full number and the view is audited ("Melihat nomor rekening" on
+        the requester), like the NIK view. Also the requester's KTP name next to the holder (`nameMismatch`) and the
+        party's recent withdrawals.
+      tags:
+        - Admin
+      x-access: capability:admin
+      x-audit: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Withdrawal detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminWithdrawalDetail"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "not_found: withdrawal does not exist."
+  /admin/withdrawals/{id}/actions:
+    post:
+      operationId: actOnAdminWithdrawal
+      summary: Record a manual payout as paid, or reject it
+      description: |
+        Only `processing` withdrawals. Order of checks: 404, 409 `decided`, then the action's fields.
+        - `mark_paid` {transferRef, paidAt?, note?}: status `paid`; journal payout_pending → bank_clearing (the money left
+          the company bank; the seller's wallet does not change). Audit "Tandai pencairan dibayar"; `payment` notification
+          "Dana Rp X sudah ditransfer ke BCA ••1234" (body: the reference), href `/app/finance`.
+        - `reject` {reason}: status `rejected`; journal payout_pending → the wallet lines the request debited (available
+          again). Audit "Tolak pencairan" with the reason; `payment` notification "Pencairan Rp X ditolak" (body: the
+          reason), href `/app/finance`.
+      tags:
+        - Admin
+      x-access: capability:admin
+      x-audit: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawalActionInput"
+      responses:
+        "200":
+          description: The decided withdrawal (without the account number).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminWithdrawal"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "not_found: withdrawal does not exist."
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: "decided: the withdrawal is no longer processing."
+        "422":
+          $ref: "#/components/responses/Validation"
+          description: "validation: fields.transferRef (mark_paid, required), fields.paidAt (future or before the request), fields.action (unknown). reason_required: fields.reason (reject, min 10 chars after trim)."
   /auctions:
     get:
       operationId: listAuctions
@@ -9934,7 +10192,9 @@ paths:
         Derived from the double-entry ledger. Buyer: `escrowHeldIdr` is what the buyer has in escrow (subtotal + 11% PPN).
         Supplier: `receivableIdr` = amount receivable (escrowed invoices, or net terms delivered/accepted and unpaid) after the
         1% platform fee and the market maker commission. `availableIdr` = released earnings (incl. the collected PPN, which the
-        supplier remits) and refunds, minus withdrawals. `entries` is the caller's statement, newest first (kinds `escrow`,
+        supplier remits) and refunds, minus withdrawals (a rejected one is added back). `withdrawnIdr` = withdrawals
+        `processing` or `paid`; `withdrawals` lists all of them, newest first, with `transferRef`/`paidAt` (paid) or `reason`
+        (rejected). `entries` is the caller's statement, newest first (kinds `escrow`,
         `payment`, `refund`, `payout`, `fee`, `withdrawal`; money in positive, money out negative). `bank.accountNo` is
         masked (`••••` + last 4 digits); the full number is stored encrypted and never returned.
       tags:
@@ -9979,7 +10239,10 @@ paths:
     post:
       operationId: createMyWithdrawal
       summary: Withdraw available funds to the payout account
-      description: Creates a withdrawal with status `processing`. Requires a saved bank account and `0 < amountIdr <= availableIdr`.
+      description: |
+        Creates a withdrawal with status `processing` (an admin transfers it by hand, usually within one working day, and
+        marks it `paid` with the transfer reference, or `rejected` with a reason: the amount returns to `availableIdr`).
+        Requires a saved bank account and `0 < amountIdr <= availableIdr`. Journal: wallet → payout_pending.
       tags:
         - Personal
       x-access: session
@@ -10002,7 +10265,7 @@ paths:
         "422":
           $ref: "#/components/responses/Validation"
           description: "fields: amountIdr (no bank account yet, amount not positive, or above the available balance; message states the maximum)."
-      x-note: The withdrawal stays `processing` until finance ops pay it out (no endpoint yet). The 422 field is always amountIdr, even when the problem is the missing bank account. The `no bank` and `over balance` failures share code `validation`.
+      x-note: The 422 field is always amountIdr, even when the problem is the missing bank account. The `no bank` and `over balance` failures share code `validation`.
   /me/identity:
     get:
       operationId: getMyIdentity
