@@ -1,0 +1,801 @@
+asyncapi: 3.0.0
+info:
+  title: Ecopurnity Realtime API
+  version: 1.0.0
+  description: |
+    WebSocket contract of the Ecopurnity API, the companion of the REST contract `api/openapi.yaml`. The human guide
+    (lifecycle, per-viewer payloads, resume, close codes, rate limits, fan-out) is `docs/realtime.md`.
+
+    **One socket, many logical channels.** The browser opens a single WebSocket to `GET /api/v1/ws` and multiplexes
+    logical channels over it (`public:stats`, `auction:{id}`, `user:{id}`, `conversation:{id}`, ...). The AsyncAPI
+    channels below are those logical channels; their `address` is the value of the frame's `channel` field, not a URL.
+    Frames that belong to no logical channel (subscribe, ping, chat frames, ack, error) are on the `control` channel.
+
+    **Point of view.** Operations are written from the server's side: `send` = server to client, `receive` = client to
+    server.
+
+    **Frames.** All frames are JSON text frames.
+    - Server events: the envelope `{ channel, type, seq?, payload, ts }` (`RealtimeMessage` in the REST contract, plus
+      `seq`). `seq` is present on `auction:*` and `conversation:*` message events and is the per-channel, gap-free,
+      monotonically increasing sequence number (`bids.seq`, `messages.seq` in Postgres). Delivery is at-least-once:
+      clients drop frames with `seq <= lastSeq` and re-subscribe with `sinceSeq` when they see a gap.
+    - Server control: `{ type: "ack", ref, ok, ... }` answers a client frame that carried an `id`; `{ type: "error",
+      code, message }` reports a problem with a frame that had no `id`, or with the connection.
+    - Client frames: `{ type, id?, ... }`. `id` is any client-chosen string; when present the server answers with an
+      `ack` whose `ref` is that id.
+
+    **Writes stay REST.** Bids (`POST /auctions/{id}/bids`), Dutch accepts and every other state change go through REST
+    so validation, KYC limits and idempotency live in one place; the socket only fans out. The only writes accepted on
+    the socket are the chat frames, with `POST /me/conversations/{id}/messages` as the fallback.
+
+    **Close codes** (server initiated): 1000 normal, 1001 server shutting down (reconnect), 1008 origin not allowed
+    (do not reconnect), 1009 frame larger than 16 KiB, 1011 internal error, 1012 instance lost its fan-out feed
+    (reconnect and resume), 1013 server overloaded (back off), 4400 malformed frame, 4401 session ended (signed out,
+    expired, revoked), 4403 account suspended, 4408 idle timeout (no frame for 60 s), 4429 sustained rate-limit abuse,
+    4503 slow consumer (outbound buffer full; reconnect and resume).
+  contact:
+    name: Ecopurnity engineering
+
+defaultContentType: application/json
+
+servers:
+  local:
+    host: localhost:8080
+    protocol: ws
+    pathname: /api/v1/ws
+    description: |
+      Same origin and same `ecp_session` cookie as the REST API. Without a valid session the connection is anonymous
+      and may only subscribe to public channels. A suspended account's upgrade is refused with HTTP 403
+      `account_suspended`; a disallowed `Origin` with HTTP 403 (`forbidden`).
+    security:
+      - $ref: '#/components/securitySchemes/session'
+
+channels:
+  control:
+    address: null
+    title: Connection control
+    description: Frames that do not belong to a logical channel. Always available on an open socket.
+    messages:
+      subscribe:
+        $ref: '#/components/messages/Subscribe'
+      unsubscribe:
+        $ref: '#/components/messages/Unsubscribe'
+      ping:
+        $ref: '#/components/messages/Ping'
+      chatSend:
+        $ref: '#/components/messages/ChatSend'
+      chatTyping:
+        $ref: '#/components/messages/ChatTyping'
+      chatRead:
+        $ref: '#/components/messages/ChatRead'
+      ack:
+        $ref: '#/components/messages/Ack'
+      error:
+        $ref: '#/components/messages/Error'
+    bindings:
+      ws:
+        method: GET
+        bindingVersion: 0.1.0
+
+  publicStats:
+    address: public:stats
+    title: Network stats
+    description: Anyone, anonymous included. No `seq`; on (re)connect refetch `GET /public/stats`.
+    messages:
+      statsUpdated:
+        $ref: '#/components/messages/StatsUpdated'
+
+  publicActivity:
+    address: public:activity
+    title: Public activity feed
+    description: Anyone, anonymous included. No `seq`; on (re)connect refetch `GET /public/activity`. Dedupe by `payload.id`.
+    messages:
+      activityCreated:
+        $ref: '#/components/messages/ActivityCreated'
+
+  auction:
+    address: auction:{auctionId}
+    title: Auction room
+    description: |
+      Anyone who may `GET /auctions/{id}` may subscribe (anonymous included). Every viewer receives the same frames:
+      prices and ranks are masked here by the auction's `visibility` (see `AuctionBidFrame`); the caller's own price,
+      status, rank and the `mine` flag only ever arrive on their `user:{id}` channel as `bid.status`.
+      Sequenced: every frame carries `seq`; `subscribe { sinceSeq }` resumes.
+    parameters:
+      auctionId:
+        description: Auction id (`Auction.id`).
+    messages:
+      bid:
+        $ref: '#/components/messages/AuctionBid'
+      extended:
+        $ref: '#/components/messages/AuctionExtended'
+      price:
+        $ref: '#/components/messages/AuctionPrice'
+      closed:
+        $ref: '#/components/messages/AuctionClosed'
+      state:
+        $ref: '#/components/messages/AuctionState'
+
+  user:
+    address: user:{userId}
+    title: Private user channel
+    description: |
+      Only the signed-in user whose id is `userId`. Not sequenced and not replayed: everything here is also readable
+      over REST, so on (re)connect the client refetches (`/me/notifications`, `/auctions/{id}/me`, `/me/transactions`, ...).
+      Replaces the former `user:{id}:notifications` and `mm:{id}:events` channels.
+    parameters:
+      userId:
+        description: The signed-in user's id (`User.id`).
+    messages:
+      notificationCreated:
+        $ref: '#/components/messages/NotificationCreated'
+      bidStatus:
+        $ref: '#/components/messages/BidStatus'
+      tradeUpdated:
+        $ref: '#/components/messages/TradeUpdated'
+      mmActivity:
+        $ref: '#/components/messages/MmActivity'
+
+  conversation:
+    address: conversation:{conversationId}
+    title: Conversation
+    description: |
+      Participants only (a non-participant gets `not_found`, as in REST). `message.*` frames are sequenced
+      (`messages.seq`) and replayable; `typing` and `read` are not sequenced and never replayed.
+    parameters:
+      conversationId:
+        description: Conversation id (`Conversation.id`).
+    messages:
+      messageCreated:
+        $ref: '#/components/messages/MessageCreated'
+      messageUpdated:
+        $ref: '#/components/messages/MessageUpdated'
+      messageDeleted:
+        $ref: '#/components/messages/MessageDeleted'
+      typing:
+        $ref: '#/components/messages/Typing'
+      read:
+        $ref: '#/components/messages/ReadReceipt'
+
+operations:
+  receiveSubscribe:
+    action: receive
+    channel:
+      $ref: '#/channels/control'
+    summary: Subscribe to a logical channel, optionally resuming after `sinceSeq`.
+    description: |
+      Authorization per channel: `public:*` and `auction:*` anyone; `user:{id}` only that user; `conversation:{id}`
+      participants only. Subscribing to an already subscribed channel is allowed and is how a client asks for a
+      replay after a gap. On sequenced channels the server first sends the replayed frames (if `sinceSeq` was given),
+      then the ack with `headSeq`; live frames follow, starting at `headSeq + 1`. More than 200 missed events, or a
+      `sinceSeq` above the head, answers `resync_required` and does not subscribe: refetch over REST and subscribe
+      again with the snapshot's `seq`.
+    messages:
+      - $ref: '#/channels/control/messages/subscribe'
+    reply:
+      channel:
+        $ref: '#/channels/control'
+      messages:
+        - $ref: '#/channels/control/messages/ack'
+  receiveUnsubscribe:
+    action: receive
+    channel:
+      $ref: '#/channels/control'
+    summary: Stop receiving a channel. Unsubscribing from a channel that is not subscribed is a no-op (`ok`).
+    messages:
+      - $ref: '#/channels/control/messages/unsubscribe'
+    reply:
+      channel:
+        $ref: '#/channels/control'
+      messages:
+        - $ref: '#/channels/control/messages/ack'
+  receivePing:
+    action: receive
+    channel:
+      $ref: '#/channels/control'
+    summary: Application heartbeat. Send every 25 s; the server closes with 4408 after 60 s without any frame.
+    messages:
+      - $ref: '#/channels/control/messages/ping'
+    reply:
+      channel:
+        $ref: '#/channels/control'
+      messages:
+        - $ref: '#/channels/control/messages/ack'
+  receiveChatSend:
+    action: receive
+    channel:
+      $ref: '#/channels/control'
+    summary: Post a message to a conversation (same rules and side effects as `POST /me/conversations/{id}/messages`).
+    description: |
+      Idempotent by (`conversationId`, sender, `clientMsgId`): a retry returns the original message's id and seq and
+      broadcasts nothing new. The sender does not need to be subscribed to the conversation. On success every
+      subscriber of `conversation:{id}` (the sender's other tabs included) receives `message.created` carrying the
+      `clientMsgId`, other platform participants get a `transaction_update` notification, and a fictional participant
+      answers once after about 5 s (a later `message.created`).
+    messages:
+      - $ref: '#/channels/control/messages/chatSend'
+    reply:
+      channel:
+        $ref: '#/channels/control'
+      messages:
+        - $ref: '#/channels/control/messages/ack'
+  receiveChatTyping:
+    action: receive
+    channel:
+      $ref: '#/channels/control'
+    summary: Tell the other participants the caller is typing. At most one every 3 s per conversation; extra frames are dropped.
+    messages:
+      - $ref: '#/channels/control/messages/chatTyping'
+    reply:
+      channel:
+        $ref: '#/channels/control'
+      messages:
+        - $ref: '#/channels/control/messages/ack'
+  receiveChatRead:
+    action: receive
+    channel:
+      $ref: '#/channels/control'
+    summary: Mark the conversation read up to `seq`. Monotonic; a lower `seq` than stored is accepted and changes nothing.
+    messages:
+      - $ref: '#/channels/control/messages/chatRead'
+    reply:
+      channel:
+        $ref: '#/channels/control'
+      messages:
+        - $ref: '#/channels/control/messages/ack'
+  sendError:
+    action: send
+    channel:
+      $ref: '#/channels/control'
+    summary: Report a problem with a frame that had no `id`, or with the connection, just before a close.
+    messages:
+      - $ref: '#/channels/control/messages/error'
+  sendPublicStats:
+    action: send
+    channel:
+      $ref: '#/channels/publicStats'
+    summary: Network stats, at most every 5 s and only when they changed.
+    messages:
+      - $ref: '#/channels/publicStats/messages/statsUpdated'
+  sendPublicActivity:
+    action: send
+    channel:
+      $ref: '#/channels/publicActivity'
+    summary: A new public activity event.
+    messages:
+      - $ref: '#/channels/publicActivity/messages/activityCreated'
+  sendAuctionEvents:
+    action: send
+    channel:
+      $ref: '#/channels/auction'
+    summary: Bids, anti-sniping extensions, Dutch price steps, closing and other status changes of one auction.
+    messages:
+      - $ref: '#/channels/auction/messages/bid'
+      - $ref: '#/channels/auction/messages/extended'
+      - $ref: '#/channels/auction/messages/price'
+      - $ref: '#/channels/auction/messages/closed'
+      - $ref: '#/channels/auction/messages/state'
+  sendUserEvents:
+    action: send
+    channel:
+      $ref: '#/channels/user'
+    summary: Notifications, own-bid status, trade updates and market maker operations feed for one user.
+    messages:
+      - $ref: '#/channels/user/messages/notificationCreated'
+      - $ref: '#/channels/user/messages/bidStatus'
+      - $ref: '#/channels/user/messages/tradeUpdated'
+      - $ref: '#/channels/user/messages/mmActivity'
+  sendConversationEvents:
+    action: send
+    channel:
+      $ref: '#/channels/conversation'
+    summary: Messages, typing indicators and read receipts of one conversation.
+    messages:
+      - $ref: '#/channels/conversation/messages/messageCreated'
+      - $ref: '#/channels/conversation/messages/messageUpdated'
+      - $ref: '#/channels/conversation/messages/messageDeleted'
+      - $ref: '#/channels/conversation/messages/typing'
+      - $ref: '#/channels/conversation/messages/read'
+
+components:
+  securitySchemes:
+    session:
+      type: httpApiKey
+      in: cookie
+      name: ecp_session
+      description: Session cookie set by `POST /auth/login`. Optional on this socket (anonymous = public channels only).
+
+  messages:
+    # ── Client → server ──────────────────────────────────────────
+    Subscribe:
+      name: subscribe
+      title: subscribe
+      payload:
+        $ref: '#/components/schemas/SubscribeFrame'
+      examples:
+        - name: resumeAuction
+          payload: { type: subscribe, id: '7', channel: 'auction:auc-pupuk-800', sinceSeq: 41 }
+    Unsubscribe:
+      name: unsubscribe
+      title: unsubscribe
+      payload:
+        $ref: '#/components/schemas/UnsubscribeFrame'
+    Ping:
+      name: ping
+      title: ping
+      payload:
+        $ref: '#/components/schemas/PingFrame'
+    ChatSend:
+      name: chat.send
+      title: chat.send
+      payload:
+        $ref: '#/components/schemas/ChatSendFrame'
+      examples:
+        - name: send
+          payload: { type: chat.send, id: '12', conversationId: cnv-81f2, clientMsgId: 0b6f7c1e-5a0e-4c55-9d43-2f2f5d1b7a10, text: 'Bisa kirim minggu depan?' }
+    ChatTyping:
+      name: chat.typing
+      title: chat.typing
+      payload:
+        $ref: '#/components/schemas/ChatTypingFrame'
+    ChatRead:
+      name: chat.read
+      title: chat.read
+      payload:
+        $ref: '#/components/schemas/ChatReadFrame'
+
+    # ── Server → client: control ─────────────────────────────────
+    Ack:
+      name: ack
+      title: ack
+      payload:
+        $ref: '#/components/schemas/AckFrame'
+      examples:
+        - name: subscribed
+          payload: { type: ack, ref: '7', ok: true, headSeq: 44 }
+        - name: chatSent
+          payload: { type: ack, ref: '12', ok: true, result: { messageId: msg-91aa, seq: 18 } }
+        - name: resync
+          payload: { type: ack, ref: '7', ok: false, error: { code: resync_required, message: 'Too many missed events, refetch the auction.' } }
+    Error:
+      name: error
+      title: error
+      payload:
+        $ref: '#/components/schemas/ErrorFrame'
+
+    # ── Server → client: events ──────────────────────────────────
+    StatsUpdated:
+      name: stats.updated
+      title: stats.updated
+      payload:
+        $ref: '#/components/schemas/StatsUpdatedFrame'
+    ActivityCreated:
+      name: activity.created
+      title: activity.created
+      payload:
+        $ref: '#/components/schemas/ActivityCreatedFrame'
+    AuctionBid:
+      name: auction.bid
+      title: auction.bid
+      payload:
+        $ref: '#/components/schemas/AuctionBidFrame'
+      examples:
+        - name: fullVisibility
+          payload: { channel: 'auction:auc-beras-120', type: auction.bid, seq: 42, ts: '2026-10-03T08:15:02Z', payload: { kind: bid, bid: { id: bid-77, bidder: Supplier 23, priceIdr: 11250, at: '2026-10-03T08:15:02Z' }, currentPriceIdr: 11250, bidCount: 18, participants: 6 } }
+        - name: rankOnlyOrSealed
+          payload: { channel: 'auction:auc-pupuk-800', type: auction.bid, seq: 9, ts: '2026-10-03T08:15:02Z', payload: { kind: bid, bid: { id: bid-78, bidder: Supplier 41, priceIdr: 0, at: '2026-10-03T08:15:02Z' }, bidCount: 22, participants: 8 } }
+    AuctionExtended:
+      name: auction.extended
+      title: auction.extended
+      payload:
+        $ref: '#/components/schemas/AuctionExtendedFrame'
+    AuctionPrice:
+      name: auction.price
+      title: auction.price
+      payload:
+        $ref: '#/components/schemas/AuctionPriceFrame'
+    AuctionClosed:
+      name: auction.closed
+      title: auction.closed
+      payload:
+        $ref: '#/components/schemas/AuctionClosedFrame'
+    AuctionState:
+      name: auction.state
+      title: auction.state
+      payload:
+        $ref: '#/components/schemas/AuctionStateFrame'
+    NotificationCreated:
+      name: notification.created
+      title: notification.created
+      payload:
+        $ref: '#/components/schemas/NotificationCreatedFrame'
+    BidStatus:
+      name: bid.status
+      title: bid.status
+      payload:
+        $ref: '#/components/schemas/BidStatusFrame'
+      examples:
+        - name: outbidRankOnly
+          payload: { channel: 'user:usr-3', type: bid.status, ts: '2026-10-03T08:15:02Z', payload: { auctionId: auc-pupuk-800, bid: { id: bid-60, bidder: Supplier 17, priceIdr: 2480, at: '2026-10-03T08:01:40Z', mine: true }, status: outbid, rank: 3, canWithdraw: true, updatedAt: '2026-10-03T08:15:02Z' } }
+    TradeUpdated:
+      name: trade.updated
+      title: trade.updated
+      payload:
+        $ref: '#/components/schemas/TradeUpdatedFrame'
+    MmActivity:
+      name: mm.activity
+      title: mm.activity
+      payload:
+        $ref: '#/components/schemas/MmActivityFrame'
+    MessageCreated:
+      name: message.created
+      title: message.created
+      payload:
+        $ref: '#/components/schemas/MessageCreatedFrame'
+    MessageUpdated:
+      name: message.updated
+      title: message.updated
+      payload:
+        $ref: '#/components/schemas/MessageUpdatedFrame'
+    MessageDeleted:
+      name: message.deleted
+      title: message.deleted
+      payload:
+        $ref: '#/components/schemas/MessageDeletedFrame'
+    Typing:
+      name: typing
+      title: typing
+      payload:
+        $ref: '#/components/schemas/TypingFrame'
+    ReadReceipt:
+      name: read
+      title: read
+      payload:
+        $ref: '#/components/schemas/ReadFrame'
+
+  schemas:
+    # ── Client frames ────────────────────────────────────────────
+    FrameId:
+      type: string
+      maxLength: 64
+      description: Client-chosen id; when present the server answers with an `ack` whose `ref` is this value.
+    SubscribeFrame:
+      type: object
+      required: [type, channel]
+      properties:
+        type: { const: subscribe }
+        id: { $ref: '#/components/schemas/FrameId' }
+        channel:
+          type: string
+          description: '`public:stats`, `public:activity`, `auction:{id}`, `user:{id}` or `conversation:{id}`. Anything else answers `not_found`.'
+        sinceSeq:
+          type: integer
+          minimum: 0
+          description: |
+            Sequenced channels only (ignored elsewhere). The last `seq` the client has applied, usually the `seq` of the
+            REST snapshot it just loaded. The server replays every event after it (at most 200), then acks.
+    UnsubscribeFrame:
+      type: object
+      required: [type, channel]
+      properties:
+        type: { const: unsubscribe }
+        id: { $ref: '#/components/schemas/FrameId' }
+        channel: { type: string }
+    PingFrame:
+      type: object
+      required: [type]
+      properties:
+        type: { const: ping }
+        id: { $ref: '#/components/schemas/FrameId' }
+    ChatSendFrame:
+      type: object
+      required: [type, conversationId, clientMsgId, text]
+      properties:
+        type: { const: chat.send }
+        id: { $ref: '#/components/schemas/FrameId' }
+        conversationId: { type: string }
+        clientMsgId:
+          type: string
+          format: uuid
+          description: Generated by the client per message and reused on every retry (socket or REST fallback).
+        text:
+          type: string
+          minLength: 1
+          maxLength: 4000
+          description: Non-blank after trim; stored trimmed as the message `text`.
+    ChatTypingFrame:
+      type: object
+      required: [type, conversationId]
+      properties:
+        type: { const: chat.typing }
+        id: { $ref: '#/components/schemas/FrameId' }
+        conversationId: { type: string }
+    ChatReadFrame:
+      type: object
+      required: [type, conversationId, seq]
+      properties:
+        type: { const: chat.read }
+        id: { $ref: '#/components/schemas/FrameId' }
+        conversationId: { type: string }
+        seq:
+          type: integer
+          minimum: 0
+          description: Highest message `seq` the user has seen. Clamped to the conversation head.
+
+    # ── Server control frames ────────────────────────────────────
+    FrameErrorCode:
+      type: string
+      enum:
+        - bad_frame              # not JSON, unknown `type`, or a field of the wrong shape
+        - unauthenticated        # private channel or chat frame on an anonymous connection
+        - forbidden              # `user:{id}` of somebody else
+        - not_found              # unknown channel, auction or conversation, or not a participant
+        - validation             # e.g. blank or too long `text`; see `fields`
+        - rate_limited           # frame dropped by a rate limit
+        - subscription_limit     # more than 100 channels on one connection
+        - resync_required        # replay impossible; refetch over REST and subscribe with the new seq
+        - internal               # server failure; retry later
+    AckFrame:
+      type: object
+      required: [type, ref, ok]
+      properties:
+        type: { const: ack }
+        ref:
+          type: string
+          description: The `id` of the client frame being answered.
+        ok: { type: boolean }
+        headSeq:
+          type: integer
+          description: '`subscribe` on a sequenced channel: the last seq delivered (replayed) for the channel. Live frames continue at `headSeq + 1`.'
+        result:
+          type: object
+          description: '`chat.send`: the stored message (also on an idempotent retry).'
+          required: [messageId, seq]
+          properties:
+            messageId: { type: string }
+            seq: { type: integer }
+        error:
+          type: object
+          description: Present when `ok` is false.
+          required: [code, message]
+          properties:
+            code: { $ref: '#/components/schemas/FrameErrorCode' }
+            message: { type: string }
+            fields:
+              type: object
+              additionalProperties: { type: string }
+    ErrorFrame:
+      type: object
+      required: [type, code, message]
+      properties:
+        type: { const: error }
+        code: { $ref: '#/components/schemas/FrameErrorCode' }
+        message: { type: string }
+
+    # ── Server event envelope ────────────────────────────────────
+    Envelope:
+      type: object
+      description: '`RealtimeMessage` of the REST contract plus `seq`.'
+      required: [channel, type, payload, ts]
+      properties:
+        channel: { type: string }
+        type: { type: string }
+        seq:
+          type: integer
+          minimum: 1
+          description: Per-channel, gap-free, increasing. Present on every `auction:*` frame and on `message.*` frames.
+        payload: {}
+        ts:
+          type: string
+          format: date-time
+
+    StatsUpdatedFrame:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - properties:
+            type: { const: stats.updated }
+            payload: { $ref: './openapi.yaml#/components/schemas/PublicStats' }
+    ActivityCreatedFrame:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - properties:
+            type: { const: activity.created }
+            payload: { $ref: './openapi.yaml#/components/schemas/ActivityEvent' }
+
+    AuctionBidFrame:
+      description: |
+        A bid was accepted. Same payload for every viewer, masked by the auction's `visibility`:
+        - `full`: `bid.priceIdr` is the real price and `currentPriceIdr` the new best price.
+        - `rank_only` and `sealed`: `bid.priceIdr` is 0 and `currentPriceIdr` is absent.
+        In all cases `bid.bidder` is the stable masked label (`Supplier N` for reverse and sealed auctions, `Bidder N`
+        otherwise, N derived from auction id + user id), and `bid.mine` is never set. Bidders learn their own price,
+        status and rank from `bid.status` on `user:{id}`. In replayed frames `currentPriceIdr`, `bidCount` and
+        `participants` are the current values, not the values at that bid.
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - required: [seq]
+          properties:
+            type: { const: auction.bid }
+            payload: { $ref: './openapi.yaml#/components/schemas/AuctionEventBid' }
+    AuctionExtendedFrame:
+      description: Anti-sniping extension, sent right after the bid that triggered it (status becomes `extended`).
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - required: [seq]
+          properties:
+            type: { const: auction.extended }
+            payload: { $ref: './openapi.yaml#/components/schemas/AuctionEventExtended' }
+    AuctionPriceFrame:
+      description: Dutch auctions only; the ask stepped down.
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - required: [seq]
+          properties:
+            type: { const: auction.price }
+            payload: { $ref: './openapi.yaml#/components/schemas/AuctionEventPrice' }
+    AuctionClosedFrame:
+      description: The auction stopped taking bids. `status` is `closed`, or `awarded` when a Dutch price was accepted.
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - required: [seq]
+          properties:
+            type: { const: auction.closed }
+            payload: { $ref: './openapi.yaml#/components/schemas/AuctionEventClosed' }
+    AuctionStateFrame:
+      description: |
+        Snapshot of the auction's live facts. Sent (1) as the last frame of every replay, with `seq` = head, so events
+        that are not stored individually (extended, price, closed, status changes) are covered; and (2) live for
+        status changes that have no event of their own: start (`scheduled`/`qualification` → `live`), freeze,
+        unfreeze, award, cancel.
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - required: [seq]
+          properties:
+            type: { const: auction.state }
+            payload: { $ref: '#/components/schemas/AuctionEventState' }
+    AuctionEventState:
+      type: object
+      required: [kind, status, endsAt, bidCount, participants]
+      properties:
+        kind: { const: state }
+        status: { $ref: './openapi.yaml#/components/schemas/AuctionStatus' }
+        endsAt: { type: string, format: date-time }
+        currentPriceIdr:
+          type: integer
+          description: Same masking as `Auction.currentPriceIdr` (absent for `rank_only` and `sealed`; the ask for Dutch).
+        bidCount: { type: integer }
+        participants: { type: integer }
+
+    NotificationCreatedFrame:
+      description: A stored notification (only when the user's preference for its type has `inApp` on).
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - properties:
+            type: { const: notification.created }
+            payload: { $ref: './openapi.yaml#/components/schemas/AppNotification' }
+    BidStatusFrame:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - properties:
+            type: { const: bid.status }
+            payload: { $ref: '#/components/schemas/BidStatusEvent' }
+    BidStatusEvent:
+      type: object
+      description: |
+        The user's own bid on one auction changed. Sent to the bidder after their own bid or withdrawal, and to every
+        other bidder whose `status` or `rank` changed because of someone else's bid, a withdrawal, closing or award.
+        Sealed auctions send nothing to other bidders while live (no ranks), and `rank` stays absent until closed.
+      required: [auctionId, bid, status, canWithdraw, updatedAt]
+      properties:
+        auctionId: { type: string }
+        bid:
+          allOf:
+            - $ref: './openapi.yaml#/components/schemas/PublicBid'
+          description: "The user's current bid with its real price and `mine: true`; `bid.id` matches the public `auction.bid` frame."
+        status: { $ref: './openapi.yaml#/components/schemas/BidStatus' }
+        rank:
+          type: integer
+          minimum: 1
+          description: 1 = best. As `MyBid.rank`.
+        canWithdraw: { type: boolean }
+        updatedAt: { type: string, format: date-time }
+    TradeUpdatedFrame:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - properties:
+            type: { const: trade.updated }
+            payload:
+              type: object
+              description: A trade the user is a party of changed; refetch `/me/transactions/{transactionId}` for the details.
+              required: [transactionId, status, updatedAt]
+              properties:
+                transactionId: { type: string }
+                status: { $ref: './openapi.yaml#/components/schemas/TransactionStatus' }
+                updatedAt: { type: string, format: date-time }
+    MmActivityFrame:
+      description: Market maker operations feed (formerly `mm:{id}:events`). Only for users with the market_maker capability.
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - properties:
+            type: { const: mm.activity }
+            payload: { $ref: './openapi.yaml#/components/schemas/ActivityEvent' }
+
+    ConversationMessage:
+      type: object
+      description: '`Conversation.messages[]` of the REST contract plus `seq`, `clientMsgId` and edit state.'
+      required: [id, conversationId, seq, by, text, at]
+      properties:
+        id: { type: string }
+        conversationId: { type: string }
+        seq:
+          type: integer
+          description: Position of the message in the conversation (`messages.seq`).
+        by:
+          type: string
+          description: Display name of the author.
+        userId:
+          type: string
+          description: Author's user id; absent for fictional participants.
+        text:
+          type: string
+          description: Empty when `deletedAt` is set.
+        clientMsgId:
+          type: string
+          format: uuid
+          description: Present on messages posted with one, so the sender can replace its optimistic copy.
+        at: { type: string, format: date-time }
+        editedAt: { type: string, format: date-time }
+        deletedAt: { type: string, format: date-time }
+    MessageCreatedFrame:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - required: [seq]
+          properties:
+            type: { const: message.created }
+            payload: { $ref: '#/components/schemas/ConversationMessage' }
+    MessageUpdatedFrame:
+      description: |
+        A message's text changed server side. Takes a new `seq` (the envelope's), the message keeps its own
+        `payload.seq`. No client frame or REST endpoint edits messages yet; reserved for moderation and a future edit endpoint.
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - required: [seq]
+          properties:
+            type: { const: message.updated }
+            payload: { $ref: '#/components/schemas/ConversationMessage' }
+    MessageDeletedFrame:
+      description: A message was removed (moderation). The payload has `deletedAt` set and an empty `text`. Same seq rules as `message.updated`.
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - required: [seq]
+          properties:
+            type: { const: message.deleted }
+            payload: { $ref: '#/components/schemas/ConversationMessage' }
+    TypingFrame:
+      description: Another participant is typing. Not sent back to the typing user. Show until `until` unless renewed.
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - properties:
+            type: { const: typing }
+            payload:
+              type: object
+              required: [conversationId, userId, by, until]
+              properties:
+                conversationId: { type: string }
+                userId: { type: string }
+                by: { type: string, description: Display name. }
+                until: { type: string, format: date-time, description: 'Receipt time + 5 s.' }
+    ReadFrame:
+      description: A participant's read position advanced. Sent to every subscriber, the reader's other tabs included.
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - properties:
+            type: { const: read }
+            payload:
+              type: object
+              required: [conversationId, userId, seq, at]
+              properties:
+                conversationId: { type: string }
+                userId: { type: string }
+                seq: { type: integer, description: New `last_read_seq` of that participant. }
+                at: { type: string, format: date-time }

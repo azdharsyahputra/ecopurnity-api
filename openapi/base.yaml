@@ -23,9 +23,9 @@ info:
       `x-audit: true` on the operation).
     - **Access** is stated per operation in `x-access`: `public`, `session` (any signed-in user), `capability:<name>`
       (`market_maker`, `admin`, ...), or `org:<resource>.<action>` (organization role permission).
-    - **Realtime** is a WebSocket outside this document: messages are `{ channel, type, payload, ts }` on channels
-      `public:stats`, `public:activity`, `auction:{id}` (`AuctionEvent`) and `user:{id}:notifications`
-      (`AppNotification`).
+    - **Realtime** is a WebSocket (`GET /api/v1/ws`) described in `api/asyncapi.yaml` and `docs/realtime.md`:
+      events are `{ channel, type, seq?, payload, ts }` on channels `public:stats`, `public:activity`, `auction:{id}`
+      (`AuctionEvent`), `user:{id}` (`AppNotification`, own-bid status, trade updates) and `conversation:{id}`.
 
     ## Error codes shared by many endpoints
     `unauthenticated` (401), `forbidden` (403), `not_found` (404), `validation` (422), `invalid_transition` (409).

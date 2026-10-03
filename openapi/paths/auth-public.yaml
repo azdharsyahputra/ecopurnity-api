@@ -69,7 +69,7 @@
           application/json:
             schema: { $ref: '#/components/schemas/AuthPublicOk' }
       '401': { $ref: '#/components/responses/Unauthenticated', description: 'invalid_credentials: email or password is wrong.' }
-      '409': { $ref: '#/components/responses/Conflict', description: 'not_suspended: the account is not suspended. already_appealed: an appeal was already submitted (one per account, even if denied).' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'not_suspended: the account is not suspended. already_appealed: an appeal was already submitted for the current suspension (one per suspension episode, keyed by users.suspended_at; a later suspension can be appealed again).' }
       '422': { $ref: '#/components/responses/Validation', description: 'fields: reason (min 20 characters after trimming).' }
 
 /auth/register:

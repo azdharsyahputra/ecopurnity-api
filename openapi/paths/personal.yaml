@@ -770,7 +770,7 @@
   get:
     operationId: listMyNotifications
     summary: List my notifications
-    description: Newest first as stored. Not paginated. New notifications are also pushed on the realtime channel `user:{id}:notifications`.
+    description: Newest first as stored. Not paginated. New notifications are also pushed on the realtime channel `user:{id}` (`notification.created`).
     tags: [Personal]
     x-access: session
     responses:

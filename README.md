@@ -62,4 +62,4 @@ asynchronously.
 - Places where the mock is sloppy (unvalidated inputs, 500s on bad enums, odd status codes) are marked `x-note` on the
   operation. Decide per case whether the real API should keep the mock's behaviour or be stricter; stricter is safe for
   the frontend unless the note says the UI relies on it.
-- Realtime (WebSocket) is described in `info.description`; payload schemas are `RealtimeMessage` and `AuctionEvent`.
+- Realtime (WebSocket) is `api/asyncapi.yaml` (AsyncAPI 3.0), explained in `docs/realtime.md`.
