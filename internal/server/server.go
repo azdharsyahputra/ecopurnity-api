@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -99,7 +100,26 @@ func (s *Server) Handler() (http.Handler, error) {
 		BasePath+"/auth/resend-verification", BasePath+"/me/kyc/phone/verify",
 	)
 	mux.Handle(BasePath+"/", creds(s.withSession(validate(apiHandler))))
-	return mux, nil
+	return s.recoverPanics(mux), nil
+}
+
+// recoverPanics turns a panic in any handler into a 500 in the error contract (logged with the stack) instead of
+// killing the connection.
+func (s *Server) recoverPanics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if v := recover(); v != nil {
+				if v == http.ErrAbortHandler {
+					panic(v)
+				}
+				if s.Log != nil {
+					s.Log.Error("panic", "method", r.Method, "path", r.URL.Path, "panic", v, "stack", string(debug.Stack()))
+				}
+				writeError(w, &Error{Status: http.StatusInternalServerError, Code: "internal", Message: "Terjadi kesalahan di server"})
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // handlerError maps an error returned by an operation to the error contract.

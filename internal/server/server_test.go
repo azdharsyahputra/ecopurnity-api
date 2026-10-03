@@ -67,10 +67,8 @@ func TestRoutingValidationAndErrors(t *testing.T) {
 // Every operation in the spec is routed: with placeholder path params, no body and no session it must reach request
 // validation (422), the handler (501 until implemented, or the handler's own 2xx/401/403/...), never 404/405/5xx.
 func TestEveryOperationIsRouted(t *testing.T) {
-	h, err := (&Server{}).Handler()
-	if err != nil {
-		t.Fatal(err)
-	}
+	e := newEnv(t) // a real database: public reads run their queries
+	h := e.srv.Config.Handler
 	spec, err := apiSpec()
 	if err != nil {
 		t.Fatal(err)

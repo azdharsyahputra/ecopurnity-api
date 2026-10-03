@@ -45,7 +45,7 @@ func loadIdentity(ctx context.Context, q dbtx, userID string) (api.Identity, err
 	}
 	id.Preferences.MinPriceIdr = intPtr(minPrice)
 	id.Preferences.MaxBudgetIdr = intPtr(maxBudget)
-	id.Preferences.DeliveryRadiusKm = float32(radius)
+	id.Preferences.DeliveryRadiusKm = radius
 
 	v, err := loadVerification(ctx, q, userID)
 	if err != nil {
@@ -79,7 +79,7 @@ func loadIdentity(ctx context.Context, q dbtx, userID string) (api.Identity, err
 }
 
 // completeness is the share of profile checks that pass (frontend src/mocks/personal.ts completeness()).
-func completeness(i api.Identity) float32 {
+func completeness(i api.Identity) float64 {
 	has := func(kinds ...api.CapacityKind) bool {
 		for _, it := range i.Items {
 			for _, k := range kinds {
@@ -101,7 +101,7 @@ func completeness(i api.Identity) float32 {
 			n++
 		}
 	}
-	return float32(n) / float32(len(checks))
+	return float64(n) / float64(len(checks))
 }
 
 func (s *Server) GetMyIdentity(ctx context.Context, _ api.GetMyIdentityRequestObject) (api.GetMyIdentityResponseObject, error) {

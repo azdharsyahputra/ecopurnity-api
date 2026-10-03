@@ -9378,7 +9378,8 @@ paths:
       summary: List the public listing catalog
       description: |
         Supply and demand listings that are public (status available, in_market, open or matched) from active users
-        (restricted and suspended owners are hidden), plus demo listings derived from markets. Newest first. `q` matches
+        (restricted and suspended owners are hidden). Newest first. (The frontend mock also fabricates demo listings from
+        markets; the API serves real listings only.) `q` matches
         item, code and owner name. Owner contact details are never exposed.
       tags:
         - Public
@@ -10211,7 +10212,11 @@ paths:
       summary: Create a supply or demand listing
       description: |
         `code` is `SUP-xxx` / `DEM-xxx`. A new supply starts `available`, a new demand starts `open`. A history entry
-        `Dibuat` is recorded.
+        `Dibuat` is recorded. Restricted accounts cannot create listings (`403 account_restricted`).
+
+        Validation (422, per field): item (non-blank, max 200), quantity (value > 0, unit non-blank), location
+        (non-blank), priceIdr (supply, >= 0), budgetIdr (demand, >= 0), deadline (demand, not in the past),
+        expiresAt (supply, after availableFrom), attachments (at most 10 names).
       tags:
         - Personal
       x-access: session
@@ -10230,9 +10235,12 @@ paths:
                 $ref: "#/components/schemas/Listing"
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+          description: account_restricted.
         "422":
           $ref: "#/components/responses/Validation"
-          description: "fields: item (required, non-blank), quantity (quantity.value must be > 0)."
+          description: "fields: item, quantity, location, priceIdr / budgetIdr, deadline, expiresAt, attachments (see description)."
   /me/listings/{id}:
     parameters:
       - name: id
@@ -10262,7 +10270,11 @@ paths:
     patch:
       operationId: updateMyListing
       summary: Update one of my listings
-      description: Merges the sent fields into the listing, sets `updatedAt` and adds history entry `Diperbarui`.
+      description: |
+        Updates the editable fields that are sent (the ListingInput fields of the listing's kind), validated like create;
+        sets `updatedAt` and adds history entry `Diperbarui`. `kind`, `status`, `code` and ids cannot be changed here.
+        Fields of the other kind (`priceIdr` on a demand, `budgetIdr` on a supply, ...) are rejected. A listing that is
+        finished (sold, expired, fulfilled, cancelled) cannot be edited (`409 not_editable`).
       tags:
         - Personal
       x-access: session
@@ -10284,7 +10296,13 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
           description: not_found.
-      x-note: The mock merges ANY body field without validation (even status, id, kind). The BE should restrict the patch to the editable ListingInput fields and validate like create.
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: "not_editable: the listing is finished."
+        "422":
+          $ref: "#/components/responses/Validation"
+          description: Same fields as create; plus a field of the other kind is rejected.
+      x-note: The mock merges any body field without validation; the frontend only sends editable fields, so the stricter API is compatible.
   /me/listings/{id}/archive:
     post:
       operationId: archiveMyListing
@@ -10317,7 +10335,10 @@ paths:
       summary: Put a listing into a market
       description: |
         Sets the listing `in_market` with `marketId`, adds history `Dimasukkan ke <market name>` and marks the caller as
-        having joined that market (`/me/markets`).
+        having joined that market (`/me/markets`). The caller also becomes a market participant (supply listing:
+        supplier, demand: buyer), active right away or pending the market maker's approval per the market's settings.
+        The market must be `active` or `formation` (`409 market_closed`) and in the listing's category (`422 marketId`);
+        a finished listing cannot be moved (`409 not_editable`).
       tags:
         - Personal
       x-access: session
@@ -10345,7 +10366,13 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
           description: "not_found: listing or market does not exist."
-      x-note: The mock does not create a market-maker participant entry here (unlike POST /me/markets/{id}/join) and does not check listing/market category or status.
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: market_closed, not_editable.
+        "422":
+          $ref: "#/components/responses/Validation"
+          description: "fields.marketId: the market is in another category."
+      x-note: The mock skips the participant entry and the status/category checks.
   /me/markets:
     get:
       operationId: listMyMarkets

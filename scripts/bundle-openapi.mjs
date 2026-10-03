@@ -51,6 +51,8 @@ const to30 = (x) => {
     }
   }
   if ('const' in o) { o.enum = [o.const]; delete o.const }
+  // Generators default `number` to float32; quantities and rates need float64.
+  if (o.type === 'number' && !o.format) o.format = 'double'
   if (Array.isArray(o.examples) && !o.content) { o.example = o.examples[0]; delete o.examples }
   for (const [ex, bound] of [['exclusiveMinimum', 'minimum'], ['exclusiveMaximum', 'maximum']]) {
     if (typeof o[ex] === 'number') { o[bound] = o[ex]; o[ex] = true }

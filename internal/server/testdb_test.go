@@ -221,3 +221,5 @@ func testStorage() *storage.Store {
 }
 
 func (e *testEnv) sms() *sms.Memory { return e.server.SMS.(*sms.Memory) }
+
+func t0() context.Context { return context.Background() }

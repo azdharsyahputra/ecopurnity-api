@@ -759,7 +759,8 @@
     summary: List the public listing catalog
     description: |
       Supply and demand listings that are public (status available, in_market, open or matched) from active users
-      (restricted and suspended owners are hidden), plus demo listings derived from markets. Newest first. `q` matches
+      (restricted and suspended owners are hidden). Newest first. (The frontend mock also fabricates demo listings from
+      markets; the API serves real listings only.) `q` matches
       item, code and owner name. Owner contact details are never exposed.
     tags: [Public]
     x-access: public
