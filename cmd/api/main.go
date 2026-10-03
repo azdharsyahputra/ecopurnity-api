@@ -48,10 +48,17 @@ func run(log *slog.Logger) error {
 	}
 	defer ch.Close()
 
-	h, err := (&server.Server{
-		DB: pg, Analytics: ch, Log: log, Mail: mail.Log{Logger: log},
+	var mailer mail.Mailer = mail.Log{Logger: log}
+	if cfg.SMTPHost != "" {
+		mailer = mail.SMTP{Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername, Password: cfg.SMTPPassword, From: cfg.SMTPFrom, TLS: cfg.SMTPTLS}
+		log.Info("smtp", "host", cfg.SMTPHost, "port", cfg.SMTPPort, "tls", cfg.SMTPTLS)
+	}
+	api := &server.Server{
+		DB: pg, Analytics: ch, Log: log, Mail: mailer, Secret: cfg.Secret,
 		AppURL: cfg.AppURL, CookieSecure: cfg.CookieSecure, SessionTTL: cfg.SessionTTL, GoogleDevLogin: cfg.GoogleDevLogin,
-	}).Handler()
+	}
+	defer api.WaitMail() // let queued emails go out on shutdown
+	h, err := api.Handler()
 	if err != nil {
 		return err
 	}

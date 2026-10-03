@@ -1,4 +1,4 @@
-# Local infrastructure: PostgreSQL primary + streaming replica, and ClickHouse.
+# Local infrastructure: PostgreSQL primary + streaming replica, ClickHouse, and Mailpit (catches outgoing email).
 #   make up      start everything       make down    stop (keeps data)       make reset   stop and wipe volumes
 name: ecopurnity
 
@@ -59,6 +59,13 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
+  # Dev SMTP catcher: the API sends to localhost:1025, read the mail at http://localhost:8025.
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "1025:1025"
+      - "8025:8025"
 
 volumes:
   pg-primary:

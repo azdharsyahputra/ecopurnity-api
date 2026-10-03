@@ -33,6 +33,17 @@ type Config struct {
 	CookieSecure bool
 	// SessionTTL is the sliding lifetime of a session.
 	SessionTTL time.Duration
+	// Secret keys HMACs of one-time codes (and later app-level encryption). At least 32 bytes; never commit it.
+	Secret []byte
+
+	// SMTP for transactional email. Empty SMTPHost logs messages instead of sending them.
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUsername string
+	SMTPPassword string
+	SMTPFrom     string
+	SMTPTLS      string // tls | starttls | none (default from the port: 465 tls, 25/1025 none, else starttls)
+
 	// GoogleDevLogin enables the mock-compatible POST /auth/google (fixed test account). Never in production;
 	// the real OAuth flow replaces it.
 	GoogleDevLogin bool
@@ -47,6 +58,32 @@ func Load() (Config, error) {
 		ClickHouseDatabase: env("CLICKHOUSE_DATABASE", "ecopurnity"),
 		ClickHouseUser:     env("CLICKHOUSE_USER", "default"),
 		ClickHousePassword: os.Getenv("CLICKHOUSE_PASSWORD"),
+	}
+	c.Secret = []byte(os.Getenv("APP_SECRET"))
+	if len(c.Secret) < 32 {
+		return c, fmt.Errorf("APP_SECRET must be at least 32 characters")
+	}
+	c.SMTPHost = os.Getenv("SMTP_HOST")
+	c.SMTPUsername = os.Getenv("SMTP_USERNAME")
+	c.SMTPPassword = os.Getenv("SMTP_PASSWORD")
+	c.SMTPFrom = env("SMTP_FROM", "Ecopurnity <no-reply@ecopurnity.local>")
+	if c.SMTPHost != "" {
+		port, err := strconv.Atoi(env("SMTP_PORT", "587"))
+		if err != nil {
+			return c, fmt.Errorf("SMTP_PORT must be a number")
+		}
+		c.SMTPPort = port
+		def := "starttls"
+		switch port {
+		case 465:
+			def = "tls"
+		case 25, 1025:
+			def = "none"
+		}
+		c.SMTPTLS = env("SMTP_TLS", def)
+		if c.SMTPTLS != "tls" && c.SMTPTLS != "starttls" && c.SMTPTLS != "none" {
+			return c, fmt.Errorf("SMTP_TLS must be tls, starttls or none")
+		}
 	}
 	c.AppURL = env("APP_URL", "http://localhost:5173")
 	c.CookieSecure = env("COOKIE_SECURE", "true") == "true"

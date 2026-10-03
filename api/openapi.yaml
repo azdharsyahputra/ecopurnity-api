@@ -1263,11 +1263,12 @@ components:
     AuthPublicVerifyEmailRequest:
       type: object
       required:
-        - token
+        - code
       properties:
-        token:
+        code:
           type: string
-          description: Token from the verification email link.
+          pattern: ^[0-9]{6}$
+          description: The 6-digit code from the verification email.
     AwardRule:
       type: string
       description: Market rules award rule (pro_rata = split across all qualifying bidders). Not to be confused with `OrgAwardRule`.
@@ -9135,7 +9136,7 @@ paths:
       summary: Create an account
       description: |
         Creates a participant account (no capabilities, no orgs, `onboarded: false`, `emailVerified: false`), derives the
-        username from the email's local part, issues an email verification token and signs the user in
+        username from the email's local part, emails a 6-digit verification code (see verifyEmail) and signs the user in
         (sets the `ecp_session` cookie).
       tags:
         - Auth
@@ -9169,16 +9170,28 @@ paths:
   /auth/resend-verification:
     post:
       operationId: resendVerificationEmail
-      summary: Resend the verification email
-      description: Issues a new verification token for the signed-in user and emails it (replaces any earlier token).
+      summary: Email a new verification code
+      description: |
+        Issues a new 6-digit code for the signed-in user (replacing the previous one) and emails it. At most one code per
+        60 seconds. A verified account answers 204 without sending anything.
       tags:
         - Auth
       x-access: session
       responses:
         "204":
-          description: Email queued.
+          description: Code sent (or nothing to do).
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "429":
+          description: "`resend_cooldown`: a code was sent less than 60 seconds ago. `Retry-After` gives the seconds left."
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /auth/reset-password:
     post:
       operationId: resetPassword
@@ -9209,12 +9222,17 @@ paths:
   /auth/verify-email:
     post:
       operationId: verifyEmail
-      summary: Verify an email address with a token
-      description: Marks the matching account's email verified and consumes the token. Does not need a session.
+      summary: Verify the signed-in user's email with the emailed code
+      description: |
+        Email verification is a 6-digit one-time code (OTP), emailed on register and on resend. The user is signed in
+        right after registering, so this needs the session; the code is checked against the user's latest code.
+        - A code is valid for 10 minutes and allows 5 attempts; the 5th wrong attempt burns it (`too_many_attempts`), and
+          the user asks for a new one with `POST /auth/resend-verification`.
+        - A verified account answers 200 with the user (idempotent).
+        - Only an HMAC of the code (keyed by the server secret) is stored.
       tags:
         - Auth
-      x-access: public
-      security: []
+      x-access: session
       requestBody:
         required: true
         content:
@@ -9228,8 +9246,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/User"
-        "400":
-          description: "invalid_token: the link is invalid or expired."
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "422":
+          $ref: "#/components/responses/Validation"
+          description: '`invalid_code` with fields.code ("Kode salah. Sisa N percobaan."), or `code_expired` with fields.code when there is no live code (expired, burned, or never sent): the user requests a new one.'
+        "429":
+          description: "`too_many_attempts`: the 5th wrong code; the code is burned and a new one must be requested."
           content:
             application/json:
               schema:

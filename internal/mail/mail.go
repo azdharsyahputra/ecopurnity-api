@@ -10,21 +10,23 @@ import (
 type Message struct {
 	To      string
 	Subject string
-	Body    string
-	// Link is the call-to-action URL (verification / reset), kept separately so tests and the dev log can read it.
+	Body    string // plain text
+	HTML    string // optional HTML alternative
+	// Link and Code are the message's call to action (reset link, verification code), kept separately so tests and
+	// the dev log can read them.
 	Link string
+	Code string
 }
 
 type Mailer interface {
 	Send(ctx context.Context, m Message) error
 }
 
-// Log is the development mailer: it writes the message (with its link) to the log instead of sending it.
-// ponytail: no SMTP/provider yet; add one implementing Mailer when there is a sending domain.
+// Log is the fallback mailer when SMTP is not configured: it writes the message (link/code) to the log.
 type Log struct{ Logger *slog.Logger }
 
 func (l Log) Send(_ context.Context, m Message) error {
-	l.Logger.Info("email", "to", m.To, "subject", m.Subject, "link", m.Link)
+	l.Logger.Info("email", "to", m.To, "subject", m.Subject, "link", m.Link, "code", m.Code)
 	return nil
 }
 

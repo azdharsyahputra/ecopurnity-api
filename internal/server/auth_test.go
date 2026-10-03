@@ -110,35 +110,92 @@ func token(t *testing.T, link string) string {
 	return u.Query().Get("token")
 }
 
-func TestEmailVerification(t *testing.T) {
+func TestEmailVerificationCode(t *testing.T) {
 	e := newEnv(t)
 	c := e.client()
 	email := uniqueEmail(t, "verify")
-	e.call(c, "POST", "/auth/register", map[string]any{"name": "V", "email": email, "password": "rahasia123"})
-	first, ok := e.mail.Last(email)
-	if !ok || !strings.HasPrefix(first.Link, "http://app.test/verify-email?token=") {
+	e.call(c, "POST", "/auth/register", map[string]any{"name": "Vina", "email": email, "password": "rahasia123"})
+	first, ok := e.lastMail(email)
+	if !ok || len(first.Code) != 6 || !strings.Contains(first.Subject, first.Code) || !strings.Contains(first.Body, first.Code) {
 		t.Fatalf("verification mail: %+v", first)
 	}
+	// Only an HMAC is stored, never the code.
+	if n := e.scalar(`SELECT count(*) FROM auth_tokens WHERE token_hash = convert_to($1, 'UTF8')`, first.Code); n != int64(0) {
+		t.Fatal("code stored in clear")
+	}
 
-	// Resend replaces the earlier token.
+	// Needs the session; malformed codes are rejected by the spec (pattern).
+	if r := e.call(e.client(), "POST", "/auth/verify-email", map[string]any{"code": first.Code}); r.Status != 401 {
+		t.Fatalf("no session: %d", r.Status)
+	}
+	if r := e.call(c, "POST", "/auth/verify-email", map[string]any{"code": "12ab"}); r.Status != 422 || r.field("code") == "" {
+		t.Fatalf("malformed: %d %v", r.Status, r.Body)
+	}
+
+	// Resend is rate limited to one per minute.
+	r := e.call(c, "POST", "/auth/resend-verification", nil)
+	if r.Status != 429 || r.code() != "resend_cooldown" || r.Header.Get("Retry-After") == "" {
+		t.Fatalf("cooldown: %d %v", r.Status, r.Body)
+	}
+	e.exec(`UPDATE auth_tokens SET created_at = created_at - interval '2 minutes' WHERE user_id = (SELECT id FROM users WHERE email = $1)`, email)
 	if r := e.call(c, "POST", "/auth/resend-verification", nil); r.Status != 204 {
 		t.Fatalf("resend: %d %v", r.Status, r.Body)
 	}
-	second, _ := e.mail.Last(email)
-	if r := e.call(e.client(), "POST", "/auth/verify-email", map[string]any{"token": token(t, first.Link)}); r.Status != 400 || r.code() != "invalid_token" {
-		t.Fatalf("old token: %d %v", r.Status, r.Body)
+	second, _ := e.lastMail(email)
+	if second.Code == first.Code {
+		// Astronomically unlikely; the codes are independent.
+		t.Log("same code twice")
 	}
-	// No session needed to verify.
-	r := e.call(e.client(), "POST", "/auth/verify-email", map[string]any{"token": token(t, second.Link)})
+	// The old code no longer works once a new one was sent.
+	if first.Code != second.Code {
+		if r := e.call(c, "POST", "/auth/verify-email", map[string]any{"code": first.Code}); r.Status != 422 || r.code() != "invalid_code" {
+			t.Fatalf("old code: %d %v", r.Status, r.Body)
+		}
+	}
+	r = e.call(c, "POST", "/auth/verify-email", map[string]any{"code": second.Code})
 	if r.Status != 200 || r.Body["emailVerified"] != true {
 		t.Fatalf("verify: %d %v", r.Status, r.Body)
 	}
-	// Single use.
-	if r := e.call(e.client(), "POST", "/auth/verify-email", map[string]any{"token": token(t, second.Link)}); r.Status != 400 {
-		t.Fatalf("reuse: %d", r.Status)
+	// Idempotent once verified; resend does nothing.
+	if r := e.call(c, "POST", "/auth/verify-email", map[string]any{"code": "000000"}); r.Status != 200 {
+		t.Fatalf("verified again: %d %v", r.Status, r.Body)
 	}
-	if r := e.call(e.client(), "POST", "/auth/resend-verification", nil); r.Status != 401 {
-		t.Fatalf("resend without session: %d", r.Status)
+	if r := e.call(c, "POST", "/auth/resend-verification", nil); r.Status != 204 {
+		t.Fatalf("resend when verified: %d", r.Status)
+	}
+}
+
+func TestEmailCodeAttemptsAndExpiry(t *testing.T) {
+	e := newEnv(t)
+	c := e.client()
+	email := uniqueEmail(t, "brute")
+	e.call(c, "POST", "/auth/register", map[string]any{"name": "B", "email": email, "password": "rahasia123"})
+	m, _ := e.lastMail(email)
+	wrong := "000000"
+	if m.Code == wrong {
+		wrong = "111111"
+	}
+	for i := 1; i <= 4; i++ {
+		r := e.call(c, "POST", "/auth/verify-email", map[string]any{"code": wrong})
+		if r.Status != 422 || r.code() != "invalid_code" || !strings.Contains(r.message(), "Sisa") {
+			t.Fatalf("attempt %d: %d %v", i, r.Status, r.Body)
+		}
+	}
+	if r := e.call(c, "POST", "/auth/verify-email", map[string]any{"code": wrong}); r.Status != 429 || r.code() != "too_many_attempts" {
+		t.Fatalf("5th attempt: %d %v", r.Status, r.Body)
+	}
+	// Burned: even the right code fails now.
+	if r := e.call(c, "POST", "/auth/verify-email", map[string]any{"code": m.Code}); r.Status != 422 || r.code() != "code_expired" {
+		t.Fatalf("after burn: %d %v", r.Status, r.Body)
+	}
+
+	// Expiry.
+	e.exec(`UPDATE auth_tokens SET created_at = created_at - interval '2 minutes' WHERE user_id = (SELECT id FROM users WHERE email = $1)`, email)
+	e.call(c, "POST", "/auth/resend-verification", nil)
+	m2, _ := e.lastMail(email)
+	e.exec(`UPDATE auth_tokens SET expires_at = now() - interval '1 second' WHERE user_id = (SELECT id FROM users WHERE email = $1) AND used_at IS NULL`, email)
+	if r := e.call(c, "POST", "/auth/verify-email", map[string]any{"code": m2.Code}); r.Status != 422 || r.code() != "code_expired" {
+		t.Fatalf("expired: %d %v", r.Status, r.Body)
 	}
 }
 
@@ -153,13 +210,13 @@ func TestPasswordReset(t *testing.T) {
 	if r := e.call(e.client(), "POST", "/auth/forgot-password", map[string]any{"email": ghost}); r.Status != 204 {
 		t.Fatalf("forgot unknown: %d", r.Status)
 	}
-	if _, sent := e.mail.Last(ghost); sent {
+	if _, sent := e.lastMail(ghost); sent {
 		t.Fatal("mail sent for unknown email")
 	}
 	if r := e.call(e.client(), "POST", "/auth/forgot-password", map[string]any{"email": strings.ToUpper(email)}); r.Status != 204 {
 		t.Fatalf("forgot: %d", r.Status)
 	}
-	m, _ := e.mail.Last(email)
+	m, _ := e.lastMail(email)
 	if !strings.HasPrefix(m.Link, "http://app.test/reset-password?token=") {
 		t.Fatalf("reset mail: %+v", m)
 	}

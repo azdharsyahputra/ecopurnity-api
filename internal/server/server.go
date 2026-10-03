@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -35,6 +36,9 @@ type Server struct {
 	CookieSecure   bool          // Secure flag on the session cookie
 	SessionTTL     time.Duration // sliding session lifetime
 	GoogleDevLogin bool          // mock-compatible POST /auth/google (dev only)
+	Secret         []byte        // HMAC key for one-time codes
+
+	mailWG sync.WaitGroup
 }
 
 var _ api.StrictServerInterface = (*Server)(nil)

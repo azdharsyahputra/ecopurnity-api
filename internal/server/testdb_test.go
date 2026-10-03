@@ -79,10 +79,11 @@ func migrate(dsn string) error {
 }
 
 type testEnv struct {
-	t    *testing.T
-	srv  *httptest.Server
-	mail *mail.Memory
-	db   *db.Cluster
+	server *Server
+	t      *testing.T
+	srv    *httptest.Server
+	mail   *mail.Memory
+	db     *db.Cluster
 }
 
 func newEnv(t *testing.T) *testEnv {
@@ -97,14 +98,14 @@ func newEnv(t *testing.T) *testEnv {
 	t.Cleanup(cluster.Close)
 	mem := &mail.Memory{}
 	s := &Server{DB: cluster, Mail: mem, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		AppURL: "http://app.test", SessionTTL: 24 * time.Hour, GoogleDevLogin: true}
+		AppURL: "http://app.test", SessionTTL: 24 * time.Hour, GoogleDevLogin: true, Secret: []byte("test-secret-test-secret-test-secret!!")}
 	h, err := s.Handler()
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return &testEnv{t: t, srv: srv, mail: mem, db: cluster}
+	return &testEnv{t: t, srv: srv, mail: mem, db: cluster, server: s}
 }
 
 // client is a browser: it keeps cookies.
@@ -179,4 +180,10 @@ func (e *testEnv) scalar(sql string, args ...any) any {
 // uniqueEmail keeps tests independent inside the shared test database.
 func uniqueEmail(t *testing.T, prefix string) string {
 	return fmt.Sprintf("%s.%d@example.id", prefix, time.Now().UnixNano())
+}
+
+// lastMail waits for queued emails and returns the last one sent to `to`.
+func (e *testEnv) lastMail(to string) (mail.Message, bool) {
+	e.server.WaitMail()
+	return e.mail.Last(to)
 }

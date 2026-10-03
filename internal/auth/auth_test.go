@@ -32,3 +32,21 @@ func TestToken(t *testing.T) {
 		t.Fatalf("tokens %q %q", a, b)
 	}
 }
+
+func TestOTP(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		c := NewOTP()
+		if len(c) != 6 || strings.Trim(c, "0123456789") != "" {
+			t.Fatalf("code %q", c)
+		}
+		seen[c] = true
+	}
+	if len(seen) < 190 {
+		t.Fatalf("codes not random: %d distinct of 200", len(seen))
+	}
+	a := OTPHash([]byte("k1"), "verify_email", "u1", "123456")
+	if bytes.Equal(a, OTPHash([]byte("k2"), "verify_email", "u1", "123456")) || bytes.Equal(a, OTPHash([]byte("k1"), "verify_email", "u2", "123456")) {
+		t.Fatal("hash must depend on key and user")
+	}
+}

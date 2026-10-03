@@ -27,9 +27,9 @@ AuthPublicOk:
     ok: { type: boolean, const: true }
 AuthPublicVerifyEmailRequest:
   type: object
-  required: [token]
+  required: [code]
   properties:
-    token: { type: string, description: Token from the verification email link. }
+    code: { type: string, pattern: '^[0-9]{6}$', description: The 6-digit code from the verification email. }
 AuthPublicForgotPasswordRequest:
   type: object
   required: [email]

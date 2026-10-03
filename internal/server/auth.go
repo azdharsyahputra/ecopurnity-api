@@ -2,10 +2,13 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	netmail "net/mail"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,8 +22,10 @@ import (
 // Auth & session (spec tag Auth). Messages match the frontend mock (src/mocks/handlers.ts) word for word.
 
 const (
-	verifyTokenTTL = 7 * 24 * time.Hour
-	resetTokenTTL  = time.Hour
+	emailCodeTTL      = 10 * time.Minute
+	emailCodeAttempts = 5
+	emailCodeCooldown = 60 * time.Second
+	resetTokenTTL     = time.Hour
 )
 
 var (
@@ -158,13 +163,13 @@ func (s *Server) Register(ctx context.Context, req api.RegisterRequestObject) (a
 	}
 
 	var out api.User
-	var link string
+	var code string
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		id, err := insertUser(ctx, tx, name, email, &hash, nil, false)
 		if err != nil {
 			return err
 		}
-		if link, err = s.issueToken(ctx, tx, id, "verify_email", verifyTokenTTL, "/verify-email"); err != nil {
+		if code, err = s.issueEmailCode(ctx, tx, id); err != nil {
 			return err
 		}
 		if err := s.startSession(ctx, tx, id); err != nil {
@@ -176,8 +181,7 @@ func (s *Server) Register(ctx context.Context, req api.RegisterRequestObject) (a
 	if err != nil {
 		return nil, err
 	}
-	s.send(ctx, mail.Message{To: email, Subject: "Verifikasi email Ecopurnity", Link: link,
-		Body: fmt.Sprintf("Halo %s, klik link ini untuk memverifikasi email kamu: %s", name, link)})
+	s.send(ctx, verificationMail(email, name, code))
 	return api.Register201JSONResponse{Body: out}, nil
 }
 
@@ -227,15 +231,26 @@ func (s *Server) issueToken(ctx context.Context, q dbtx, userID, purpose string,
 	return strings.TrimRight(s.AppURL, "/") + path + "?token=" + token, nil
 }
 
-// send delivers email after the transaction committed; a failed send is logged, not surfaced (the user can resend).
+// send delivers email after the transaction committed, without holding up the response; a failed send is logged, not
+// surfaced (the user can resend). ponytail: in-process goroutine, so a crash between commit and send loses the mail;
+// move to the outbox worker when delivery must be guaranteed.
 func (s *Server) send(ctx context.Context, m mail.Message) {
 	if s.Mail == nil {
 		return
 	}
-	if err := s.Mail.Send(ctx, m); err != nil && s.Log != nil {
-		s.Log.Error("send email", "to", m.To, "subject", m.Subject, "err", err)
-	}
+	s.mailWG.Add(1)
+	go func() {
+		defer s.mailWG.Done()
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if err := s.Mail.Send(ctx, m); err != nil && s.Log != nil {
+			s.Log.Error("send email", "to", m.To, "subject", m.Subject, "err", err)
+		}
+	}()
 }
+
+// WaitMail blocks until queued emails are sent (graceful shutdown, tests).
+func (s *Server) WaitMail() { s.mailWG.Wait() }
 
 // useToken consumes a valid token and returns its user.
 func useToken(ctx context.Context, tx pgx.Tx, token, purpose string) (string, bool, error) {
@@ -250,51 +265,133 @@ func useToken(ctx context.Context, tx pgx.Tx, token, purpose string) (string, bo
 	return userID, err == nil, err
 }
 
+// issueEmailCode burns any live verification code of the user and stores a new one (as an HMAC); returns the code.
+func (s *Server) issueEmailCode(ctx context.Context, q dbtx, userID string) (string, error) {
+	if _, err := q.Exec(ctx, `UPDATE auth_tokens SET used_at = now() WHERE user_id = $1 AND purpose = 'verify_email' AND used_at IS NULL`, userID); err != nil {
+		return "", err
+	}
+	code := auth.NewOTP()
+	_, err := q.Exec(ctx, `INSERT INTO auth_tokens (token_hash, user_id, purpose, expires_at) VALUES ($1, $2, 'verify_email', now() + $3)`,
+		auth.OTPHash(s.Secret, "verify_email", userID, code), userID, emailCodeTTL)
+	return code, err
+}
+
+func verificationMail(to, name, code string) mail.Message {
+	return mail.Message{
+		To: to, Code: code,
+		Subject: fmt.Sprintf("%s adalah kode verifikasi Ecopurnity kamu", code),
+		Body: fmt.Sprintf("Halo %s,\n\nKode verifikasi email kamu: %s\n\nKode berlaku 10 menit. Jangan bagikan kode ini ke siapa pun, "+
+			"termasuk yang mengaku dari Ecopurnity.\n\nKalau kamu tidak mendaftar di Ecopurnity, abaikan email ini.", name, code),
+		HTML: fmt.Sprintf(`<div style="font-family:system-ui,sans-serif;max-width:480px;margin:auto;color:#1f2937">`+
+			`<p>Halo %s,</p><p>Kode verifikasi email kamu:</p>`+
+			`<p style="font-size:32px;font-weight:700;letter-spacing:8px;margin:16px 0">%s</p>`+
+			`<p>Kode berlaku 10 menit. Jangan bagikan kode ini ke siapa pun, termasuk yang mengaku dari Ecopurnity.</p>`+
+			`<p style="color:#6b7280;font-size:13px">Kalau kamu tidak mendaftar di Ecopurnity, abaikan email ini.</p></div>`,
+			html.EscapeString(name), code),
+	}
+}
+
+func codeError(status int, code, message string) *Error {
+	return &Error{Status: status, Code: code, Message: message, Fields: map[string]string{"code": message}}
+}
+
+// VerifyEmail checks the signed-in user's 6-digit code: 10 minutes, 5 attempts, then it is burned.
 func (s *Server) VerifyEmail(ctx context.Context, req api.VerifyEmailRequestObject) (api.VerifyEmailResponseObject, error) {
+	sess, err := requireUser(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var out api.User
-	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		userID, ok, err := useToken(ctx, tx, req.Body.Token, "verify_email")
-		if err != nil {
+	var codeErr *Error
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var verified bool
+		if err := tx.QueryRow(ctx, `SELECT email_verified_at IS NOT NULL FROM users WHERE id = $1 FOR UPDATE`, sess.UserID).Scan(&verified); err != nil {
 			return err
 		}
-		if !ok {
-			return &Error{Status: http.StatusBadRequest, Code: "invalid_token", Message: "Link verifikasi tidak valid atau sudah kedaluwarsa"}
+		if !verified {
+			var hash []byte
+			var attempts int
+			err := tx.QueryRow(ctx, `
+				SELECT token_hash, attempts FROM auth_tokens
+				WHERE user_id = $1 AND purpose = 'verify_email' AND used_at IS NULL AND expires_at > now()
+				ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, sess.UserID).Scan(&hash, &attempts)
+			if errors.Is(err, pgx.ErrNoRows) {
+				codeErr = codeError(422, "code_expired", "Kode sudah kedaluwarsa. Minta kode baru.")
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if !hmac.Equal(hash, auth.OTPHash(s.Secret, "verify_email", sess.UserID, req.Body.Code)) {
+				attempts++
+				// The wrong guess is committed (not rolled back) so attempts really count.
+				if attempts >= emailCodeAttempts {
+					_, err = tx.Exec(ctx, `UPDATE auth_tokens SET attempts = $2, used_at = now() WHERE token_hash = $1`, hash, attempts)
+					codeErr = codeError(429, "too_many_attempts", "Terlalu banyak percobaan. Minta kode baru.")
+				} else {
+					_, err = tx.Exec(ctx, `UPDATE auth_tokens SET attempts = $2 WHERE token_hash = $1`, hash, attempts)
+					codeErr = codeError(422, "invalid_code", fmt.Sprintf("Kode salah. Sisa %d percobaan.", emailCodeAttempts-attempts))
+				}
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE auth_tokens SET used_at = now() WHERE token_hash = $1`, hash); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE users SET email_verified_at = now() WHERE id = $1`, sess.UserID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE parties SET verified = true WHERE user_id = $1`, sess.UserID); err != nil {
+				return err
+			}
 		}
-		if _, err := tx.Exec(ctx, `UPDATE users SET email_verified_at = coalesce(email_verified_at, now()) WHERE id = $1`, userID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `UPDATE parties SET verified = true WHERE user_id = $1`, userID); err != nil {
-			return err
-		}
-		out, err = loadUser(ctx, tx, userID)
+		out, err = loadUser(ctx, tx, sess.UserID)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
+	if codeErr != nil {
+		return nil, codeErr
+	}
 	return api.VerifyEmail200JSONResponse(out), nil
 }
 
+// ResendVerificationEmail emails a fresh code, at most once per minute.
 func (s *Server) ResendVerificationEmail(ctx context.Context, _ api.ResendVerificationEmailRequestObject) (api.ResendVerificationEmailResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var email, name string
-	var verified bool
-	if err := s.DB.Primary().QueryRow(ctx, `SELECT email, name, email_verified_at IS NOT NULL FROM users WHERE id = $1`, sess.UserID).
-		Scan(&email, &name, &verified); err != nil {
-		return nil, err
-	}
-	if verified {
-		return api.ResendVerificationEmail204Response{}, nil
-	}
-	link, err := s.issueToken(ctx, s.DB.Primary(), sess.UserID, "verify_email", verifyTokenTTL, "/verify-email")
+	var email, name, code string
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var verified bool
+		var wait float64
+		if err := tx.QueryRow(ctx, `
+			SELECT u.email, u.name, u.email_verified_at IS NOT NULL,
+			       coalesce((SELECT extract(epoch FROM $2 - (now() - max(t.created_at))) FROM auth_tokens t
+			                 WHERE t.user_id = u.id AND t.purpose = 'verify_email'), 0)
+			FROM users u WHERE u.id = $1 FOR UPDATE`, sess.UserID, emailCodeCooldown).Scan(&email, &name, &verified, &wait); err != nil {
+			return err
+		}
+		if verified {
+			return nil
+		}
+		if wait > 0 {
+			secs := int(wait) + 1
+			if w := state(ctx).w; w != nil {
+				w.Header().Set("Retry-After", strconv.Itoa(secs))
+			}
+			return &Error{Status: 429, Code: "resend_cooldown", Message: fmt.Sprintf("Tunggu %d detik sebelum minta kode baru.", secs)}
+		}
+		code, err = s.issueEmailCode(ctx, tx, sess.UserID)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	s.send(ctx, mail.Message{To: email, Subject: "Verifikasi email Ecopurnity", Link: link,
-		Body: fmt.Sprintf("Halo %s, klik link ini untuk memverifikasi email kamu: %s", name, link)})
+	if code != "" {
+		s.send(ctx, verificationMail(email, name, code))
+	}
 	return api.ResendVerificationEmail204Response{}, nil
 }
 

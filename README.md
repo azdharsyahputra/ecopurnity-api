@@ -29,7 +29,7 @@ scripts/                  openapi bundler, coverage check
 
 ```bash
 cp .env.example .env
-make up            # postgres primary :5432, replica :5433, clickhouse :9000/:8123
+make up            # postgres primary :5432, replica :5433, clickhouse :9000/:8123, mailpit :1025 (UI :8025)
 make run           # API on :8080  ->  GET /healthz, GET /readyz
 make reset         # stop and wipe volumes
 ```
@@ -79,3 +79,15 @@ handlers + models + embedded spec) and regenerates `internal/api/unimplemented.g
   Return the typed response objects for documented outcomes, or a `*server.Error` for the error contract.
 - `go test ./internal/server` walks all 163 operations and fails if any is not routed.
 - `make check-gen` fails when the committed generated code is stale.
+
+## Email
+
+Transactional email (verification code, password reset link) goes through SMTP when `SMTP_HOST` is set, otherwise it is
+written to the log. Locally `.env` points at Mailpit: open http://localhost:8025 to read what the API sent.
+
+For a real mailbox put the provider's settings in `.env` (never commit it): `SMTP_HOST`, `SMTP_PORT` (587 STARTTLS or 465
+TLS), `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM="Ecopurnity <no-reply@your-domain>"`. The sending domain needs SPF/DKIM
+records at the provider or mail lands in spam.
+
+Email verification is a 6-digit code: 10 minutes, 5 attempts, one resend per minute; only an HMAC of the code (keyed by
+`APP_SECRET`) is stored.
