@@ -14,6 +14,7 @@ Authoring rules: [migrations/CONVENTIONS.md](../migrations/CONVENTIONS.md).
 | 00003_economy | public economy | listings, opportunities, markets (+ rule versions, participants, operators), auctions, bids, auction_awards, matches |
 | 00004_trade | settlement, money, chat | trades (+ acceptances, events, invoices, shipments, qc, reviews), disputes, ledger, withdrawals, settlements, rfqs/quotes, conversations/messages, supply_contracts |
 | 00005_org | business workspace | org_profiles, org_roles, approval rules, inventory, procurement_requests, collective_pools, org_auctions, purchase_orders, suppliers |
+| 00014_org_uploads | business workspace | uploads purpose `org_document`; org_documents.object_key (verification files are uploads) |
 
 ## Key decisions
 

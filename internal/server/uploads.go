@@ -30,6 +30,8 @@ var imageTypes = map[string]string{"image/jpeg": ".jpg", "image/png": ".png", "i
 var uploadRules = map[api.UploadPurpose]uploadRule{
 	api.UploadPurposeKycKtp:    {types: imageTypes, maxBytes: 8 << 20},
 	api.UploadPurposeKycSelfie: {types: imageTypes, maxBytes: 8 << 20},
+	api.UploadPurposeOrgDocument: {types: map[string]string{"application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"},
+		maxBytes: 10 << 20},
 }
 
 var errStorageUnavailable = &Error{Status: http.StatusServiceUnavailable, Code: "storage_unavailable", Message: "Penyimpanan file belum tersedia. Coba lagi nanti."}
@@ -52,6 +54,9 @@ func (s *Server) CreateUpload(ctx context.Context, req api.CreateUploadRequestOb
 	ext, okType := rule.types[contentType]
 	if !okType {
 		fields["contentType"] = "Format file tidak didukung. Pakai JPG, PNG, atau WebP."
+		if _, pdf := rule.types["application/pdf"]; pdf {
+			fields["contentType"] = "Format file tidak didukung. Pakai PDF, JPG, PNG, atau WebP."
+		}
 	}
 	if in.SizeBytes <= 0 || int64(in.SizeBytes) > rule.maxBytes {
 		fields["sizeBytes"] = fmt.Sprintf("Ukuran file maksimal %d MB.", rule.maxBytes>>20)
@@ -129,6 +134,9 @@ func (s *Server) claimUpload(ctx context.Context, tx pgx.Tx, userID, uploadID st
 		return u, bad("Ukuran file tidak sesuai. Unggah ulang.")
 	}
 	if sniffed := http.DetectContentType(obj.Head); sniffed != u.ContentType {
+		if !strings.HasPrefix(u.ContentType, "image/") {
+			return u, bad("Isi file tidak sesuai formatnya.")
+		}
 		return u, bad("Isi file bukan gambar yang valid.")
 	}
 	_, err = tx.Exec(ctx, `UPDATE uploads SET status = 'uploaded', uploaded_at = coalesce(uploaded_at, now()), consumed_at = now() WHERE id = $1`, u.ID)

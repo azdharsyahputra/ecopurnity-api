@@ -210,6 +210,14 @@ func createOrg(ctx context.Context, tx pgx.Tx, o newOrg) (string, error) {
 			return "", err
 		}
 	}
+	// Team settings and the default approval rules every new workspace starts with (frontend mock baseSettings).
+	if _, err := tx.Exec(ctx, `
+		WITH s AS (INSERT INTO org_settings (org_id) VALUES ($1))
+		INSERT INTO org_approval_rules (org_id, position, label, min_amount_idr, approvers, applies_to) VALUES
+		  ($1, 0, 'Procurement > Rp 50 jt', 50000000, '{finance,owner}', '{procurement,auction}'),
+		  ($1, 1, 'Auction > Rp 200 jt', 200000000, '{owner,procurement}', '{auction}')`, id); err != nil {
+		return "", err
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO org_members (org_id, user_id, email, name, role, status, joined_at)
 		SELECT $1, u.id, u.email, u.name, 'owner', 'active', now() FROM users u WHERE u.id = $2`, id, o.OwnerUserID); err != nil {
