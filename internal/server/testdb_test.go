@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -106,7 +107,7 @@ func newEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 	s := &Server{DB: cluster, Mail: mem, SMS: &sms.Memory{}, Keys: keys, Storage: testStorage(),
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), AppURL: "http://app.test", SessionTTL: 24 * time.Hour, GoogleDevLogin: true}
+		Log: slog.New(slog.NewTextHandler(testLog{t}, nil)), AppURL: "http://app.test", SessionTTL: 24 * time.Hour, GoogleDevLogin: true}
 	h, err := s.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -223,3 +224,12 @@ func testStorage() *storage.Store {
 func (e *testEnv) sms() *sms.Memory { return e.server.SMS.(*sms.Memory) }
 
 func t0() context.Context { return context.Background() }
+
+// testLog sends server logs to the test's log, shown only when the test fails.
+type testLog struct{ t *testing.T }
+
+func (l testLog) Write(p []byte) (int, error) {
+	l.t.Helper()
+	l.t.Log(strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}

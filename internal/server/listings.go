@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -234,6 +235,19 @@ func (s *Server) CreateMyListing(ctx context.Context, req api.CreateMyListingReq
 			return err
 		}
 		if err := listingEvent(ctx, tx, id, status, "Dibuat"); err != nil {
+			return err
+		}
+		indicative := d.Price
+		if kind == "demand" {
+			indicative = d.Budget
+		}
+		value := deref64(indicative)
+		if kind == "supply" {
+			value = int64(float64(value) * d.Quantity)
+		}
+		fact, _ := json.Marshal(map[string]any{"kind": kind, "categoryId": d.Category, "region": d.Location, "item": d.Item,
+			"quantity": d.Quantity, "unit": d.Unit, "valueIdr": value, "partyId": party})
+		if err := emit(ctx, tx, "listing.created", id, fact); err != nil {
 			return err
 		}
 		r, err := myListing(ctx, tx, sess.UserID, id, false)

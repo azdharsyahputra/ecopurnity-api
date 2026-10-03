@@ -84,6 +84,7 @@ func run(log *slog.Logger) error {
 		AppURL: cfg.AppURL, CookieSecure: cfg.CookieSecure, SessionTTL: cfg.SessionTTL, GoogleDevLogin: cfg.GoogleDevLogin,
 	}
 	defer api.WaitMail() // let queued emails go out on shutdown
+	go api.RunAuctionClock(ctx, time.Second)
 	h, err := api.Handler()
 	if err != nil {
 		return err

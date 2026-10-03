@@ -18,15 +18,15 @@ import (
 
 type auctionRow struct {
 	ID, Code, Title, Category, Type, Status, Visibility, Item, Spec, Unit string
-	MarketID, MarketName, OwnerUserID, OwnerOrgID                       *string
-	RoundNo                                                             *int32
-	Quantity                                                            float64
-	Opening, MinStep                                                    int64
-	Current                                                             *int64
-	StartsAt, EndsAt                                                    time.Time
-	ExtWindow, ExtMinutes, Extensions, BidCount, Participants           int32
-	LastSeq                                                             int64
-	Rules                                                               []byte
+	MarketID, MarketName, OwnerUserID, OwnerOrgID                         *string
+	RoundNo                                                               *int32
+	Quantity                                                              float64
+	Opening, MinStep                                                      int64
+	Current                                                               *int64
+	StartsAt, EndsAt                                                      time.Time
+	ExtWindow, ExtMinutes, Extensions, BidCount, Participants             int32
+	LastSeq                                                               int64
+	Rules                                                                 []byte
 }
 
 const auctionSelect = `

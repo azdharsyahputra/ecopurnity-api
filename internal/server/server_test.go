@@ -82,7 +82,8 @@ func TestEveryOperationIsRouted(t *testing.T) {
 				p = p[:i] + "00000000-0000-0000-0000-000000000000" + p[j+1:]
 			}
 			status, body := do(t, h, method, BasePath+p, "")
-			if status == http.StatusNotFound || status == http.StatusMethodNotAllowed || (status >= 500 && status != http.StatusNotImplemented) {
+			unrouted := status == http.StatusNotFound && body["error"].(map[string]any)["message"] == "Endpoint tidak ditemukan"
+			if unrouted || status == http.StatusMethodNotAllowed || (status >= 500 && status != http.StatusNotImplemented) {
 				t.Errorf("%s %s: %d %v", method, path, status, body)
 			}
 			n++

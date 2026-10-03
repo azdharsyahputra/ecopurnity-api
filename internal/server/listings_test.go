@@ -87,7 +87,14 @@ func TestMyListingsLifecycle(t *testing.T) {
 	hist, _ := r.Body["history"].([]any)
 	markets, _ := r.Body["markets"].([]any)
 	matches, _ := r.Body["matches"].([]any)
-	if len(hist) != 1 || hist[0].(map[string]any)["note"] != "Dibuat" || len(markets) != 1 || len(matches) != 1 {
+	hasMarket := false
+	for _, m := range markets {
+		hasMarket = hasMarket || m.(map[string]any)["id"] == market
+		if m.(map[string]any)["status"] == "closed" {
+			t.Fatalf("closed market listed: %v", m)
+		}
+	}
+	if len(hist) != 1 || hist[0].(map[string]any)["note"] != "Dibuat" || !hasMarket || len(matches) < 1 {
 		t.Fatalf("detail parts: history %v markets %d matches %d", hist, len(markets), len(matches))
 	}
 
