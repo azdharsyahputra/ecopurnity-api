@@ -242,7 +242,12 @@ func formMarket(ctx context.Context, tx pgx.Tx, sess *session, f marketForm) (mm
 	if f.AutoInvite && oppID != "" {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO market_participants (market_id, party_id, role, status)
-			SELECT $1, party_id, role, $2 FROM opportunity_participants WHERE opportunity_id = $3 ON CONFLICT DO NOTHING`, m.ID, status, oppID); err != nil {
+			SELECT DISTINCT ON (party_id) $1::uuid, party_id, role, $2 FROM (
+			  SELECT party_id, role, 0 AS src FROM opportunity_participants WHERE opportunity_id = $3
+			  UNION ALL
+			  SELECT party_id, role, 1 FROM opportunity_listings WHERE opportunity_id = $3) x
+			ORDER BY party_id, src
+			ON CONFLICT DO NOTHING`, m.ID, status, oppID); err != nil {
 			return m, err
 		}
 	}
@@ -265,8 +270,9 @@ func formMarket(ctx context.Context, tx pgx.Tx, sess *session, f marketForm) (mm
 		Changes: changes}, "Market terbentuk: "+m.Name, nil)
 }
 
-// carryOverOpportunity: the opportunity goes live with the new market; contributors' listings move into it (PRD F6)
-// and everyone holding a relation to the opportunity hears about it.
+// carryOverOpportunity: the opportunity goes live with the new market; contributors' listings (joined contributions and
+// the listings the engine counted in it) move into it (PRD F6) and everyone holding a relation to the opportunity
+// hears about it.
 func carryOverOpportunity(ctx context.Context, tx pgx.Tx, m mmMarket, oppID, oppCode, oppTitle string) error {
 	if _, err := tx.Exec(ctx, `UPDATE opportunities SET status = 'market_live' WHERE id = $1`, oppID); err != nil {
 		return err
@@ -278,8 +284,10 @@ func carryOverOpportunity(ctx context.Context, tx pgx.Tx, m mmMarket, oppID, opp
 	}
 	rows, err := tx.Query(ctx, `
 		UPDATE listings l SET market_id = $1, status = 'in_market'
-		FROM opportunity_participants op JOIN parties p ON p.id = op.party_id
-		WHERE op.opportunity_id = $2 AND op.listing_id = l.id AND l.status NOT IN ('sold','expired','fulfilled','cancelled')
+		FROM parties p
+		WHERE p.id = l.owner_party_id AND l.status NOT IN ('sold','expired','fulfilled','cancelled')
+		  AND l.id IN (SELECT listing_id FROM opportunity_participants WHERE opportunity_id = $2 AND listing_id IS NOT NULL
+		               UNION SELECT listing_id FROM opportunity_listings WHERE opportunity_id = $2)
 		RETURNING l.id::text, l.item, p.user_id::text`, m.ID, oppID)
 	if err != nil {
 		return err
@@ -318,6 +326,8 @@ func carryOverOpportunity(ctx context.Context, tx pgx.Tx, m mmMarket, oppID, opp
 	urows, err := tx.Query(ctx, `
 		SELECT p.user_id::text FROM opportunity_participants op JOIN parties p ON p.id = op.party_id
 		WHERE op.opportunity_id = $1 AND p.user_id IS NOT NULL
+		UNION SELECT p.user_id::text FROM opportunity_listings ol JOIN parties p ON p.id = ol.party_id
+		WHERE ol.opportunity_id = $1 AND p.user_id IS NOT NULL
 		UNION SELECT user_id::text FROM opportunity_follows WHERE opportunity_id = $1`, oppID)
 	if err != nil {
 		return err

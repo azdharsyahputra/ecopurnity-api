@@ -13,9 +13,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// The opportunity engine: groups the open listings by category, region (province, from the free-text location) and
-// unit, and turns a group whose demand and supply are out of balance into an opportunity. Existing open opportunities
-// of the same group get fresh totals. Runs on every API instance; a transaction-scoped advisory lock lets one pass run
+// The opportunity engine: clusters the open listings by category, region (province, from the free-text location), unit
+// and item (shared significant word), and turns a cluster whose demand and supply are out of balance into an
+// opportunity. Existing engine opportunities get their cluster's fresh totals and listings (opportunity_listings). Runs on every API instance; a transaction-scoped advisory lock lets one pass run
 // at a time.
 //
 // Rules (the mock seeds its opportunities, so these are the BE's; thresholds are the knobs below):
@@ -26,7 +26,7 @@ import (
 //   - capacity_match:    supply exceeds demand (idle capacity looking for buyers);
 //   - otherwise balanced: nothing to detect.
 //
-// A group with an opportunity in any status but closed is never detected again (a dismissed one stays dismissed).
+// A cluster backing an opportunity in any status but closed is never detected again (a dismissed one stays dismissed).
 
 const (
 	minParties       = 2
@@ -60,6 +60,8 @@ type gapGroup struct {
 	itemOrder                    []string
 	supplyValue, demandBudgetIdr float64
 	demandQty                    float64
+	words                        []string // significant item words of the cluster
+	taken                        bool     // an existing opportunity is backed by this cluster (this pass)
 }
 
 func (g *gapGroup) parties() []string {
@@ -173,14 +175,54 @@ func groupKey(category, region, unit string) string {
 	return category + "|" + strings.ToLower(region) + "|" + strings.ToLower(unit)
 }
 
-// OpportunityTick runs one detection pass (exported for tests).
+// genericWords are 4+ letter words too common to say two listings are the same item ("Cabai merah" vs "Bawang merah").
+// ponytail: a short hand list; grow it from false merges seen in the data.
+var genericWords = map[string]bool{"merah": true, "putih": true, "hitam": true, "hijau": true, "kuning": true, "segar": true,
+	"kering": true, "basah": true, "organik": true, "premium": true, "grade": true, "kualitas": true, "super": true, "lokal": true,
+	"impor": true, "import": true, "curah": true, "besar": true, "kecil": true, "murah": true, "baru": true, "bekas": true,
+	"jenis": true, "per": true, "untuk": true, "dengan": true}
+
+// significantWords are the item's itemWords (pricing.go) minus the generic ones.
+func significantWords(item string) []string {
+	var out []string
+	for _, w := range itemWords(item) {
+		if !genericWords[w] && !slices.Contains(out, w) {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// engineItem parses the item out of a title the engine wrote ("<Kind>: <item> di <region>"); ok=false for an
+// opportunity the engine did not create (seeded or curated ones are never touched by a pass).
+func engineItem(title, region string) (string, bool) {
+	for _, label := range kindLabel {
+		if rest, ok := strings.CutPrefix(title, label+": "); ok {
+			if item, ok := strings.CutSuffix(rest, " di "+region); ok && item != "" {
+				return item, true
+			}
+		}
+	}
+	return "", false
+}
+
+type engineOpp struct {
+	id, status, item string
+	words            []string
+	cluster          *gapGroup
+}
+
+// OpportunityTick runs one detection pass (exported for tests). Every engine opportunity is matched to the cluster that
+// shares a significant item word with it (same category, region and unit) and gets that cluster's totals; while still
+// `detected` it is also re-described, and retired (closed) when its cluster is gone or no longer out of balance.
+// Clusters without an opportunity are classified and may become a new one.
 func (s *Server) OpportunityTick(ctx context.Context) error {
 	return s.inTx(ctx, func(tx pgx.Tx) error {
 		var locked bool
 		if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtext($1))`, engineLockKey).Scan(&locked); err != nil || !locked {
 			return err
 		}
-		groups, err := loadGroups(ctx, tx)
+		clusters, err := loadGroups(ctx, tx)
 		if err != nil {
 			return err
 		}
@@ -198,104 +240,216 @@ func (s *Server) OpportunityTick(ctx context.Context) error {
 			markets[c+"|"+strings.ToLower(regionOf(r))] = true
 		}
 		rows.Close()
-		existing := map[string]struct {
-			id     string
-			active bool
-		}{}
-		rows, err = tx.Query(ctx, `SELECT id::text, category_id, region, unit, status NOT IN ('dismissed') FROM opportunities WHERE status <> 'closed'`)
+		var opps []*engineOpp
+		rows, err = tx.Query(ctx, `
+			SELECT id::text, category_id, region, unit, status, title FROM opportunities WHERE status <> 'closed' ORDER BY detected_at, id`)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
-			var id, c, r, u string
-			var active bool
-			if err := rows.Scan(&id, &c, &r, &u, &active); err != nil {
+			var o engineOpp
+			var c, r, u, title string
+			if err := rows.Scan(&o.id, &c, &r, &u, &o.status, &title); err != nil {
 				rows.Close()
 				return err
 			}
-			existing[groupKey(c, r, u)] = struct {
-				id     string
-				active bool
-			}{id, active}
+			var ok bool
+			if o.item, ok = engineItem(title, r); !ok {
+				continue
+			}
+			o.words = significantWords(o.item)
+			// The cluster sharing a word, the biggest when several do; each cluster backs one opportunity (the oldest).
+			for _, g := range clusters[groupKey(c, r, u)] {
+				if g.taken || !g.matches(o.item, o.words) {
+					continue
+				}
+				if o.cluster == nil || len(g.listings) > len(o.cluster.listings) {
+					o.cluster = g
+				}
+			}
+			if o.cluster != nil {
+				o.cluster.taken = true
+			}
+			opps = append(opps, &o)
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
 			return err
 		}
 
-		keys := make([]string, 0, len(groups))
-		for k := range groups {
-			keys = append(keys, k)
-		}
-		slices.Sort(keys) // deterministic order: stable codes and lock order
-		for _, k := range keys {
-			g := groups[k]
-			if ex, ok := existing[k]; ok {
-				if ex.active {
-					if err := refreshOpportunity(ctx, tx, ex.id, g); err != nil {
+		for _, o := range opps {
+			g := o.cluster
+			switch {
+			case o.status == "dismissed":
+				continue
+			case g == nil:
+				if o.status == "detected" { // nothing left behind it
+					if _, err := tx.Exec(ctx, `UPDATE opportunities SET status = 'closed' WHERE id = $1`, o.id); err != nil {
 						return err
 					}
 				}
 				continue
 			}
+			if err := refreshOpportunity(ctx, tx, o.id, g); err != nil {
+				return err
+			}
+			if err := syncListings(ctx, tx, o.id, g); err != nil {
+				return err
+			}
+			if o.status != "detected" {
+				continue // a market maker is working on it: keep its kind and copy
+			}
 			kind, mechanism, ok := classify(g, markets[g.category+"|"+strings.ToLower(g.region)])
 			if !ok {
+				if _, err := tx.Exec(ctx, `UPDATE opportunities SET status = 'closed' WHERE id = $1`, o.id); err != nil {
+					return err
+				}
 				continue
 			}
-			if err := createOpportunity(ctx, tx, g, kind, mechanism); err != nil {
+			d := describe(g, kind, mechanism)
+			if _, err := tx.Exec(ctx, `
+				UPDATE opportunities SET title = $2, kind = $3, suggested_mechanism = $4, confidence = $5, mechanism_reason = $6,
+				       description = $7, required_contribution = $8
+				WHERE id = $1 AND (title, kind, suggested_mechanism, confidence, mechanism_reason, description, required_contribution)
+				      IS DISTINCT FROM ($2, $3, $4, $5::numeric, $6, $7, $8)`,
+				o.id, d.title, kind, mechanism, math.Round(d.confidence*1000)/1000, d.reason, d.description, d.contribution); err != nil {
 				return err
+			}
+		}
+
+		keys := make([]string, 0, len(clusters))
+		for k := range clusters {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys) // deterministic order: stable codes and lock order
+		for _, k := range keys {
+			for _, g := range clusters[k] {
+				if g.taken {
+					continue
+				}
+				kind, mechanism, ok := classify(g, markets[g.category+"|"+strings.ToLower(g.region)])
+				if !ok {
+					continue
+				}
+				if err := createOpportunity(ctx, tx, g, kind, mechanism); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
 	})
 }
 
-// loadGroups reads the open listings into groups.
-// ponytail: a full scan of open listings per pass; make it incremental (listings.updated_at watermark) when the open
-// book passes ~100k rows.
-func loadGroups(ctx context.Context, q dbtx) (map[string]*gapGroup, error) {
+type openListing struct {
+	id, kind, item, party string
+	qty                   float64
+	price, budget         int64
+	words                 []string
+}
+
+// loadGroups reads the open listings and clusters them per (category, region, unit) key: listings whose items share a
+// significant word are one cluster (transitively); an item without one only clusters with the same item name.
+// ponytail: a full scan of open listings per pass and an O(n²) union per key; make it incremental (listings.updated_at
+// watermark) and index words when the open book passes ~100k rows.
+func loadGroups(ctx context.Context, q dbtx) (map[string][]*gapGroup, error) {
 	rows, err := q.Query(ctx, `
 		SELECT id::text, kind, category_id, location, unit, item, quantity::float8, coalesce(price_idr, 0), coalesce(budget_idr, 0), owner_party_id::text
-		FROM listings WHERE status IN ('open','matched','available','in_market') AND quantity > 0`)
+		FROM listings WHERE status IN ('open','matched','available','in_market') AND quantity > 0 ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	groups := map[string]*gapGroup{}
+	byKey := map[string][]openListing{}
+	meta := map[string][3]string{}
 	for rows.Next() {
-		var id, kind, cat, location, unit, item, party string
-		var qty float64
-		var price, budget int64
-		if err := rows.Scan(&id, &kind, &cat, &location, &unit, &item, &qty, &price, &budget, &party); err != nil {
+		var l openListing
+		var cat, location, unit string
+		if err := rows.Scan(&l.id, &l.kind, &cat, &location, &unit, &l.item, &l.qty, &l.price, &l.budget, &l.party); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		region := regionOf(location)
 		if region == "" {
 			continue
 		}
+		l.words = significantWords(l.item)
 		k := groupKey(cat, region, unit)
-		g := groups[k]
-		if g == nil {
-			g = &gapGroup{category: cat, region: region, unit: unit, buyers: map[string]bool{}, suppliers: map[string]bool{}, items: map[string]int{}}
-			groups[k] = g
-		}
-		g.listings = append(g.listings, id)
-		if g.items[item] == 0 {
-			g.itemOrder = append(g.itemOrder, item)
-		}
-		g.items[item]++
-		if kind == "demand" {
-			g.demand += qty
-			g.demandQty += qty
-			g.demandBudgetIdr += float64(budget)
-			g.buyers[party] = true
-		} else {
-			g.supply += qty
-			g.supplyValue += qty * float64(price)
-			g.suppliers[party] = true
+		byKey[k] = append(byKey[k], l)
+		if _, ok := meta[k]; !ok {
+			meta[k] = [3]string{cat, region, unit}
 		}
 	}
-	return groups, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := map[string][]*gapGroup{}
+	for k, ls := range byKey {
+		parent := make([]int, len(ls))
+		for i := range parent {
+			parent[i] = i
+		}
+		var find func(int) int
+		find = func(i int) int {
+			for parent[i] != i {
+				parent[i] = parent[parent[i]]
+				i = parent[i]
+			}
+			return i
+		}
+		for i := range ls {
+			for j := range i {
+				same := len(ls[i].words) == 0 && len(ls[j].words) == 0 && strings.EqualFold(strings.TrimSpace(ls[i].item), strings.TrimSpace(ls[j].item))
+				if same || slices.ContainsFunc(ls[i].words, func(w string) bool { return slices.Contains(ls[j].words, w) }) {
+					parent[find(i)] = find(j)
+				}
+			}
+		}
+		m := meta[k]
+		byRoot := map[int]*gapGroup{}
+		for i, l := range ls {
+			r := find(i)
+			g := byRoot[r]
+			if g == nil {
+				g = &gapGroup{category: m[0], region: m[1], unit: m[2], buyers: map[string]bool{}, suppliers: map[string]bool{}, items: map[string]int{}}
+				byRoot[r] = g
+				out[k] = append(out[k], g)
+			}
+			g.add(l)
+		}
+	}
+	return out, nil
+}
+
+func (g *gapGroup) add(l openListing) {
+	g.listings = append(g.listings, l.id)
+	if g.items[l.item] == 0 {
+		g.itemOrder = append(g.itemOrder, l.item)
+	}
+	g.items[l.item]++
+	for _, w := range l.words {
+		if !slices.Contains(g.words, w) {
+			g.words = append(g.words, w)
+		}
+	}
+	if l.kind == "demand" {
+		g.demand += l.qty
+		g.demandQty += l.qty
+		g.demandBudgetIdr += float64(l.budget)
+		g.buyers[l.party] = true
+	} else {
+		g.supply += l.qty
+		g.supplyValue += l.qty * float64(l.price)
+		g.suppliers[l.party] = true
+	}
+}
+
+// matches: the opportunity's item shares a significant word with the cluster (or, without any, names one of its items).
+func (g *gapGroup) matches(item string, words []string) bool {
+	if len(words) == 0 {
+		return slices.ContainsFunc(g.itemOrder, func(it string) bool { return strings.EqualFold(it, item) })
+	}
+	return slices.ContainsFunc(words, func(w string) bool { return slices.Contains(g.words, w) })
 }
 
 // refreshOpportunity sets the engine totals plus the platform contributions that are not already among the group's
@@ -309,10 +463,25 @@ func refreshOpportunity(ctx context.Context, tx pgx.Tx, id string, g *gapGroup) 
 		                                  AND (p.listing_id IS NULL OR NOT p.listing_id = ANY($5::uuid[]))), 0))::numeric(18,3) AS s,
 		         ($4::int + (SELECT count(*) FROM opportunity_participants p WHERE p.opportunity_id = $1 AND NOT p.party_id = ANY($6::uuid[])))::int AS c)
 		UPDATE opportunities o SET demand_value = n.d, supply_value = n.s, participant_count = n.c,
-		       potential_value_idr = greatest(o.potential_value_idr, $7)
+		       potential_value_idr = $7
 		FROM n WHERE o.id = $1
-		  AND (o.demand_value, o.supply_value, o.participant_count) IS DISTINCT FROM (n.d::numeric, n.s::numeric, n.c)`,
+		  AND (o.demand_value, o.supply_value, o.participant_count, o.potential_value_idr) IS DISTINCT FROM (n.d::numeric, n.s::numeric, n.c, $7::bigint)`,
 		id, g.demand, g.supply, len(g.parties()), g.listings, g.parties(), int64(jsRound(math.Max(g.demand, g.supply)*g.unitPrice())))
+	return err
+}
+
+// syncListings makes opportunity_listings the cluster's current listings.
+func syncListings(ctx context.Context, tx pgx.Tx, oppID string, g *gapGroup) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM opportunity_listings WHERE opportunity_id = $1 AND NOT listing_id = ANY($2::uuid[])`, oppID, g.listings); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO opportunity_listings (opportunity_id, listing_id, party_id, role, quantity)
+		SELECT $1, l.id, l.owner_party_id, CASE l.kind WHEN 'demand' THEN 'buyer' ELSE 'supplier' END, l.quantity
+		FROM listings l WHERE l.id = ANY($2::uuid[])
+		ON CONFLICT (opportunity_id, listing_id) DO UPDATE SET party_id = EXCLUDED.party_id, role = EXCLUDED.role, quantity = EXCLUDED.quantity
+		WHERE (opportunity_listings.party_id, opportunity_listings.role, opportunity_listings.quantity)
+		      IS DISTINCT FROM (EXCLUDED.party_id, EXCLUDED.role, EXCLUDED.quantity)`, oppID, g.listings)
 	return err
 }
 
@@ -325,6 +494,9 @@ func createOpportunity(ctx context.Context, tx pgx.Tx, g *gapGroup, kind, mechan
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id::text`,
 		d.title, kind, g.category, g.region, g.unit, g.demand, g.supply, len(g.parties()), d.potential, mechanism,
 		math.Round(d.confidence*1000)/1000, d.reason, d.description, d.contribution).Scan(&id); err != nil {
+		return err
+	}
+	if err := syncListings(ctx, tx, id, g); err != nil {
 		return err
 	}
 	fact, _ := json.Marshal(map[string]any{"categoryId": g.category, "region": g.region, "kind": kind})
