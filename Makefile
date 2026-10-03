@@ -1,4 +1,4 @@
-.PHONY: gen check-gen up down reset run build test openapi lint-openapi migrate migrate-down migrate-status migrate-clickhouse db-doc
+.PHONY: mail-preview gen check-gen up down reset run build test openapi lint-openapi migrate migrate-down migrate-status migrate-clickhouse db-doc
 
 up:
 	docker compose up -d --wait
@@ -46,3 +46,7 @@ gen:
 # Fails when the committed generated code is stale (run in CI).
 check-gen: gen
 	git diff --exit-code -- internal/api api/openapi.yaml
+
+# Sends a sample of every email template through SMTP (Mailpit locally: http://localhost:8025).
+mail-preview:
+	set -a; . ./.env; set +a; go run ./cmd/mailpreview

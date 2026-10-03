@@ -5,7 +5,6 @@ import (
 	"crypto/hmac"
 	"errors"
 	"fmt"
-	"html"
 	"net/http"
 	netmail "net/mail"
 	"strconv"
@@ -277,18 +276,7 @@ func (s *Server) issueEmailCode(ctx context.Context, q dbtx, userID string) (str
 }
 
 func verificationMail(to, name, code string) mail.Message {
-	return mail.Message{
-		To: to, Code: code,
-		Subject: fmt.Sprintf("%s adalah kode verifikasi Ecopurnity kamu", code),
-		Body: fmt.Sprintf("Halo %s,\n\nKode verifikasi email kamu: %s\n\nKode berlaku 10 menit. Jangan bagikan kode ini ke siapa pun, "+
-			"termasuk yang mengaku dari Ecopurnity.\n\nKalau kamu tidak mendaftar di Ecopurnity, abaikan email ini.", name, code),
-		HTML: fmt.Sprintf(`<div style="font-family:system-ui,sans-serif;max-width:480px;margin:auto;color:#1f2937">`+
-			`<p>Halo %s,</p><p>Kode verifikasi email kamu:</p>`+
-			`<p style="font-size:32px;font-weight:700;letter-spacing:8px;margin:16px 0">%s</p>`+
-			`<p>Kode berlaku 10 menit. Jangan bagikan kode ini ke siapa pun, termasuk yang mengaku dari Ecopurnity.</p>`+
-			`<p style="color:#6b7280;font-size:13px">Kalau kamu tidak mendaftar di Ecopurnity, abaikan email ini.</p></div>`,
-			html.EscapeString(name), code),
-	}
+	return mail.VerifyCode(to, name, code, emailCodeTTL)
 }
 
 func codeError(status int, code, message string) *Error {
@@ -410,8 +398,7 @@ func (s *Server) ForgotPassword(ctx context.Context, req api.ForgotPasswordReque
 	if err != nil {
 		return nil, err
 	}
-	s.send(ctx, mail.Message{To: email, Subject: "Reset password Ecopurnity", Link: link,
-		Body: fmt.Sprintf("Halo %s, klik link ini untuk membuat password baru (berlaku 1 jam): %s", name, link)})
+	s.send(ctx, mail.ResetPassword(email, name, link, resetTokenTTL))
 	return api.ForgotPassword204Response{}, nil
 }
 

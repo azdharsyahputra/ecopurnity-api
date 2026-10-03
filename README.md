@@ -89,6 +89,10 @@ For a real mailbox put the provider's settings in `.env` (never commit it): `SMT
 TLS), `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM="Ecopurnity <no-reply@your-domain>"`. The sending domain needs SPF/DKIM
 records at the provider or mail lands in spam.
 
+Templates live in `internal/mail/templates/` (one shared layout + one file per email with subject, preheader, HTML and
+plain-text parts): `verify_code`, `reset_password`, `notification`. `make mail-preview` sends a sample of each through
+the configured SMTP (Mailpit locally) so you can check them. Provider examples are in `.env.example`.
+
 Email verification is a 6-digit code: 10 minutes, 5 attempts, one resend per minute; only an HMAC of the code (keyed by
 `APP_SECRET`) is stored.
 

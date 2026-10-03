@@ -1,0 +1,17 @@
+{{define "subject"}}{{.Title}}{{end}}
+{{define "preheader"}}{{.Body}}{{end}}
+{{define "content"}}
+{{if .Tag}}<p style="margin:0 0 10px 0;"><span style="display:inline-block;padding:3px 10px;border-radius:999px;background:{{.TagBg}};color:{{.TagFg}};font-size:12px;font-weight:600;">{{.Tag}}</span></p>{{end}}
+<h1 style="margin:0 0 12px 0;font-size:20px;line-height:28px;color:#111827;">{{.Title}}</h1>
+<p style="margin:0;font-size:15px;line-height:24px;">Halo {{.Name}}, {{.Body}}</p>
+{{if .URL}}{{template "button" (button .URL .Action)}}{{end}}
+{{end}}
+{{define "text"}}Halo {{.Name}},
+
+{{.Title}}
+{{.Body}}
+{{if .URL}}
+{{.Action}}: {{.URL}}
+{{end}}
+Atur notifikasi email: {{.ManageURL}}
+{{end}}

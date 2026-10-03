@@ -1,0 +1,17 @@
+{{define "subject"}}{{.Code}} adalah kode verifikasi Ecopurnity kamu{{end}}
+{{define "preheader"}}Kode berlaku {{.TTLMinutes}} menit. Jangan bagikan ke siapa pun.{{end}}
+{{define "content"}}
+<h1 style="margin:0 0 12px 0;font-size:20px;line-height:28px;color:#111827;">Verifikasi email kamu</h1>
+<p style="margin:0 0 20px 0;font-size:15px;line-height:24px;">Halo {{.Name}}, masukkan kode ini di halaman verifikasi Ecopurnity:</p>
+<div style="margin:0 0 20px 0;padding:18px 0;background:#f0f9fb;border:1px solid #cdeaf0;border-radius:10px;text-align:center;font-family:'SFMono-Regular',Menlo,Consolas,monospace;font-size:34px;font-weight:700;letter-spacing:10px;color:#00586a;">{{.Code}}</div>
+<p style="margin:0 0 8px 0;font-size:14px;line-height:22px;">Kode berlaku <b>{{.TTLMinutes}} menit</b>. Jangan bagikan kode ini ke siapa pun, termasuk yang mengaku dari Ecopurnity.</p>
+<p style="margin:0;font-size:13px;line-height:20px;color:#6b7280;">Kalau kamu tidak mendaftar di Ecopurnity, abaikan email ini.</p>
+{{end}}
+{{define "text"}}Halo {{.Name}},
+
+Kode verifikasi email Ecopurnity kamu: {{.Code}}
+
+Kode berlaku {{.TTLMinutes}} menit. Jangan bagikan kode ini ke siapa pun, termasuk yang mengaku dari Ecopurnity.
+
+Kalau kamu tidak mendaftar di Ecopurnity, abaikan email ini.
+{{end}}
