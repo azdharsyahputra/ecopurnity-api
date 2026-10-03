@@ -33,7 +33,8 @@ with the same name is defined on `*server.Server`. This is how the existing ones
   - `emitActivity(ctx, tx, type, title, amountIdr, marketID)` for the public activity feed (`ActivityType`; topic
     `activity` + a `public:activity` frame). `detection.go` emits `opportunity_detected`.
 - Shared building blocks: `userParty` (party of a user, created on first use), `createTrade` (`trades.go`),
-  `createOrg` (`onboarding.go`), `loadUser`, `loadMarkets`, `loadOpportunities`, `loadAuctions` / `loadAuction` /
+  `createOrg` (`onboarding.go`), `applyTradeAction` (`trade_engine.go`: the F6 settlement flow, contract at the top
+  of the file), `loadTransaction` (a trade from one party's side), `post` / `accounts` (ledger journals, `finance.go`), `loadUser`, `loadMarkets`, `loadOpportunities`, `loadAuctions` / `loadAuction` /
   `auctionDetail` / `myBid` (auction read model with visibility masking), `s.commitGuard` (KYC limit), `claimUpload`
   (verified uploads), `pageParams`, `likeEscape`, `rupiah`, `ptr`, `deref*`.
 - Responses: return the generated typed response objects. Two generator gaps need a hand-written response type

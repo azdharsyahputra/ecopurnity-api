@@ -20,51 +20,6 @@ type dashAction = struct {
 	Tone   api.DashboardSummaryActionsTone `json:"tone"`
 }
 
-// tradeTodo is the state pendingTradeActions needs (frontend src/domain/trade.ts TradeState).
-type tradeTodo struct {
-	Status, Terms, Role       string
-	AcceptedBuyer, AcceptedSu bool
-	UnscheduledQty            float64
-	OpenShipments             int
-	Reviewed                  bool
-}
-
-// pendingTradeActions ports tradeActions() from src/domain/trade.ts for one side. Named apart from the transactions
-// area's own port so both can live in the package; switch to theirs when it lands.
-func pendingTradeActions(s tradeTodo) []string {
-	escrow := s.Terms == "escrow"
-	in := func(v string, set ...string) bool {
-		for _, x := range set {
-			if v == x {
-				return true
-			}
-		}
-		return false
-	}
-	var out []string
-	add := func(a string, ok bool) {
-		if ok {
-			out = append(out, a)
-		}
-	}
-	accepted := map[string]bool{"buyer": s.AcceptedBuyer, "supplier": s.AcceptedSu}
-	payAt, shipAt, disputeAt := "accepted", []string{"invoiced", "fulfilling"}, []string{"fulfilling", "delivered", "accepted"}
-	if escrow {
-		payAt, shipAt, disputeAt = "invoiced", []string{"paid", "fulfilling"}, []string{"paid", "fulfilling", "delivered"}
-	}
-	add("accept_agreement", s.Status == "agreement" && !accepted[s.Role])
-	add("issue_invoice", s.Status == "agreement" && s.Role == "supplier" && s.AcceptedBuyer && s.AcceptedSu)
-	add("pay", s.Role == "buyer" && s.Status == payAt)
-	add("ship", s.Role == "supplier" && s.UnscheduledQty > 0 && in(s.Status, shipAt...))
-	add("upload_proof", s.Role == "supplier" && s.Status == "fulfilling" && s.OpenShipments > 0)
-	add("confirm_receipt", s.Role == "buyer" && s.Status == "delivered")
-	add("cancel", s.Status == "agreement" || s.Status == "invoiced")
-	add("dispute", in(s.Status, disputeAt...))
-	add("add_evidence", s.Status == "disputed")
-	add("review", s.Status == "completed" && !s.Reviewed)
-	return out
-}
-
 func (s *Server) GetMyDashboard(ctx context.Context, _ api.GetMyDashboardRequestObject) (api.GetMyDashboardResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -164,14 +119,16 @@ func (s *Server) GetMyDashboard(ctx context.Context, _ api.GetMyDashboardRequest
 		return nil, err
 	}
 	for rows.Next() {
-		var id, title string
-		var t tradeTodo
-		if err := rows.Scan(&id, &title, &t.Status, &t.Terms, &t.Role, &t.AcceptedBuyer, &t.AcceptedSu, &t.UnscheduledQty, &t.OpenShipments, &t.Reviewed); err != nil {
+		var id, title, side string
+		var accB, accS, reviewed bool
+		t := tradeState{Agreement: map[string]bool{}, Reviewed: map[string]bool{}}
+		if err := rows.Scan(&id, &title, &t.Status, &t.Terms, &side, &accB, &accS, &t.UnscheduledQty, &t.OpenShipments, &reviewed); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		t.Agreement["buyer"], t.Agreement["supplier"], t.Reviewed[side] = accB, accS, reviewed
 		n := 0
-		for _, a := range pendingTradeActions(t) {
+		for _, a := range tradeActions(t, side) {
 			if a != "cancel" && a != "dispute" && a != "review" {
 				n++
 			}

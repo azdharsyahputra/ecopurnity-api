@@ -3,7 +3,6 @@ package server
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -419,13 +418,11 @@ func (s *Server) ActOnMatch(ctx context.Context, req api.ActOnMatchRequestObject
 }
 
 // openMatchConversation opens the "Match: <title>" conversation with whoever coordinates the opportunity: the maker of
-// its first market (its operators and the maker org's market makers), or an external "Tim <code>" placeholder, and
-// posts the opening message.
-//
-// NOTE for the conversations owner: rows are inserted directly per migrations/postgres/00004_trade.sql (one
-// conversation_participants row per user behind a party, a null-user row for a party nobody operates). The
-// conversation:{id} realtime frame for the opening message and the automated reply for placeholder teams are not sent
-// here; switch this to the chat area's helper once it exists.
+// its first market (its operators, the maker org's market makers, or the maker user), else an external "Tim <code>"
+// placeholder (answered by the demo bots in counterparties.go when they run), and posts the opening message.
+// The message is inserted directly rather than through postMessage: that would also send every maker a generic
+// "Pesan dari ..." notification next to the spec's "<name> ingin terhubung" one. Nobody is subscribed to a brand-new
+// conversation, so no message.created frame is needed.
 func openMatchConversation(ctx context.Context, tx pgx.Tx, sess *session, matchRowID string, m computedMatch) (string, error) {
 	me, err := userParty(ctx, tx, sess.UserID)
 	if err != nil {
@@ -441,12 +438,7 @@ func openMatchConversation(ctx context.Context, tx pgx.Tx, sess *session, matchR
 	}
 	var makerUsers []string
 	if makerParty == nil {
-		var id string
-		err := tx.QueryRow(ctx, `SELECT id::text FROM parties WHERE kind = 'external' AND name = $1 ORDER BY created_at LIMIT 1`, "Tim "+code).Scan(&id)
-		if errors.Is(err, pgx.ErrNoRows) {
-			err = tx.QueryRow(ctx, `INSERT INTO parties (kind, name, display_kind, verified) VALUES ('external', $1, 'business', true) RETURNING id::text`,
-				"Tim "+code).Scan(&id)
-		}
+		id, err := externalParty(ctx, tx, "Tim "+code, "business", true)
 		if err != nil {
 			return "", err
 		}
@@ -467,28 +459,18 @@ func openMatchConversation(ctx context.Context, tx pgx.Tx, sess *session, matchR
 			return "", err
 		}
 		makerUsers = slices.DeleteFunc(makerUsers, func(u string) bool { return u == sess.UserID })
+		slices.Sort(makerUsers)
 	}
-
-	var conv string
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO conversations (subject, link_type, link_id, created_by) VALUES ($1, 'match', $2, $3) RETURNING id::text`,
-		"Match: "+m.opp.title, matchRowID, sess.UserID).Scan(&conv); err != nil {
-		return "", err
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO conversation_participants (conversation_id, party_id, user_id) VALUES ($1, $2, $3)`,
-		conv, me, sess.UserID); err != nil {
-		return "", err
-	}
+	parties := []convParty{{PartyID: me, UserID: &sess.UserID}}
 	if len(makerUsers) == 0 {
-		if _, err := tx.Exec(ctx, `INSERT INTO conversation_participants (conversation_id, party_id) VALUES ($1, $2)`, conv, *makerParty); err != nil {
-			return "", err
-		}
+		parties = append(parties, convParty{PartyID: *makerParty})
 	}
 	for _, u := range makerUsers {
-		if _, err := tx.Exec(ctx, `INSERT INTO conversation_participants (conversation_id, party_id, user_id) VALUES ($1, $2, $3)`,
-			conv, *makerParty, u); err != nil {
-			return "", err
-		}
+		parties = append(parties, convParty{PartyID: *makerParty, UserID: &u})
+	}
+	conv, err := createConversation(ctx, tx, "Match: "+m.opp.title, &sess.UserID, "match", matchRowID, parties)
+	if err != nil {
+		return "", err
 	}
 	body := fmt.Sprintf("Halo, saya punya %s (%s) dan tertarik dengan %s. Bisa diskusi kebutuhannya?", m.have.label, m.have.detail, m.opp.title)
 	var seq int64

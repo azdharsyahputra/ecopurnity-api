@@ -45,6 +45,8 @@ type Server struct {
 	Storage        *storage.Store // object storage (nil: uploads answer 503)
 	SMS            sms.Sender     // phone OTP delivery
 
+	SimulateCounterparties bool // a bot plays external trade/contract counterparties (trade_clock.go); demo only
+
 	mailWG sync.WaitGroup
 
 	hubOnce sync.Once

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -23,22 +22,6 @@ func (e *testEnv) notifyDirect(userID, typ, title string) {
 	}); err != nil {
 		e.t.Fatal(err)
 	}
-}
-
-// callList is call for endpoints answering a JSON array.
-func (e *testEnv) callList(c *http.Client, path string) []map[string]any {
-	e.t.Helper()
-	req, _ := http.NewRequest("GET", e.srv.URL+BasePath+path, nil)
-	res, err := c.Do(req)
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	defer res.Body.Close()
-	var out []map[string]any
-	if err := json.NewDecoder(res.Body).Decode(&out); err != nil || res.StatusCode != 200 {
-		e.t.Fatalf("GET %s: %d %v", path, res.StatusCode, err)
-	}
-	return out
 }
 
 func TestNotifications(t *testing.T) {

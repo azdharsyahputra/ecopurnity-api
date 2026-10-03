@@ -313,8 +313,67 @@ func TestWSPrivateChannels(t *testing.T) {
 		t.Fatalf("typing frame: %v", m)
 	}
 	// The typer's next frame is its next ack, not its own typing frame.
-	if before, ack := request(t, wa, map[string]any{"type": "chat.send", "conversationId": conv, "clientMsgId": "0b6f7c1e-5a0e-4c55-9d43-2f2f5d1b7a10", "text": "Halo"}); ackCode(ack) != "not_implemented" || len(before) != 0 {
-		t.Fatalf("chat.send: %v %v", before, ack)
+	if before, ack := request(t, wa, map[string]any{"type": "ping"}); ack["ok"] != true || len(before) != 0 {
+		t.Fatalf("after typing: %v %v", before, ack)
+	}
+}
+
+// chat.send is the REST POST's sendMessage: acked with {messageId, seq}, fanned out as message.created, idempotent.
+func TestWSChatSend(t *testing.T) {
+	e := rtEnv(t)
+	ca, _ := e.signedIn("Ana Socket")
+	cb, _ := e.signedIn("Budi Socket")
+	cc, _ := e.signedIn("Citra Socket")
+	r := e.call(ca, "POST", "/me/conversations", map[string]any{"subject": "Socket", "with": map[string]any{"name": "Budi Socket", "kind": "person", "verified": false, "userId": e.userID(cb)}})
+	if r.Status != 201 {
+		t.Fatalf("start: %d %v", r.Status, r.Body)
+	}
+	conv := r.Body["id"].(string)
+	wa, wb, wc := e.dial(ca), e.dial(cb), e.dial(cc)
+	if _, ack := request(t, wb, map[string]any{"type": "subscribe", "channel": "conversation:" + conv, "sinceSeq": 0}); ack["ok"] != true || ack["headSeq"] != 0.0 {
+		t.Fatalf("subscribe: %v", ack)
+	}
+	key := "0B6F7C1E-5A0E-4C55-9D43-2F2F5D1B7A10" // any case; stored lowercase
+	send := func(w *websocket.Conn, frame map[string]any) map[string]any {
+		t.Helper()
+		_, ack := request(t, w, frame)
+		return ack
+	}
+	ack := send(wa, map[string]any{"type": "chat.send", "conversationId": conv, "clientMsgId": key, "text": "  Halo lewat socket "})
+	res, _ := ack["result"].(map[string]any)
+	if ack["ok"] != true || res["seq"] != 1.0 || res["messageId"] == nil {
+		t.Fatalf("send: %v", ack)
+	}
+	m := wsRead(t, wb)
+	p, _ := m["payload"].(map[string]any)
+	if m["type"] != "message.created" || m["seq"] != 1.0 || p["text"] != "Halo lewat socket" || p["clientMsgId"] != strings.ToLower(key) || p["id"] != res["messageId"] {
+		t.Fatalf("frame: %v", m)
+	}
+	// Retry: same message, no new frame (Budi's next frame is his own ack).
+	if again := send(wa, map[string]any{"type": "chat.send", "conversationId": conv, "clientMsgId": strings.ToLower(key), "text": "Halo lewat socket"}); again["ok"] != true ||
+		again["result"].(map[string]any)["messageId"] != res["messageId"] {
+		t.Fatalf("retry: %v", again)
+	}
+	if before, ack := request(t, wb, map[string]any{"type": "ping"}); ack["ok"] != true || len(before) != 0 {
+		t.Fatalf("retry broadcast: %v", before)
+	}
+	// The REST view agrees.
+	if r := e.call(cb, "GET", "/me/conversations/"+conv, nil); r.Status != 200 || r.Body["seq"] != 1.0 || len(r.Body["messages"].([]any)) != 1 {
+		t.Fatalf("rest: %d %v", r.Status, r.Body)
+	}
+	for _, c := range []struct {
+		w     *websocket.Conn
+		frame map[string]any
+		code  string
+	}{
+		{wc, map[string]any{"type": "chat.send", "conversationId": conv, "clientMsgId": "6c0f0d5e-2a51-4b0e-8f0e-2b7d0c1e9a11", "text": "x"}, "not_found"},
+		{wa, map[string]any{"type": "chat.send", "conversationId": conv, "text": "tanpa kunci"}, "validation"},
+		{wa, map[string]any{"type": "chat.send", "conversationId": conv, "clientMsgId": "6c0f0d5e-2a51-4b0e-8f0e-2b7d0c1e9a12", "text": "   "}, "validation"},
+		{wa, map[string]any{"type": "chat.send", "conversationId": "nope", "clientMsgId": "6c0f0d5e-2a51-4b0e-8f0e-2b7d0c1e9a13", "text": "x"}, "not_found"},
+	} {
+		if ack := send(c.w, c.frame); ackCode(ack) != c.code {
+			t.Fatalf("%v: %v", c.frame, ack)
+		}
 	}
 }
 
