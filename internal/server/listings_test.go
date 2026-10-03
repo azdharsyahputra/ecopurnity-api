@@ -10,7 +10,7 @@ import (
 
 func supplyBody(item string, price int, qty float64, unit string) map[string]any {
 	return map[string]any{"kind": "supply", "item": item, "categoryId": "agri", "quantity": map[string]any{"value": qty, "unit": unit},
-		"location": "Garut, Jawa Barat", "spec": "Grade 1", "delivery": "both", "attachments": []string{"foto.jpg"},
+		"location": "Garut, Jawa Barat", "spec": "Grade 1", "delivery": "both", "attachments": []any{},
 		"priceIdr": price, "availableFrom": time.Now().UTC().Format(time.RFC3339)}
 }
 
@@ -47,7 +47,7 @@ func TestMyListingsLifecycle(t *testing.T) {
 		t.Fatalf("create supply: %d %v", r.Status, r.Body)
 	}
 	supplyID := r.Body["id"].(string)
-	if att := r.Body["attachments"].([]any); len(att) != 1 || att[0] != "foto.jpg" {
+	if att := r.Body["attachments"].([]any); len(att) != 0 {
 		t.Fatalf("attachments: %v", r.Body["attachments"])
 	}
 	r = e.call(c, "POST", "/me/listings", demandBody("Karung goni 60 kg", 900000))

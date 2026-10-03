@@ -32,6 +32,8 @@ var uploadRules = map[api.UploadPurpose]uploadRule{
 	api.UploadPurposeKycSelfie: {types: imageTypes, maxBytes: 8 << 20},
 	api.UploadPurposeOrgDocument: {types: map[string]string{"application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"},
 		maxBytes: 10 << 20},
+	api.UploadPurposeListingAttachment: {types: map[string]string{"application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"},
+		maxBytes: 10 << 20},
 }
 
 var errStorageUnavailable = &Error{Status: http.StatusServiceUnavailable, Code: "storage_unavailable", Message: "Penyimpanan file belum tersedia. Coba lagi nanti."}
