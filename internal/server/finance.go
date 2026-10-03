@@ -17,8 +17,10 @@ import (
 // Money: double-entry ledger (00004_trade.sql) and personal finance (GET/PUT /me/finance...).
 //
 // Signs: debit > 0, credit < 0; every journal sums to zero (deferred trigger). Liability accounts (wallet_available,
-// escrow, ppn_payable, platform_revenue, maker_commission) carry negative balances; bank_clearing (money at the bank)
-// is the platform's asset. Postings per trade action are listed in trade_engine.go.
+// escrow, ppn_payable, platform_revenue, maker_commission, payout_pending) carry negative balances; bank_clearing (money
+// at the bank) is the platform's asset. Postings per trade action are listed in trade_engine.go; withdrawals: request
+// wallet → payout_pending (here), then an admin marks it paid (payout_pending → bank_clearing) or rejects it
+// (payout_pending → back to the wallet lines), payouts.go.
 //
 // Finance (one party):
 //   - escrowHeldIdr  = -balance(escrow)                          what the buyer has in escrow
@@ -27,7 +29,7 @@ import (
 //   - receivableIdr  = supplier's claims not yet released: escrowed invoices (frozen supplier_receives) and net-terms
 //     trades delivered/accepted but unpaid. Not a ledger balance: for net terms no money exists yet, and escrowed money
 //     already sits in the buyer's escrow account (one amount cannot be in two liability accounts).
-//   - withdrawnIdr   = withdrawals not failed
+//   - withdrawnIdr   = withdrawals not rejected (processing or paid)
 //   - entries        = the party's statement, cash view (as the frontend shows it): lines on its accounts grouped per
 //     journal and kind; wallet/ppn/commission credits show positive; escrow lines show only when money goes in (as the
 //     negative payment), its outflows (release, refund) are not the party's cash and are hidden.
@@ -120,6 +122,17 @@ func myPartyID(ctx context.Context, q dbtx, userID string) (string, error) {
 	return id, err
 }
 
+// financeWithdrawal is the generated Finance.withdrawals element (an inline struct in the spec).
+type financeWithdrawal = struct {
+	AmountIdr   int                  `json:"amountIdr"`
+	At          time.Time            `json:"at"`
+	Id          string               `json:"id"`
+	PaidAt      *time.Time           `json:"paidAt,omitempty"`
+	Reason      *string              `json:"reason,omitempty"`
+	Status      api.WithdrawalStatus `json:"status"`
+	TransferRef *string              `json:"transferRef,omitempty"`
+}
+
 func loadFinance(ctx context.Context, q dbtx, party string) (api.Finance, error) {
 	f := api.Finance{Entries: []struct {
 		AmountIdr int                    `json:"amountIdr"`
@@ -127,12 +140,7 @@ func loadFinance(ctx context.Context, q dbtx, party string) (api.Finance, error)
 		Id        string                 `json:"id"`
 		Kind      api.FinanceEntriesKind `json:"kind"`
 		Label     string                 `json:"label"`
-	}{}, Withdrawals: []struct {
-		AmountIdr int                          `json:"amountIdr"`
-		At        time.Time                    `json:"at"`
-		Id        string                       `json:"id"`
-		Status    api.FinanceWithdrawalsStatus `json:"status"`
-	}{}}
+	}{}, Withdrawals: []financeWithdrawal{}}
 	if party == "" {
 		return f, nil
 	}
@@ -145,7 +153,7 @@ func loadFinance(ctx context.Context, q dbtx, party string) (api.Finance, error)
 		          FROM trades t LEFT JOIN invoices i ON i.trade_id = t.id
 		         WHERE t.supplier_party_id = $1
 		           AND (i.status = 'escrow' OR (t.terms <> 'escrow' AND t.status IN ('delivered','accepted') AND coalesce(i.status, 'unpaid') = 'unpaid'))),
-		       (SELECT coalesce(sum(amount_idr), 0) FROM withdrawals WHERE party_id = $1 AND status <> 'failed')
+		       (SELECT coalesce(sum(amount_idr), 0) FROM withdrawals WHERE party_id = $1 AND status <> 'rejected')
 		FROM ledger_entries e JOIN ledger_accounts a ON a.id = e.account_id
 		WHERE a.owner_party_id = $1`, party).Scan(&escrow, &avail, &receivable, &withdrawn); err != nil {
 		return f, err
@@ -167,25 +175,16 @@ func loadFinance(ctx context.Context, q dbtx, party string) (api.Finance, error)
 		return f, err
 	}
 
-	rows, err := q.Query(ctx, `SELECT id::text, amount_idr, created_at, status FROM withdrawals WHERE party_id = $1 ORDER BY created_at DESC`, party)
+	rows, err := q.Query(ctx, `SELECT id::text, amount_idr, created_at, status, transfer_ref, paid_at, reject_reason
+		FROM withdrawals WHERE party_id = $1 ORDER BY created_at DESC`, party)
 	if err != nil {
 		return f, err
 	}
 	for rows.Next() {
-		var w struct {
-			AmountIdr int                          `json:"amountIdr"`
-			At        time.Time                    `json:"at"`
-			Id        string                       `json:"id"`
-			Status    api.FinanceWithdrawalsStatus `json:"status"`
-		}
-		var status string
-		if err := rows.Scan(&w.Id, &w.AmountIdr, &w.At, &status); err != nil {
+		var w financeWithdrawal
+		if err := rows.Scan(&w.Id, &w.AmountIdr, &w.At, &w.Status, &w.TransferRef, &w.PaidAt, &w.Reason); err != nil {
 			return f, err
 		}
-		if status == "failed" { // ponytail: the contract has no failed state; a failed payout is simply not listed
-			continue
-		}
-		w.Status = api.FinanceWithdrawalsStatus(status)
 		f.Withdrawals = append(f.Withdrawals, w)
 	}
 	if err := rows.Err(); err != nil {
@@ -304,8 +303,8 @@ func accountNoPattern(s string) bool {
 }
 
 // CreateMyWithdrawal pays available funds out to the active bank account. The wallet account row is locked first, so
-// concurrent withdrawals of one party serialize and never overdraw; the journal moves the money to bank_clearing (the
-// payout itself is done by finance ops; the withdrawal stays `processing` until then).
+// concurrent withdrawals of one party serialize and never overdraw; the journal moves the money to payout_pending (owed,
+// not yet transferred). It stays `processing` until an admin transfers it by hand and records it (payouts.go).
 func (s *Server) CreateMyWithdrawal(ctx context.Context, req api.CreateMyWithdrawalRequestObject) (api.CreateMyWithdrawalResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -318,7 +317,7 @@ func (s *Server) CreateMyWithdrawal(ctx context.Context, req api.CreateMyWithdra
 		if err != nil {
 			return err
 		}
-		acc, err := accounts(ctx, tx, "wallet_available:"+party, "ppn_payable:"+party, "bank_clearing")
+		acc, err := accounts(ctx, tx, "wallet_available:"+party, "ppn_payable:"+party, "payout_pending")
 		if err != nil {
 			return err
 		}
@@ -355,7 +354,7 @@ func (s *Server) CreateMyWithdrawal(ctx context.Context, req api.CreateMyWithdra
 		if err := post(ctx, tx, journal{Label: "Tarik dana ke " + bank, WithdrawalID: &wid, CreatedBy: &sess.UserID, Lines: []ledgerLine{
 			{acc["wallet_available:"+party], fromWallet, "withdrawal"},
 			{acc["ppn_payable:"+party], amount - fromWallet, "withdrawal"},
-			{acc["bank_clearing"], -amount, "withdrawal"},
+			{acc["payout_pending"], -amount, "withdrawal"},
 		}}); err != nil {
 			return err
 		}

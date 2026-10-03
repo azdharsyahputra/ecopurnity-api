@@ -750,7 +750,9 @@
       Derived from the double-entry ledger. Buyer: `escrowHeldIdr` is what the buyer has in escrow (subtotal + 11% PPN).
       Supplier: `receivableIdr` = amount receivable (escrowed invoices, or net terms delivered/accepted and unpaid) after the
       1% platform fee and the market maker commission. `availableIdr` = released earnings (incl. the collected PPN, which the
-      supplier remits) and refunds, minus withdrawals. `entries` is the caller's statement, newest first (kinds `escrow`,
+      supplier remits) and refunds, minus withdrawals (a rejected one is added back). `withdrawnIdr` = withdrawals
+      `processing` or `paid`; `withdrawals` lists all of them, newest first, with `transferRef`/`paidAt` (paid) or `reason`
+      (rejected). `entries` is the caller's statement, newest first (kinds `escrow`,
       `payment`, `refund`, `payout`, `fee`, `withdrawal`; money in positive, money out negative). `bank.accountNo` is
       masked (`••••` + last 4 digits); the full number is stored encrypted and never returned.
     tags: [Personal]
@@ -788,7 +790,10 @@
   post:
     operationId: createMyWithdrawal
     summary: Withdraw available funds to the payout account
-    description: Creates a withdrawal with status `processing`. Requires a saved bank account and `0 < amountIdr <= availableIdr`.
+    description: |
+      Creates a withdrawal with status `processing` (an admin transfers it by hand, usually within one working day, and
+      marks it `paid` with the transfer reference, or `rejected` with a reason: the amount returns to `availableIdr`).
+      Requires a saved bank account and `0 < amountIdr <= availableIdr`. Journal: wallet → payout_pending.
     tags: [Personal]
     x-access: session
     x-audit: true
@@ -805,7 +810,7 @@
             schema: { $ref: '#/components/schemas/Finance' }
       '401': { $ref: '#/components/responses/Unauthenticated' }
       '422': { $ref: '#/components/responses/Validation', description: 'fields: amountIdr (no bank account yet, amount not positive, or above the available balance; message states the maximum).' }
-    x-note: The withdrawal stays `processing` until finance ops pay it out (no endpoint yet). The 422 field is always amountIdr, even when the problem is the missing bank account. The `no bank` and `over balance` failures share code `validation`.
+    x-note: The 422 field is always amountIdr, even when the problem is the missing bank account. The `no bank` and `over balance` failures share code `validation`.
 
 /me/notifications:
   get:

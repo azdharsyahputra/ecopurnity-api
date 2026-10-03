@@ -60,7 +60,7 @@ func TestAdminGuard(t *testing.T) {
 		t.Fatalf("non-admin: %d %v", r.Status, r.Body)
 	}
 	a, _ := e.admin("Sari Admin")
-	if r := e.call(a, "GET", "/admin/overview", nil); r.Status != 200 || len(r.Body["sla"].([]any)) != 2 {
+	if r := e.call(a, "GET", "/admin/overview", nil); r.Status != 200 || len(r.Body["sla"].([]any)) != 3 {
 		t.Fatalf("overview: %d %v", r.Status, r.Body)
 	}
 }
