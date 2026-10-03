@@ -912,7 +912,7 @@ MmMarketOps:
     participants: { type: array, items: { $ref: '#/components/schemas/MmParticipant' } }
     disputes: { type: array, items: { $ref: '#/components/schemas/MmDispute' } }
     ruleVersions: { type: array, items: { $ref: '#/components/schemas/RuleVersion' } }
-    currentRound: { type: integer, description: 'Rounds started so far; the next round is `currentRound + 1`.' }
+    currentRound: { type: integer, description: 'Rounds opened so far (scheduled ones included); the next round is `currentRound + 1`.' }
     rounds: { type: array, items: { $ref: '#/components/schemas/Auction' } }
     results: { type: array, items: { $ref: '#/components/schemas/RoundResult' } }
     settings:
@@ -930,6 +930,7 @@ CreateRoundInput:
     quantity: { type: number }
     openingPriceIdr: { type: integer }
     durationMinutes: { type: integer }
+    startsAt: { type: string, format: date-time, description: 'Optional future start; absent or past = starts now.' }
 MmAnalytics:
   type: object
   required: [liquidity, byMarket, efficiency, growth, priceDiscovery]

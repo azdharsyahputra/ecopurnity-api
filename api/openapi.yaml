@@ -1732,6 +1732,10 @@ components:
           type: integer
         durationMinutes:
           type: integer
+        startsAt:
+          type: string
+          format: date-time
+          description: Optional future start; absent or past = starts now.
     DashboardSummary:
       type: object
       required:
@@ -3591,7 +3595,7 @@ components:
             $ref: "#/components/schemas/RuleVersion"
         currentRound:
           type: integer
-          description: Rounds started so far; the next round is `currentRound + 1`.
+          description: Rounds opened so far (scheduled ones included); the next round is `currentRound + 1`.
         rounds:
           type: array
           items:
@@ -11279,7 +11283,7 @@ paths:
     get:
       operationId: getMmAnalytics
       summary: Market maker analytics
-      description: Liquidity, per-market buyers/suppliers, 8 weeks of efficiency and growth, and price discovery per market.
+      description: Liquidity (active participants; active orders = bids in live rounds + listings in the markets), per-market buyers/suppliers, 8 weeks of efficiency and growth (ClickHouse; zero-filled weeks, all zero while analytics is unavailable) and price discovery per market (the started rounds' recorded prices).
       tags:
         - MarketMaker
       x-access: capability:market_maker
@@ -11313,7 +11317,7 @@ paths:
         - MarketMaker
       x-access: capability:market_maker
       x-audit: true
-      x-note: Only the listed fields are validated (rule limits, name, unit, referencePriceIdr, demand). `objective`, `mechanism`, `categoryId` are not checked, an unknown `opportunityId` is silently ignored, and `supply` below 0 is clamped to 0. `opportunityId` is not checked for ownership or for already being live.
+      x-note: Enums are checked by request validation. An unknown `opportunityId` is a 422 (the mock silently ignored it); `supply` below 0 is clamped to 0. `opportunityId` is not checked for ownership or for already being live (any market maker may form a market from any opportunity).
       requestBody:
         required: true
         content:
@@ -11334,7 +11338,7 @@ paths:
           description: "forbidden: caller lacks the market_maker capability."
         "422":
           $ref: "#/components/responses/Validation"
-          description: "fields: name (required), unit (required), referencePriceIdr (> 0), demand (> 0) and the rule fields minQuantity (> 0), maxQuantity (>= minQuantity), minStepPct (0 to 20), windowStart (required), windowEnd (required, not before windowStart), region (required), radiusKm (> 0)."
+          description: "fields: name (required), unit (required), referencePriceIdr (> 0), demand (> 0), opportunityId (must exist when given) and the rule fields minQuantity (> 0), maxQuantity (>= minQuantity), minStepPct (0 to 20), windowStart (required), windowEnd (required, not before windowStart), region (required), radiusKm (> 0)."
   /mm/markets/{id}:
     parameters:
       - name: id
@@ -11346,7 +11350,7 @@ paths:
     get:
       operationId: getMmMarket
       summary: Market operations detail
-      description: Public market detail with its auctions, plus participants, disputes (status follows the admin case once escalated), rule versions, current round number, rounds, recorded price results, settings and alerts.
+      description: "Public market detail with its auctions, plus participants, disputes (status follows the admin case once escalated), rule versions, current round number (rounds opened so far, scheduled ones included), rounds, recorded price results of the started rounds, settings and alerts. Pool members that did not opt in are listed as `Bisnis lain #n`."
       tags:
         - MarketMaker
       x-access: capability:market_maker
@@ -11413,12 +11417,11 @@ paths:
     post:
       operationId: actOnMmDispute
       summary: Review, resolve or escalate a market dispute
-      description: '`review` moves the dispute to review, `resolve` closes it with the note as the decision, `escalate` hands it to admin governance: an admin dispute case `dsp-mm-<hash>` (transaction disputed, evidence "Catatan market maker: ...") is created, the market dispute keeps `escalatedTo` and its status then mirrors the admin case, and every admin gets a `transaction_update` notification. Once escalated it can no longer be handled here. All branches write an audit entry.'
+      description: "`review` moves the dispute to review, `resolve` closes it with the note as the decision, `escalate` hands it to admin governance: an admin dispute case (code `DSP-…`) on a placeholder trade between the two named parties (1 lot at the market's max price, status disputed, evidence \"Catatan market maker: ...\") is created, the market dispute keeps `escalatedTo` and its status then mirrors the admin case, and every admin gets a `transaction_update` notification. Once escalated it can no longer be handled here. All branches write an audit entry."
       tags:
         - MarketMaker
       x-access: capability:market_maker
       x-audit: true
-      x-note: An `action` other than review/resolve/escalate is treated like `resolve` without requiring a note (status becomes resolved).
       requestBody:
         required: true
         content:
@@ -11468,7 +11471,6 @@ paths:
         - MarketMaker
       x-access: capability:market_maker
       x-audit: true
-      x-note: An unknown `action` value finds no rule and is answered with 409 invalid_transition, not 422.
       requestBody:
         required: true
         content:
@@ -11507,7 +11509,7 @@ paths:
     post:
       operationId: openMmRound
       summary: Open the next round of a market
-      description: Opens round `currentRound + 1` as a live auction of the market's mechanism type (forward, reverse, sealed or dutch; direct and collective markets run as reverse). The governing rule version for that round decides visibility (sealed mechanism is always sealed), minimum step (`minStepPct` of the opening price, min 1) and the public rule list. A market in `formation` becomes `active`. Writes an audit entry and a feed event and sends an `auction_invitation` notification to the market's participants. Market status is checked before input validation.
+      description: "Opens round `currentRound + 1` as an auction of the market's mechanism type (forward, reverse, sealed or dutch; direct and collective markets run as reverse). It is `live` from now unless `startsAt` is in the future: then it waits as `qualification` when the governing rules' eligibility is not `open` (bidders qualify first), else `scheduled`, and the auction clock starts it at `startsAt`. The round records the governing rule version. The governing rule version for that round decides visibility (sealed mechanism is always sealed), minimum step (`minStepPct` of the opening price, min 1) and the public rule list. A market in `formation` becomes `active`. Writes an audit entry and a feed event and sends an `auction_invitation` notification to the market's participants. Market status is checked before input validation."
       tags:
         - MarketMaker
       x-access: capability:market_maker
@@ -11575,7 +11577,7 @@ paths:
     post:
       operationId: settleMmRound
       summary: Settle a closed round across its contributors
-      description: Creates one escrow trade (maker fee rate 0.005, trade group `Kolektif <code>`) per contributor line with the winner, buyer side for procurement rounds and supplier side for selling rounds; the winner is the platform account when the winning bid belongs to one, else a verified business party. Contributing platform accounts get a `transaction_update` notification. For a collective pool round each member business instead gets its own sub-PO (buyer-role transaction, drop point from its procurement request, else main warehouse, else profile location), its procurement request moves to `po_issued`, the org gets an audit entry and its users a notification; the pool becomes `settled` and the response `trades` counts only member lines that got a sub-PO. The round becomes `awarded` and the settlement is recorded. Writes an audit entry.
+      description: Creates one escrow trade (maker fee rate 0.005, trade group `Kolektif <code>`) per contributor line with the winner, buyer side for procurement rounds and supplier side for selling rounds; the winner is the platform account when the winning bid belongs to one, else a verified business party. Contributing platform accounts get a `transaction_update` notification. For a collective pool round each member business instead gets its own sub-PO (buyer-role transaction, drop point from its procurement request, else main warehouse, else profile location), its procurement request moves to `po_issued`, the org gets an audit entry and its users a notification; the pool becomes `settled` and the response `trades` counts only member lines that got a sub-PO. A line whose member is the winner itself gets no trade. The round becomes `awarded` and the settlement is recorded (settle once). Writes an audit entry and a `market.round_result` fact.
       tags:
         - MarketMaker
       x-access: capability:market_maker
@@ -11593,7 +11595,7 @@ paths:
           description: "not_found: not signed in, not a market maker, market not operated by the caller, or round not in that market."
         "409":
           $ref: "#/components/responses/Conflict"
-          description: "not_closed: round status is not closed/awarded; already_settled: the round was already settled."
+          description: "not_closed: round status is not closed/awarded; already_settled: the round was already settled; no_bids: the round has no bid to settle against."
   /mm/markets/{id}/rules:
     parameters:
       - name: id
@@ -11655,7 +11657,7 @@ paths:
         - MarketMaker
       x-access: capability:market_maker
       x-audit: true
-      x-note: An `action` outside pause/resume/close is not validated and makes the mock throw (500) instead of answering 422.
+      x-note: Running rounds keep running when a market is paused or closed (as in the mock); only new rounds are blocked. An empty reason fails request validation (422) before the transition check; a blank one after it.
       requestBody:
         required: true
         content:
@@ -11749,7 +11751,7 @@ paths:
     get:
       operationId: getMmOverview
       summary: Market maker operations overview
-      description: "Stats, one row per market the caller operates (own org's markets plus ones they created) with live-round counts and alerts, a merged event feed (newest 15) and the auctions to subscribe to. Side effect: persists bot-driven round state."
+      description: "Stats, one row per market the caller operates (own org's markets plus ones they created) with live-round counts and alerts, a merged event feed (newest 15: the caller's own market maker actions from the audit log, titled \"<action> · <entity>\", plus the latest two bids of each live round with visibility `full`) and the auctions to subscribe to. `matchedDemand` is the latest week of the analytics efficiency series (0 while analytics is unavailable). The same actions are pushed live as `mm.activity` frames on `user:{id}`."
       tags:
         - MarketMaker
       x-access: capability:market_maker
@@ -11798,7 +11800,7 @@ paths:
     post:
       operationId: formMmPoolMarket
       summary: Form a market from a collective pool and open its first round
-      description: "Creates a `collective_procurement` market (objective procurement, auto approval, verification `documents`, reference price = the pool's base unit price, region and category from the pool, buyers = the pool members) and opens round 1 for the whole pool lot (sum of member quantities) as a live reverse auction. The pool moves to `market_live` and is bound to the maker, market and auction. Side effects: market audit entries, org audit entry and a `new_market` notification for every user of each member organization."
+      description: "Creates a `collective_procurement` market (objective procurement, auto approval, verification `documents`, reference price = the pool's base unit price, region and category from the pool, buyers = the pool members) and opens round 1 for the whole pool lot (sum of member quantities) as a live reverse auction. The pool moves to `market_live` and is bound to the maker, market and auction. Member organizations become active buyer participants (external member businesses have no platform party and are not listed). Side effects: market audit entries, org audit entry and a `new_market` notification for every user of each member organization."
       tags:
         - MarketMaker
       x-access: capability:market_maker
