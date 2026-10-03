@@ -373,16 +373,12 @@ func (s *Server) ApplyMyTransactionAction(ctx context.Context, req api.ApplyMyTr
 		if err != nil {
 			return err
 		}
-		var side string
-		if party == "" || !isUUID(req.Id) {
-			return errTradeNotFound
-		}
-		if err := tx.QueryRow(ctx, `
-			SELECT CASE WHEN buyer_party_id = $2 THEN 'buyer' ELSE 'supplier' END FROM trades
-			WHERE id = $1 AND $2 IN (buyer_party_id, supplier_party_id)`, req.Id, party).Scan(&side); errors.Is(err, pgx.ErrNoRows) {
-			return errTradeNotFound
-		} else if err != nil {
+		side, err := tradeSide(ctx, tx, req.Id, party)
+		if err != nil {
 			return err
+		}
+		if req.Body.Action == "pay" {
+			return errPayViaGateway
 		}
 		if err := applyTradeAction(ctx, tx, req.Id, tradeActor{Side: side, UserID: &sess.UserID, Name: sess.Name}, *req.Body); err != nil {
 			return err

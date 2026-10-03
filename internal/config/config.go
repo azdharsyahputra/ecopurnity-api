@@ -63,6 +63,12 @@ type Config struct {
 	// SimulateCounterparties runs the demo bots: external (off-platform) trade and contract counterparties
 	// (trade_clock.go) and fictional RFQ suppliers that quote, counter and chat (counterparties.go). Dev/demo only.
 	SimulateCounterparties bool
+
+	// Midtrans Core API (payments). Empty MidtransServerKey runs the fake gateway (dev only). The client key is for
+	// browser-side card tokenization (not used yet). MidtransProduction: MIDTRANS_ENV=production (default sandbox).
+	MidtransServerKey  string
+	MidtransClientKey  string
+	MidtransProduction bool
 }
 
 func Load() (Config, error) {
@@ -121,6 +127,15 @@ func Load() (Config, error) {
 	c.CookieSecure = env("COOKIE_SECURE", "true") == "true"
 	c.GoogleDevLogin = env("GOOGLE_DEV_LOGIN", "false") == "true"
 	c.SimulateCounterparties = env("SIMULATE_COUNTERPARTIES", "false") == "true"
+	c.MidtransServerKey = strings.TrimSpace(os.Getenv("MIDTRANS_SERVER_KEY"))
+	c.MidtransClientKey = strings.TrimSpace(os.Getenv("MIDTRANS_CLIENT_KEY"))
+	switch env("MIDTRANS_ENV", "sandbox") {
+	case "sandbox":
+	case "production":
+		c.MidtransProduction = true
+	default:
+		return c, fmt.Errorf("MIDTRANS_ENV must be sandbox or production")
+	}
 	days, err := strconv.Atoi(env("SESSION_TTL_DAYS", "30"))
 	if err != nil || days < 1 {
 		return c, fmt.Errorf("SESSION_TTL_DAYS must be a positive integer")

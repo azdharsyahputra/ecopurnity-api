@@ -1,0 +1,161 @@
+# Payments through the gateway (Midtrans Core API): the buyer's side pays an invoice; the money moves when the gateway
+# reports settlement (notification or the server's reconciler), through the same `pay` step as the trade engine.
+
+/me/transactions/{id}/payments:
+  parameters:
+    - &txid { name: id, in: path, required: true, schema: { type: string } }
+  post:
+    operationId: createMyTransactionPayment
+    summary: Start paying a transaction's invoice
+    description: &createDesc |
+      The buyer pays the invoice (escrow terms: status `invoiced`; net terms: status `accepted`, i.e. whenever the `pay`
+      step is open for the buyer) through a gateway charge: `bank_transfer` virtual account (`bank` bca, bni, bri,
+      permata, cimb), `echannel` (Mandiri bill: biller code + bill key), `qris`, `gopay` (QR + deeplink) or `shopeepay`
+      (deeplink). The amount is the engine's breakdown of the current total (subtotal + PPN 11%). Expiry: 24 h for
+      transfers, 15 min for QRIS and e-wallets.
+
+      One open payment per invoice: a pending one is cancelled at the gateway first ("Ganti metode"). If the gateway
+      reports that the previous attempt was already paid, that settlement is applied and the answer is 409.
+
+      Nothing moves until the gateway reports `settlement` (`POST /payments/midtrans/notification`, or the reconciler
+      that polls pending payments every ~30 s and expires overdue ones); then the `pay` step is applied once, with its
+      usual ledger journals, timeline event (note carries the gateway order id), audit entry, notification and
+      `trade.updated` frames. `expire`/`cancel`/`deny`/`failure` close the payment, notify the buyer (type `payment`)
+      and leave the trade as it was. Gateway fees (MDR) are absorbed by the platform for now.
+    tags: [Personal]
+    x-access: session
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/PaymentInput' } } }
+    responses:
+      '201': &paymentOk
+        description: The pending payment with its instructions.
+        content: { application/json: { schema: { $ref: '#/components/schemas/Payment' } } }
+      '401': &unauth { $ref: '#/components/responses/Unauthenticated' }
+      '404': &notfound { $ref: '#/components/responses/NotFound', description: 'not_found: not the caller''s transaction.' }
+      '409': &payConflict { $ref: '#/components/responses/Conflict', description: 'invalid_transition: the caller is not the buyer or paying is not open in the current status. already_paid: the previous attempt was paid meanwhile (now applied).' }
+      '422': &payValidation { $ref: '#/components/responses/Validation', description: 'fields: method, bank (required for bank_transfer).' }
+      '502': &gatewayDown
+        description: 'payment_gateway: the gateway refused or did not answer; nothing changed, try again.'
+        content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } }
+
+/me/transactions/{id}/payments/current:
+  parameters: [*txid]
+  get:
+    operationId: getMyTransactionPayment
+    summary: Get the newest payment attempt of a transaction
+    description: &currentDesc The newest payment attempt of the caller's side for this transaction (any status), or a JSON `null` (200) when there is none. Only the buyer's side has payments.
+    tags: [Personal]
+    x-access: session
+    responses:
+      '200': &paymentOrNull
+        description: Payment or null.
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - $ref: '#/components/schemas/Payment'
+                - { type: 'null' }
+      '401': *unauth
+      '404': *notfound
+
+/me/transactions/{id}/payments/current/cancel:
+  parameters: [*txid]
+  post:
+    operationId: cancelMyTransactionPayment
+    summary: Cancel the pending payment
+    description: &cancelDesc Cancels the pending payment at the gateway and closes it (status `cancel`); the invoice can be paid again with another method. If the gateway says it was paid meanwhile, the settlement is applied and the payment comes back as `settlement`.
+    tags: [Personal]
+    x-access: session
+    responses:
+      '200': &paymentDone
+        description: The payment after the cancel.
+        content: { application/json: { schema: { $ref: '#/components/schemas/Payment' } } }
+      '401': *unauth
+      '404': *notfound
+      '409': &noPending { $ref: '#/components/responses/Conflict', description: 'invalid_transition: no pending payment.' }
+      '502': *gatewayDown
+
+/orgs/{orgId}/transactions/{tid}/payments:
+  parameters:
+    - &orgid { $ref: '#/components/parameters/OrgId' }
+    - &tid { name: tid, in: path, required: true, description: Transaction id., schema: { type: string } }
+  post:
+    operationId: createOrgTransactionPayment
+    summary: Start paying an organization trade's invoice
+    description: *createDesc
+    tags: [Organization]
+    x-access: org:transactions.manage
+    x-note: 'Gated like the `pay` step: built-in roles Owner and Finance; custom roles need transactions.manage (403 "Bayar hanya untuk Owner, Finance; peranmu …").'
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/PaymentInput' } } }
+    responses:
+      '201': *paymentOk
+      '401': *unauth
+      '403': &orgDenied { $ref: '#/components/responses/Forbidden', description: 'forbidden: not a member, or the role may not pay.' }
+      '404': *notfound
+      '409': *payConflict
+      '422': *payValidation
+      '502': *gatewayDown
+
+/orgs/{orgId}/transactions/{tid}/payments/current:
+  parameters: [*orgid, *tid]
+  get:
+    operationId: getOrgTransactionPayment
+    summary: Get the newest payment attempt of an organization trade
+    description: *currentDesc
+    tags: [Organization]
+    x-access: org:transactions.view
+    responses:
+      '200': *paymentOrNull
+      '401': *unauth
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: not a member, or the role may not see transactions.' }
+      '404': *notfound
+
+/orgs/{orgId}/transactions/{tid}/payments/current/cancel:
+  parameters: [*orgid, *tid]
+  post:
+    operationId: cancelOrgTransactionPayment
+    summary: Cancel the pending payment of an organization trade
+    description: *cancelDesc
+    tags: [Organization]
+    x-access: org:transactions.manage
+    x-note: Gated like the `pay` step (Owner, Finance; custom roles transactions.manage).
+    responses:
+      '200': *paymentDone
+      '401': *unauth
+      '403': *orgDenied
+      '404': *notfound
+      '409': *noPending
+      '502': *gatewayDown
+
+/payments/midtrans/notification:
+  post:
+    operationId: midtransNotification
+    summary: Receive a Midtrans payment notification
+    description: |
+      Webhook for Midtrans (set `{public API URL}/api/v1/payments/midtrans/notification` as the Payment Notification URL
+      in the Midtrans dashboard). No session. The body is verified with `signature_key` = SHA512(order_id + status_code +
+      gross_amount + server key) (403 otherwise), then the order's status is fetched from Midtrans and only that answer
+      is applied (the body's status and amount are never trusted; a gross amount that differs from the payment's is
+      logged and not settled). Idempotent: repeated notifications change nothing. An unknown order answers 200 so
+      Midtrans stops retrying. The body is stored on the payment without `signature_key`.
+    tags: [Public]
+    x-access: public
+    security: []
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/MidtransNotification' } } }
+    responses:
+      '200':
+        description: Received.
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [received]
+              properties: { received: { type: boolean } }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: bad signature_key.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'Missing order_id, status_code, gross_amount or signature_key.' }
+      '502': { description: 'payment_gateway: Midtrans status could not be fetched; Midtrans retries the notification.', content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }

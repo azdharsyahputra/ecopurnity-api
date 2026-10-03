@@ -132,6 +132,30 @@ from it (`internal/server/finance.go`). `RunTradeClock` places due standing-cont
 platform (external parties): it accepts agreements and contract proposals, invoices, ships, confirms and reviews, so
 every flow can be finished alone. **Leave it unset (false) in production.**
 
+## Payments (Midtrans Core API)
+
+Buyers pay invoices in our own UI with Midtrans **Core API** charges (`internal/payments`, used by
+`internal/server/payments.go`): virtual account (BCA, BNI, BRI, Permata, CIMB), Mandiri bill (`echannel`), QRIS, GoPay
+and ShopeePay. A charge stays payable 24 h (transfers) or 15 min (QRIS, e-wallets). The money moves only when Midtrans
+reports settlement: then the trade engine's `pay` step runs once (same ledger journals as before); users cannot send
+`pay` themselves. Expired, cancelled, denied or failed payments close and notify the buyer; the trade waits for a new
+attempt. Midtrans fees (MDR) are absorbed by the platform for now.
+
+- **Keys**: sign in at <https://dashboard.sandbox.midtrans.com> → Settings → Access Keys and put the sandbox Server
+  Key and Client Key in `.env` (`MIDTRANS_SERVER_KEY`, `MIDTRANS_CLIENT_KEY`, `MIDTRANS_ENV=sandbox`). Production keys
+  come from <https://dashboard.midtrans.com> with `MIDTRANS_ENV=production`. Never commit them.
+- **No key**: an empty `MIDTRANS_SERVER_KEY` runs a fake gateway (startup warning): plausible VA/QR data, and every
+  payment settles by itself after 10 s. Dev and tests only.
+- **Notification URL**: in the dashboard (Settings → Payment → Notification URL) set
+  `{public API URL}/api/v1/payments/midtrans/notification`. Notifications are verified (`signature_key`) and then
+  confirmed with a status call; the body is never trusted. Without a public URL (local dev) a reconciler polls Midtrans
+  for pending payments every 30 s, so sandbox payments (Midtrans simulator) still complete.
+- **Smoke test** (sandbox, opt-in): `set -a; . ./.env; set +a; MIDTRANS_LIVE_TEST=1 go test ./internal/payments -run Live -v`
+  charges a BCA VA and a QRIS, checks they are pending and cancels them.
+- **Not yet**: cards (need Midtrans JS tokenization in the browser plus the 3DS flow), refunds through Midtrans (a
+  payment that settles after the invoice was already paid is logged for a manual refund in the dashboard), MDR fees in
+  the ledger.
+
 ## File uploads (Cloudflare R2)
 
 Uploads never pass through the API: `POST /uploads` returns a presigned PUT URL, the browser sends the file straight to
