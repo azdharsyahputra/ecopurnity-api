@@ -2406,24 +2406,45 @@ Conversation:
     messages:
       type: array
       items:
-        type: object
-        required:
-          - id
-          - by
-          - text
-          - at
-        properties:
-          id:
-            type: string
-          by:
-            type: string
-          userId:
-            type: string
-          text:
-            type: string
-          at:
-            type: string
-            format: date-time
+        $ref: "#/components/schemas/ConversationMessage"
     updatedAt:
       type: string
       format: date-time
+    seq:
+      type: integer
+      description: Channel head (`conversations.message_seq`), the seq of the newest message. Subscribe to
+        `conversation:{id}` with `sinceSeq` = this value (docs/realtime.md).
+    lastReadSeq:
+      type: integer
+      description: The caller's read position (`conversation_participants.last_read_seq`).
+    unread:
+      type: integer
+      description: Messages after the caller's read position (`seq - lastReadSeq`).
+ConversationMessage:
+  type: object
+  description: One message of a conversation. The realtime `message.created` payload is this plus `conversationId`.
+  required:
+    - id
+    - by
+    - text
+    - at
+  properties:
+    id:
+      type: string
+    by:
+      type: string
+      description: Display name of the author.
+    userId:
+      type: string
+      description: Author's user id; absent for external (non-platform) participants.
+    text:
+      type: string
+    at:
+      type: string
+      format: date-time
+    seq:
+      type: integer
+      description: Position in the conversation (`messages.seq`), gapless from 1.
+    clientMsgId:
+      type: string
+      description: The sender's idempotency key (uuid), present on messages posted with one.

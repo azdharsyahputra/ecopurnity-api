@@ -86,6 +86,10 @@ func run(log *slog.Logger) error {
 	}
 	defer api.WaitMail() // let queued emails go out on shutdown
 	go api.RunAuctionClock(ctx, time.Second)
+	if cfg.SimulateCounterparties {
+		log.Warn("SIMULATE_COUNTERPARTIES is on: fictional suppliers will quote, counter and chat (demo only)")
+		go api.RunCounterparties(ctx, time.Second)
+	}
 	h, err := api.Handler()
 	if err != nil {
 		return err

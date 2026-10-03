@@ -97,6 +97,13 @@ websocat -H 'Cookie: ecp_session=<cookie value>' ws://localhost:8080/api/v1/ws  
 
 `GET /readyz` shows `realtime: {feed, publisher, sockets}` for the instance.
 
+## Simulated counterparties (demo only)
+
+`SIMULATE_COUNTERPARTIES=true` (the `.env.example` default) starts a background tick
+(`internal/server/counterparties.go`) that plays the frontend mock's fictional suppliers: they quote on new RFQs, answer
+the buyer's counters and reply in chat, so one tester can walk the RFQ flow alone. **Production: leave it unset or
+`false`.** Without it, external parties (no platform account) never act on their own.
+
 ## Email
 
 Transactional email (verification code, password reset link) goes through SMTP when `SMTP_HOST` is set, otherwise it is
