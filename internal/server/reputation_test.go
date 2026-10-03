@@ -96,3 +96,14 @@ func TestReputationReviews(t *testing.T) {
 		t.Fatal("rating without reviews")
 	}
 }
+
+func TestReputationGate(t *testing.T) {
+	for _, c := range []struct {
+		score, trades int
+		ok            bool
+	}{{80, 0, true}, {40, 0, true}, {80, 3, true}, {79, 3, false}, {95, 1, true}} {
+		if ok, detail := reputationGate(c.score, c.trades); ok != c.ok || detail == "" {
+			t.Errorf("reputationGate(%d, %d) = %v %q, want %v", c.score, c.trades, ok, detail, c.ok)
+		}
+	}
+}

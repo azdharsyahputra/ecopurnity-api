@@ -533,7 +533,7 @@ func (s *Server) OpenMmRound(ctx context.Context, req api.OpenMmRoundRequestObje
 func loadParticipants(ctx context.Context, q dbtx, where string, args ...any) ([]api.MmParticipant, error) {
 	rows, err := q.Query(ctx, `
 		SELECT mp.id::text, CASE WHEN pm.opt_in = false THEN 'Bisnis lain #' || pm.n ELSE p.name END, p.display_kind, mp.verified,
-		       mp.role, mp.status, mp.joined_at, p.user_id::text, mp.note
+		       mp.role, mp.status, mp.joined_at, p.user_id::text, mp.note, mp.party_id::text
 		FROM market_participants mp JOIN parties p ON p.id = mp.party_id
 		LEFT JOIN LATERAL (
 			SELECT x.opt_in, x.n FROM (
@@ -546,16 +546,28 @@ func loadParticipants(ctx context.Context, q dbtx, where string, args ...any) ([
 	}
 	defer rows.Close()
 	out := []api.MmParticipant{}
+	var parties []string
 	for rows.Next() {
 		var p api.MmParticipant
-		if err := rows.Scan(&p.Id, &p.Name, &p.Kind, &p.Verified, &p.Role, &p.Status, &p.JoinedAt, &p.UserId, &p.Note); err != nil {
+		var party string
+		if err := rows.Scan(&p.Id, &p.Name, &p.Kind, &p.Verified, &p.Role, &p.Status, &p.JoinedAt, &p.UserId, &p.Note, &party); err != nil {
 			return nil, err
 		}
-		// ponytail: reputation comes with the reputation area; 80 is the baseline the auction evaluation uses too.
-		p.Reputation = 80
 		out = append(out, p)
+		parties = append(parties, party)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i, party := range parties {
+		score, _, err := reputationOf(ctx, q, party)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Reputation = float64(score)
+	}
+	return out, nil
 }
 
 func loadMmDisputes(ctx context.Context, q dbtx, where string, args ...any) ([]api.MmDispute, error) {

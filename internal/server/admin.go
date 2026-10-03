@@ -208,10 +208,6 @@ func (s *Server) GetAdminOverview(ctx context.Context, _ api.GetAdminOverviewReq
 
 // ── Users ────────────────────────────────────────────────────────
 
-// ponytail: reputation is the baseline score (frontend BASELINE_SCORE) until the shared reputation scorer
-// (src/domain/reputation.ts) is ported by the reputation area; swap reputationBaseline for it then.
-const reputationBaseline = 80
-
 const adminUserSelect = `
 	SELECT u.id, u.name, u.username, u.email, u.location, u.status, u.created_at, coalesce(i.identity_verified_at IS NOT NULL, false),
 	       coalesce((SELECT array_agg(c.capability ORDER BY c.capability) FROM user_capabilities c WHERE c.user_id = u.id), '{}'),
@@ -238,10 +234,22 @@ func loadAdminUsers(ctx context.Context, q dbtx, where string, args ...any) ([]a
 		for _, c := range caps {
 			u.Capabilities = append(u.Capabilities, api.Capability(c))
 		}
-		u.Transactions, u.ReportCount, u.Reputation = int(txs), int(reports), reputationBaseline
+		u.Transactions, u.ReportCount = int(txs), int(reports)
 		out = append(out, u)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// ponytail: one score query per listed user; batch loadRepTxs over all parties if the admin list grows large.
+	for i := range out {
+		score, _, err := userReputation(ctx, q, out[i].Id)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Reputation = float64(score)
+	}
+	return out, nil
 }
 
 func loadAdminUser(ctx context.Context, q dbtx, id string) (api.AdminUser, error) {

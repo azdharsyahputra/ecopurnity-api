@@ -642,9 +642,12 @@ func (s *Server) GetAuctionEvaluation(ctx context.Context, req api.GetAuctionEva
 		var off api.Offer
 		off.Id, off.PriceIdr, off.SubmittedAt = o.BidID, int(o.Price), o.At
 		off.Supplier.Name, off.Supplier.Kind, off.Supplier.Verified = o.Name, api.OfferSupplierKind(o.Kind), o.Verified
-		// ponytail: reputation and capacity come with the reputation / supplier areas; until then every bidder offers
-		// the whole lot at the 80 baseline, so the suggestion is simply the best price.
-		off.Supplier.Reputation = 80
+		// ponytail: bids carry no capacity, so every bidder offers the whole lot and the suggestion is the best price.
+		score, _, err := reputationOf(ctx, q, o.PartyID)
+		if err != nil {
+			return nil, err
+		}
+		off.Supplier.Reputation = float64(score)
 		off.Capacity = api.Quantity{Value: r.Quantity, Unit: r.Unit}
 		out.Offers = append(out.Offers, off)
 		if left > 0 {

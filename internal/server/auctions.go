@@ -105,6 +105,11 @@ func qualificationOf(ctx context.Context, q dbtx, auctionID, userID string) (api
 		}
 		return c
 	}
+	score, trades, err := userReputation(ctx, q, userID)
+	if err != nil {
+		return api.Qualification{}, err
+	}
+	repOK, repDetail := reputationGate(score, trades)
 	emailDetail := ""
 	if !emailVerified {
 		emailDetail = "Verifikasi dari halaman profil"
@@ -112,12 +117,22 @@ func qualificationOf(ctx context.Context, q dbtx, auctionID, userID string) (api
 	qual := api.Qualification{AuctionId: auctionID, Status: api.QualificationStatus(status)}
 	qual.Checks = append(qual.Checks,
 		check("email", "Email terverifikasi", emailVerified, emailDetail),
-		// ponytail: reputation gate passes until the reputation area computes scores (new accounts start at the 80 baseline).
-		check("reputation", "Reputasi ≥ 80", true, "Akun baru: diizinkan untuk lot pertama"),
+		check("reputation", "Reputasi ≥ 80", repOK, repDetail),
 		check("document", "Dokumen spesifikasi", done, ""),
 		check("rules", "Menyetujui aturan auction", done, ""),
 	)
 	return qual, nil
+}
+
+// reputationGate: accounts with a trade history need a score of at least 80; new accounts may bid on their first lots.
+func reputationGate(score, trades int) (bool, string) {
+	switch {
+	case trades == 0:
+		return true, "Akun baru: diizinkan untuk lot pertama"
+	case score < baselineScore:
+		return false, fmt.Sprintf("Skor reputasimu %d, minimal %d", score, baselineScore)
+	}
+	return true, fmt.Sprintf("Skor %d", score)
 }
 
 func (s *Server) QualifyForAuction(ctx context.Context, req api.QualifyForAuctionRequestObject) (api.QualifyForAuctionResponseObject, error) {
@@ -146,6 +161,13 @@ func (s *Server) QualifyForAuction(ctx context.Context, req api.QualifyForAuctio
 		}
 		if !emailVerified {
 			f["email"] = "Verifikasi email dulu"
+		}
+		score, trades, err := userReputation(ctx, tx, sess.UserID)
+		if err != nil {
+			return err
+		}
+		if ok, detail := reputationGate(score, trades); !ok {
+			f["reputation"] = detail
 		}
 		if len(f) > 0 {
 			return &Error{Status: 422, Code: "validation", Message: "Syarat kualifikasi belum lengkap", Fields: f}

@@ -260,3 +260,18 @@ func (s *Server) GetMyReputation(ctx context.Context, _ api.GetMyReputationReque
 	}
 	return api.GetMyReputation200JSONResponse(reputationReport(txs, time.Now())), nil
 }
+
+// reputationOf is the score of a set of parties and how many trades it rests on (0 = new account, baseline score).
+func reputationOf(ctx context.Context, q dbtx, partyIDs ...string) (score, trades int, err error) {
+	r, err := partyReputation(ctx, q, partyIDs)
+	return r.Score, r.Counts.Transactions, err
+}
+
+// userReputation is reputationOf the user's own party.
+func userReputation(ctx context.Context, q dbtx, userID string) (score, trades int, err error) {
+	ids, err := userPartyIDs(ctx, q, userID)
+	if err != nil {
+		return 0, 0, err
+	}
+	return reputationOf(ctx, q, ids...)
+}

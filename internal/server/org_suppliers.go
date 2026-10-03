@@ -424,16 +424,30 @@ func resolveSuppliers(ctx context.Context, q dbtx, keys []string) (map[string]su
 		return nil, err
 	}
 	defer rows.Close()
+	var fresh []supplierInfo
 	for rows.Next() {
 		var id, name string
 		if err := rows.Scan(&id, &name); err != nil {
 			return nil, err
 		}
 		if _, ok := out["p:"+id]; !ok {
-			out["p:"+id] = supplierInfo{ID: id, Name: name, Score: 80, OnTime: 0.8}
+			fresh = append(fresh, supplierInfo{ID: id, Name: name, OnTime: 0.8})
 		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// Bidders outside the directory: their platform reputation.
+	for _, i := range fresh {
+		score, _, err := reputationOf(ctx, q, i.ID)
+		if err != nil {
+			return nil, err
+		}
+		i.Score = float64(score)
+		out["p:"+i.ID] = i
+	}
+	return out, nil
 }
 
 func (s *Server) GetOrgAnalytics(ctx context.Context, req api.GetOrgAnalyticsRequestObject) (api.GetOrgAnalyticsResponseObject, error) {
