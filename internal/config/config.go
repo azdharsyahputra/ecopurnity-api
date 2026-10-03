@@ -60,8 +60,8 @@ type Config struct {
 	// the real OAuth flow replaces it.
 	GoogleDevLogin bool
 
-	// SimulateCounterparties lets a bot play external (off-platform) counterparties of trades and contracts so demo
-	// flows can be completed. Dev/demo only; never in production.
+	// SimulateCounterparties runs the demo bots: external (off-platform) trade and contract counterparties
+	// (trade_clock.go) and fictional RFQ suppliers that quote, counter and chat (counterparties.go). Dev/demo only.
 	SimulateCounterparties bool
 }
 

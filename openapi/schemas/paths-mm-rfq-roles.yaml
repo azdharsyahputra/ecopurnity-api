@@ -80,7 +80,7 @@ RfqQuoteInput:
   properties:
     priceIdr: { type: integer, exclusiveMinimum: 0, description: Unit price. }
     quantity: { type: number, exclusiveMinimum: 0 }
-    leadTimeDays: { type: integer }
+    leadTimeDays: { type: integer, minimum: 0 }
     terms: { $ref: '#/components/schemas/PaymentTerms' }
     note: { type: string }
 
@@ -117,7 +117,13 @@ RfqMessageInput:
   type: object
   required: [text]
   properties:
-    text: { type: string, minLength: 1, description: Non-blank after trim; stored trimmed. }
+    text: { type: string, minLength: 1, maxLength: 4000, description: Non-blank after trim; stored trimmed. }
+    clientMsgId:
+      type: string
+      format: uuid
+      description: >-
+        Idempotency key chosen by the client. A retry with the same key (REST or `chat.send`) returns the stored
+        message and creates, broadcasts and notifies nothing new.
 
 RolesInvitationAnswerInput:
   type: object

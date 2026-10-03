@@ -34,7 +34,7 @@ func (s *Server) RunTradeClock(ctx context.Context, every time.Duration) {
 			s.Log.Error("contract clock", "err", err)
 		}
 		if s.SimulateCounterparties {
-			if err := s.CounterpartyTick(ctx, botDelay); err != nil && ctx.Err() == nil && s.Log != nil {
+			if err := s.TradeCounterpartyTick(ctx, botDelay); err != nil && ctx.Err() == nil && s.Log != nil {
 				s.Log.Error("counterparty bot", "err", err)
 			}
 		}
@@ -112,9 +112,9 @@ func (s *Server) ContractTick(ctx context.Context, delay time.Duration) error {
 	})
 }
 
-// CounterpartyTick takes one step for the external side of every trade idle for `delay` (exported for tests).
+// TradeCounterpartyTick takes one step for the external side of every trade idle for `delay` (exported for tests).
 // Callers gate it on SimulateCounterparties.
-func (s *Server) CounterpartyTick(ctx context.Context, delay time.Duration) error {
+func (s *Server) TradeCounterpartyTick(ctx context.Context, delay time.Duration) error {
 	// One step per trade per tick: a trade already looked at (acted on, or waiting on the user) is not picked again.
 	seen := map[string]bool{}
 	return s.drain(ctx, func(tx pgx.Tx) (bool, error) {

@@ -89,7 +89,8 @@ func run(log *slog.Logger) error {
 	go api.RunAuctionClock(ctx, time.Second)
 	go api.RunTradeClock(ctx, 2*time.Second)
 	if cfg.SimulateCounterparties {
-		log.Warn("SIMULATE_COUNTERPARTIES is on: a bot plays external trade counterparties (demo only)")
+		log.Warn("SIMULATE_COUNTERPARTIES is on: bots play external trade parties and RFQ suppliers (demo only)")
+		go api.RunCounterparties(ctx, time.Second)
 	}
 	h, err := api.Handler()
 	if err != nil {

@@ -301,7 +301,7 @@ func TestTradeNetTermsWithSimulatedSupplier(t *testing.T) {
 		Quantity: 300, Unit: "pcs", UnitPriceIdr: 2_000, Terms: "net14"})
 	tick := func() {
 		t.Helper()
-		if err := e.server.CounterpartyTick(t0(), 0); err != nil {
+		if err := e.server.TradeCounterpartyTick(t0(), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
