@@ -704,7 +704,7 @@ DisputeSummary:
     totalIdr: { type: integer }
     title: { type: string }
 
-DisputeActionRequestEvidence:
+DisputeActionInputRequestEvidence:
   type: object
   required: [action, from, reason]
   properties:
@@ -712,14 +712,14 @@ DisputeActionRequestEvidence:
     from: { type: string, enum: [buyer, supplier, both] }
     reason: { type: string }
 
-DisputeActionStartReview:
+DisputeActionInputStartReview:
   type: object
   required: [action]
   properties:
     action: { type: string, const: start_review }
     reason: { type: string }
 
-DisputeActionResolve:
+DisputeActionInputResolve:
   type: object
   required: [action, resolution, reason]
   properties:
@@ -730,15 +730,15 @@ DisputeActionResolve:
 DisputeActionInput:
   description: Body of an admin dispute action.
   oneOf:
-    - $ref: '#/components/schemas/DisputeActionRequestEvidence'
-    - $ref: '#/components/schemas/DisputeActionStartReview'
-    - $ref: '#/components/schemas/DisputeActionResolve'
+    - $ref: '#/components/schemas/DisputeActionInputRequestEvidence'
+    - $ref: '#/components/schemas/DisputeActionInputStartReview'
+    - $ref: '#/components/schemas/DisputeActionInputResolve'
   discriminator:
     propertyName: action
     mapping:
-      request_evidence: '#/components/schemas/DisputeActionRequestEvidence'
-      start_review: '#/components/schemas/DisputeActionStartReview'
-      resolve: '#/components/schemas/DisputeActionResolve'
+      request_evidence: '#/components/schemas/DisputeActionInputRequestEvidence'
+      start_review: '#/components/schemas/DisputeActionInputStartReview'
+      resolve: '#/components/schemas/DisputeActionInputResolve'
 
 AlertType:
   type: string

@@ -1929,16 +1929,16 @@ components:
     DisputeActionInput:
       description: Body of an admin dispute action.
       oneOf:
-        - $ref: "#/components/schemas/DisputeActionRequestEvidence"
-        - $ref: "#/components/schemas/DisputeActionStartReview"
-        - $ref: "#/components/schemas/DisputeActionResolve"
+        - $ref: "#/components/schemas/DisputeActionInputRequestEvidence"
+        - $ref: "#/components/schemas/DisputeActionInputStartReview"
+        - $ref: "#/components/schemas/DisputeActionInputResolve"
       discriminator:
         propertyName: action
         mapping:
-          request_evidence: "#/components/schemas/DisputeActionRequestEvidence"
-          start_review: "#/components/schemas/DisputeActionStartReview"
-          resolve: "#/components/schemas/DisputeActionResolve"
-    DisputeActionRequestEvidence:
+          request_evidence: "#/components/schemas/DisputeActionInputRequestEvidence"
+          start_review: "#/components/schemas/DisputeActionInputStartReview"
+          resolve: "#/components/schemas/DisputeActionInputResolve"
+    DisputeActionInputRequestEvidence:
       type: object
       required:
         - action
@@ -1956,7 +1956,7 @@ components:
             - both
         reason:
           type: string
-    DisputeActionResolve:
+    DisputeActionInputResolve:
       type: object
       required:
         - action
@@ -1970,7 +1970,7 @@ components:
           $ref: "#/components/schemas/Resolution"
         reason:
           type: string
-    DisputeActionStartReview:
+    DisputeActionInputStartReview:
       type: object
       required:
         - action

@@ -1,10 +1,9 @@
-// Command api is the Ecopurnity HTTP API. For now it serves only health endpoints; routes are generated from
-// api/openapi.yaml as the backend is built out.
+// Command api is the Ecopurnity HTTP API: every operation in api/openapi.yaml is routed and validated; operations that
+// are not implemented yet answer 501 not_implemented.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/analytics"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/config"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/db"
+	"github.com/azdharsyahputra/ecopurnity-api/internal/server"
 )
 
 func main() {
@@ -47,26 +47,12 @@ func run(log *slog.Logger) error {
 	}
 	defer ch.Close()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		st, err := pg.Status(r.Context())
-		chErr := ch.Ping(r.Context())
-		body := map[string]any{"postgres": st, "clickhouse": "ok"}
-		code := http.StatusOK
-		if err != nil {
-			code = http.StatusServiceUnavailable
-		}
-		if chErr != nil {
-			// Analytics being down degrades dashboards but must not take the API out of rotation.
-			body["clickhouse"] = chErr.Error()
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(code)
-		_ = json.NewEncoder(w).Encode(body)
-	})
+	h, err := (&server.Server{DB: pg, Analytics: ch, Log: log}).Handler()
+	if err != nil {
+		return err
+	}
 
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: h, ReadHeaderTimeout: 5 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 	log.Info("listening", "addr", cfg.HTTPAddr)

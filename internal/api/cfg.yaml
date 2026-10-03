@@ -1,0 +1,13 @@
+# oapi-codegen config: Go 1.22+ net/http router, typed (strict) handlers, models, embedded spec for request validation.
+package: api
+output: internal/api/api.gen.go
+generate:
+  std-http-server: true
+  strict-server: true
+  models: true
+  embedded-spec: true
+output-options:
+  skip-prune: true
+  nullable-type: false
+compatibility:
+  always-prefix-enum-values: true

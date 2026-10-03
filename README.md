@@ -15,7 +15,9 @@ openapi/                  sources (edit these, not api/openapi.yaml)
   CONVENTIONS.md            how the sources are written
   paths/<area>.yaml         operations per area
   schemas/*.yaml            component schemas (core, domain-*, paths-*)
-cmd/api/                  HTTP server (health endpoints only for now)
+cmd/api/                  HTTP server
+internal/api/             GENERATED from the spec: models, router, typed handler interface, 501 stubs (make gen)
+internal/server/          routing under /api/v1, request validation, error contract, operation implementations
 internal/config/          env configuration
 internal/db/              Postgres primary/replica cluster (read/write routing)
 internal/analytics/       ClickHouse client
@@ -63,3 +65,17 @@ asynchronously.
   operation. Decide per case whether the real API should keep the mock's behaviour or be stricter; stricter is safe for
   the frontend unless the note says the UI relies on it.
 - Realtime (WebSocket) is `api/asyncapi.yaml` (AsyncAPI 3.0), explained in `docs/realtime.md`.
+
+## Server code generation
+
+`make gen` bundles the spec, writes a 3.0.3 copy for the generator (`api/openapi.codegen.yaml`, not committed; 3.1-only
+constructs such as `const` and `type: [x, null]` are rewritten), runs `oapi-codegen` (net/http router + strict typed
+handlers + models + embedded spec) and regenerates `internal/api/unimplemented.gen.go`.
+
+- Every operation is routed and its request validated against the spec before a handler runs. Validation failures
+  answer `422 {error: {code: "validation", fields: {...}}}`; unknown endpoints `404 not_found`.
+- `server.Server` embeds `api.Unimplemented`, so an operation answers `501 not_implemented` until a method with its name
+  (e.g. `func (s *Server) Login(ctx, api.LoginRequestObject) (api.LoginResponseObject, error)`) is defined on `*Server`.
+  Return the typed response objects for documented outcomes, or a `*server.Error` for the error contract.
+- `go test ./internal/server` walks all 163 operations and fails if any is not routed.
+- `make check-gen` fails when the committed generated code is stale.

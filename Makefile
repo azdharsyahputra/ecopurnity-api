@@ -1,4 +1,4 @@
-.PHONY: up down reset run build test openapi lint-openapi migrate migrate-down migrate-status migrate-clickhouse db-doc
+.PHONY: gen check-gen up down reset run build test openapi lint-openapi migrate migrate-down migrate-status migrate-clickhouse db-doc
 
 up:
 	docker compose up -d --wait
@@ -38,3 +38,11 @@ migrate-clickhouse:
 
 db-doc:
 	./scripts/db-doc.sh
+
+# Regenerate internal/api from the OpenAPI sources (bundle -> 3.0 codegen copy -> oapi-codegen -> 501 stubs).
+gen:
+	go generate ./internal/api
+
+# Fails when the committed generated code is stale (run in CI).
+check-gen: gen
+	git diff --exit-code -- internal/api api/openapi.yaml

@@ -2,3 +2,4 @@ node_modules/
 bin/
 .env
 *.log
+api/openapi.codegen.yaml
