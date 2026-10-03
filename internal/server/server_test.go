@@ -38,9 +38,9 @@ func TestRoutingValidationAndErrors(t *testing.T) {
 	}
 
 	// A routed, valid request to an operation nobody implemented yet: 501 in the error contract.
-	status, body := do(t, h, "GET", "/api/v1/markets?page=1", "")
+	status, body := do(t, h, "GET", "/api/v1/opportunities?page=1", "")
 	if status != http.StatusNotImplemented || code(body) != "not_implemented" {
-		t.Fatalf("markets: %d %v", status, body)
+		t.Fatalf("opportunities: %d %v", status, body)
 	}
 
 	// Request validation against the spec: wrong type in the body is a 422 with fields.
@@ -65,7 +65,8 @@ func TestRoutingValidationAndErrors(t *testing.T) {
 }
 
 // Every operation in the spec is routed: with placeholder path params, no body and no session it must reach request
-// validation (422), the handler (501 until implemented, or the handler's own 2xx/401/403/...), never 404/405/5xx.
+// validation (422), the handler (501 until implemented, or the handler's own 2xx/401/403/404...), never the router's
+// 404, 405 or 5xx.
 func TestEveryOperationIsRouted(t *testing.T) {
 	e := newEnv(t) // a real database: public reads run their queries
 	h := e.srv.Config.Handler
@@ -82,7 +83,9 @@ func TestEveryOperationIsRouted(t *testing.T) {
 				p = p[:i] + "00000000-0000-0000-0000-000000000000" + p[j+1:]
 			}
 			status, body := do(t, h, method, BasePath+p, "")
-			if status == http.StatusNotFound || status == http.StatusMethodNotAllowed || (status >= 500 && status != http.StatusNotImplemented) {
+			errBody, _ := body["error"].(map[string]any)
+			routerMiss := status == http.StatusNotFound && (errBody == nil || errBody["message"] == "Endpoint tidak ditemukan")
+			if routerMiss || status == http.StatusMethodNotAllowed || (status >= 500 && status != http.StatusNotImplemented) {
 				t.Errorf("%s %s: %d %v", method, path, status, body)
 			}
 			n++

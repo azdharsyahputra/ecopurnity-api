@@ -5570,6 +5570,7 @@ components:
       properties:
         priceIdr:
           type: integer
+          minimum: 0
           description: Alert threshold on the median price. Omit or 0 to clear.
     PersonalMyAuctions:
       type: object
@@ -9463,7 +9464,10 @@ paths:
     get:
       operationId: listMarkets
       summary: List markets
-      description: Sorted by `volume30dIdr` descending. `q` matches name, code and market maker name. Items are the summary `Market` (no description, rules, price history, activity or auctions).
+      description: |
+        Sorted by `volume30dIdr` descending (ties by id). `q` matches name, code and market maker name
+        (case-insensitive substring). `region` is an exact, case-insensitive match. Draft markets are never listed. Items
+        are the summary `Market` (no description, rules, price history, activity or auctions).
       tags:
         - Public
       x-access: public
@@ -9490,6 +9494,16 @@ paths:
     get:
       operationId: getMarket
       summary: Get a market
+      description: |
+        `rules` is the rule version governing the current round (the latest version whose `effectiveFromRound` is at most
+        the highest started round; version 1 before any round started), rendered as labelled values in a fixed order
+        (Eligibility, Visibilitas bid, Kenaikan/penurunan minimum, Kuantitas minimum, Kuantitas maksimum, Jendela mulai,
+        Jendela selesai, Wilayah, Radius, Penetapan pemenang); empty when the market has no rule version.
+        `priceHistory` is one point per week (`week` = Monday, YYYY-MM-DD) with deals over the last 12 weeks, oldest
+        first; weeks without deals are absent. `activity` is the market's 6 newest activity events, newest first. Both
+        come from analytics and are empty lists when it is unavailable. `auctions` are all rounds of the market, ordered
+        like `GET /auctions` (live/extended, qualification, scheduled, the rest; then `endsAt` ascending), masked the
+        same way. Draft markets answer 404.
       tags:
         - Public
       x-access: public
@@ -10378,9 +10392,9 @@ paths:
       operationId: listMyMarkets
       summary: List all markets with my membership state
       description: |
-        Every market (without description/rules/priceHistory/activity/auctions) plus `joined`, `watchPriceIdr`,
-        `approval` (membership state in the market maker's participant list, only when joined) and `myListings`
-        (count of the caller's listings in that market). Not paginated.
+        Every market except drafts (without description/rules/priceHistory/activity/auctions), sorted like
+        `GET /markets`, plus `joined`, `watchPriceIdr`, `approval` (membership state in the market maker's participant
+        list, only when joined) and `myListings` (count of the caller's listings in that market). Not paginated.
       tags:
         - Personal
       x-access: session
@@ -10400,9 +10414,12 @@ paths:
       operationId: joinMarket
       summary: Join a market
       description: |
-        Marks the market joined. Also adds the caller to the market maker's participant queue (role `buyer`,
-        kind `person`, reputation 80 for brand-new accounts else 94) with status `pending` when the market's approval
-        setting is `manual`, otherwise `active`. Not duplicated if already a participant.
+        Marks the market joined. Also adds the caller to the market maker's participant list (role `buyer`) with
+        status `active` when the market's approval setting is `auto`, otherwise `pending`; a pending request notifies
+        the market's operators (type `new_market`, link to the market's participants tab). Idempotent: an existing
+        participant row (any status) is kept as is and nobody is notified again. Only `active` and `formation` markets
+        accept new members. Checks run in this order: session, account not restricted/suspended, market exists, market
+        status.
       tags:
         - Personal
       x-access: session
@@ -10417,14 +10434,24 @@ paths:
           description: Joined.
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+          description: account_restricted | account_suspended.
         "404":
           $ref: "#/components/responses/NotFound"
-          description: "not_found: market."
+          description: "not_found: market (drafts included)."
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: "market_closed: the market is not active or in formation."
+      x-note: The mock lets restricted accounts join and accepts any market status; the API refuses both.
   /me/markets/{id}/leave:
     post:
       operationId: leaveMarket
       summary: Leave a market
-      description: Resets the caller's membership (also clears the price watch).
+      description: |
+        Resets the caller's membership (also clears the price watch) and withdraws the caller's participant request if
+        it is still `pending`. An `active`, `rejected` or `suspended` participant row is the market maker's record and
+        stays. Idempotent.
       tags:
         - Personal
       x-access: session
@@ -10439,12 +10466,16 @@ paths:
           description: Left.
         "401":
           $ref: "#/components/responses/Unauthenticated"
-      x-note: The mock does not check the market exists and does not remove or suspend the participant row created by join.
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "not_found: market."
+      x-note: The mock does not check the market exists and leaves a pending request in the market maker's queue; the API answers 404 and withdraws it.
   /me/markets/{id}/watch:
     put:
       operationId: setMarketWatchPrice
       summary: Set or clear the market price alert
       description: Sets the median price alert threshold. A missing or `0` price clears it. Keeps the current joined flag.
+      x-note: The mock accepts negative prices and unknown markets; the API answers 422 and 404.
       tags:
         - Personal
       x-access: session
@@ -10465,6 +10496,12 @@ paths:
           description: Saved.
         "401":
           $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "not_found: market."
+        "422":
+          $ref: "#/components/responses/Validation"
+          description: "fields: priceIdr (integer, not negative)."
   /me/matches:
     get:
       operationId: listMyMatches

@@ -33,7 +33,7 @@ PersonalOpportunityJoinInput:
 PersonalMarketWatchInput:
   type: object
   properties:
-    priceIdr: { type: integer, description: Alert threshold on the median price. Omit or 0 to clear. }
+    priceIdr: { type: integer, minimum: 0, description: Alert threshold on the median price. Omit or 0 to clear. }
 PersonalMyAuctions:
   type: object
   required: [eligible, bids, owned]
