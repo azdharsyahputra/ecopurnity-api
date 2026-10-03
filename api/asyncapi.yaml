@@ -535,6 +535,7 @@ components:
         - subscription_limit     # more than 100 channels on one connection
         - resync_required        # replay impossible; refetch over REST and subscribe with the new seq
         - internal               # server failure; retry later
+        - not_implemented        # chat.send, until the conversations REST exists
     AckFrame:
       type: object
       required: [type, ref, ok]
@@ -609,8 +610,8 @@ components:
         - `rank_only` and `sealed`: `bid.priceIdr` is 0 and `currentPriceIdr` is absent.
         In all cases `bid.bidder` is the stable masked label (`Supplier N` for reverse and sealed auctions, `Bidder N`
         otherwise, N derived from auction id + user id), and `bid.mine` is never set. Bidders learn their own price,
-        status and rank from `bid.status` on `user:{id}`. In replayed frames `currentPriceIdr`, `bidCount` and
-        `participants` are the current values, not the values at that bid.
+        status and rank from `bid.status` on `user:{id}`. Replayed frames are the stored live frames, so
+        `currentPriceIdr`, `bidCount` and `participants` are the values at that bid.
       allOf:
         - $ref: '#/components/schemas/Envelope'
         - required: [seq]
@@ -643,10 +644,9 @@ components:
             payload: { $ref: './openapi.yaml#/components/schemas/AuctionEventClosed' }
     AuctionStateFrame:
       description: |
-        Snapshot of the auction's live facts. Sent (1) as the last frame of every replay, with `seq` = head, so events
-        that are not stored individually (extended, price, closed, status changes) are covered; and (2) live for
-        status changes that have no event of their own: start (`scheduled`/`qualification` → `live`), freeze,
-        unfreeze, award, cancel.
+        Snapshot of the auction's live facts, sent for status changes that have no event of their own: start
+        (`scheduled`/`qualification` → `live`), freeze, unfreeze, award, cancel. Like every frame it is stored and
+        replayed as sent.
       allOf:
         - $ref: '#/components/schemas/Envelope'
         - required: [seq]

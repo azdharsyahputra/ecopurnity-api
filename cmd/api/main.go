@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -90,6 +91,15 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	// Realtime: every instance listens for frames (LISTEN ecp_rt); one of them (advisory lock) publishes the outbox.
+	// Both stop with rtCtx; Listen closes this instance's sockets with 1001 on the way out.
+	rtCtx, stopRT := context.WithCancel(context.Background())
+	var rt sync.WaitGroup
+	rt.Add(2)
+	go func() { defer rt.Done(); api.Listen(rtCtx) }()
+	go func() { defer rt.Done(); api.Publish(rtCtx) }()
+	defer func() { stopRT(); rt.Wait() }()
+
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: h, ReadHeaderTimeout: 5 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
@@ -103,6 +113,8 @@ func run(log *slog.Logger) error {
 	case <-ctx.Done():
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		// Shutdown does not wait for hijacked (WebSocket) connections: close them first so clients reconnect elsewhere.
+		stopRT()
 		return srv.Shutdown(shutdown)
 	}
 	return nil

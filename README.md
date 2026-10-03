@@ -80,6 +80,23 @@ handlers + models + embedded spec) and regenerates `internal/api/unimplemented.g
 - `go test ./internal/server` walks all 163 operations and fails if any is not routed.
 - `make check-gen` fails when the committed generated code is stale.
 
+## Realtime (WebSocket)
+
+`GET /api/v1/ws`: contract `api/asyncapi.yaml`, guide `docs/realtime.md`. Every instance keeps a `LISTEN ecp_rt`
+connection; one instance at a time (advisory lock) publishes the outbox to that feed and to ClickHouse. Try it with
+[websocat](https://github.com/vi/websocat) after `make migrate && make run`, one JSON frame per line:
+
+```bash
+websocat ws://localhost:8080/api/v1/ws                    # anonymous: public:* and auction:{id}
+{"type":"subscribe","id":"1","channel":"public:activity"}
+{"type":"subscribe","id":"2","channel":"auction:<auction id>","sinceSeq":0}
+{"type":"ping","id":"3"}
+
+websocat -H 'Cookie: ecp_session=<cookie value>' ws://localhost:8080/api/v1/ws   # signed in: also user:{your id}
+```
+
+`GET /readyz` shows `realtime: {feed, publisher, sockets}` for the instance.
+
 ## Email
 
 Transactional email (verification code, password reset link) goes through SMTP when `SMTP_HOST` is set, otherwise it is

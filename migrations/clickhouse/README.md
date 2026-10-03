@@ -63,13 +63,15 @@ raw table back to 33 rows, and `activity` kept the extra row. The publisher ther
 twice:
 
 1. One publisher at a time (`pg_try_advisory_lock`).
-2. Read a batch: `SELECT ... FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT 500`.
+2. Read a batch: `SELECT ... FROM outbox WHERE ch_published_at IS NULL AND topic <> 'rt' ORDER BY id LIMIT 500 FOR
+   UPDATE SKIP LOCKED`. (`published_at` is the realtime side's marker; `rt` frames never come here, see
+   `migrations/postgres/00008_outbox_replay.sql`.)
 3. Drop ids already in ClickHouse: `SELECT outbox_id FROM events WHERE outbox_id IN (...)`. The minmax index on
    `outbox_id` makes this a few-granule read. It covers a crash between the insert and step 5, and an insert that timed
    out but landed.
 4. `INSERT INTO events (outbox_id, topic, aggregate_id, occurred_at, payload)` with the rest. `occurred_at` =
    `outbox.created_at`, `payload` = `payload::text`.
-5. `UPDATE outbox SET published_at = now() WHERE id = ANY(...)`.
+5. `UPDATE outbox SET ch_published_at = now() WHERE id = ANY(...)`.
 
 If a view throws mid-insert (a schema bug), the events row exists but some facts may be missing. To fix it, replay that
 month from `events`:
