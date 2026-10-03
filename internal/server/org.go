@@ -820,29 +820,27 @@ func (s *Server) InviteOrgMember(ctx context.Context, req api.InviteOrgMemberReq
 		}
 		n := notification{Type: "transaction_update", Title: "Undangan bergabung ke " + c.OrgName,
 			Body: fmt.Sprintf("%s mengundangmu sebagai %s.", c.actor(), label), Href: "/app?invitation=" + memberID}
-		// Existing accounts get it in-app; new ones see it after registering with this email (GET /me/invitations).
-		var userID, name string
-		err = tx.QueryRow(ctx, `SELECT id::text, name FROM users WHERE email = $1`, email).Scan(&userID, &name)
-		link := s.AppURL + n.Href
+		// Existing accounts get a notification (emailed by the notification mailer per their preferences); new ones get
+		// an email here and see the invitation after registering with this address (GET /me/invitations).
+		var userID string
+		err = tx.QueryRow(ctx, `SELECT id::text FROM users WHERE email = $1`, email).Scan(&userID)
 		switch {
 		case err == nil:
-			if err := notify(ctx, tx, userID, n); err != nil {
-				return err
-			}
-		case errors.Is(err, pgx.ErrNoRows):
-			name, link = email, s.AppURL+"/register?email="+email
-		default:
+			return notify(ctx, tx, userID, n)
+		case !errors.Is(err, pgx.ErrNoRows):
 			return err
 		}
-		m := mail.NotificationEmail(email, name, mail.Notification{Type: n.Type, Title: n.Title, Body: n.Body, URL: link, Action: "Lihat undangan"},
-			s.AppURL+"/app/settings")
+		m := mail.NotificationEmail(email, email, mail.Notification{Type: n.Type, Title: n.Title, Body: n.Body,
+			URL: s.AppURL + "/register?email=" + email, Action: "Lihat undangan"}, s.AppURL+"/app/settings")
 		invite = &m
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	s.send(ctx, *invite) // after commit: no email for an invitation that did not happen
+	if invite != nil {
+		s.send(ctx, *invite) // after commit: no email for an invitation that did not happen
+	}
 	return api.InviteOrgMember204Response{}, nil
 }
 

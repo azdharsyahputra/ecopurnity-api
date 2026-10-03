@@ -197,6 +197,12 @@ func (e *testEnv) lastMail(to string) (mail.Message, bool) {
 	return e.mail.Last(to)
 }
 
+// mailCount is how many messages went to `to`.
+func (e *testEnv) mailCount(to string) int {
+	e.server.WaitMail()
+	return e.mail.Count(to)
+}
+
 var (
 	storeOnce sync.Once
 	store     *storage.Store

@@ -43,6 +43,19 @@ func (m *Memory) Send(_ context.Context, msg Message) error {
 	return nil
 }
 
+// Count is how many messages were sent to `to`.
+func (m *Memory) Count(to string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, msg := range m.Sent {
+		if msg.To == to {
+			n++
+		}
+	}
+	return n
+}
+
 // Last returns the last message sent to `to`.
 func (m *Memory) Last(to string) (Message, bool) {
 	m.mu.Lock()

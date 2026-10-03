@@ -252,10 +252,13 @@ func TestOrgAccessProfileAndTeam(t *testing.T) {
 		t.Fatalf("profile audit: %v", n)
 	}
 
-	// Invite: existing account gets an in-app notification and an email.
+	// Invite: an existing account gets a notification (emailed by the notification mailer, once); an address without an
+	// account gets the email directly.
 	invitee, inviteeEmail := e.signedIn("Calon Anggota")
 	_ = invitee
+	e.exec(`UPDATE users SET email_verified_at = now() WHERE email = $1`, inviteeEmail) // the mailer skips unverified emails
 	inviteeID := e.scalar(`SELECT id::text FROM users WHERE email = $1`, inviteeEmail).(string)
+	mailsBefore := e.mailCount(inviteeEmail) // the registration code
 	want(t, e.call(owner, "POST", base+"/team/invite", map[string]any{"email": "bukan-email", "role": "finance"}), 422, "validation")
 	want(t, e.call(owner, "POST", base+"/team/invite", map[string]any{"email": strings.ToUpper(inviteeEmail), "role": "nope"}), 422, "validation")
 	want(t, e.call(owner, "POST", base+"/team/invite", map[string]any{"email": " " + strings.ToUpper(inviteeEmail), "role": "finance", "department": "Keuangan"}), 204, "")
@@ -263,8 +266,20 @@ func TestOrgAccessProfileAndTeam(t *testing.T) {
 	if n := e.notifications(inviteeID); len(n) != 1 || !strings.HasPrefix(n[0], "Undangan bergabung ke PT Akses") {
 		t.Fatalf("invite notification: %v", n)
 	}
+	if err := e.server.NotificationMailTick(t0()); err != nil {
+		t.Fatal(err)
+	}
 	if m, ok := e.lastMail(inviteeEmail); !ok || !strings.Contains(m.Subject+m.Body, "Undangan") {
 		t.Fatalf("invite mail: %v %v", ok, m.Subject)
+	}
+	if n := e.mailCount(inviteeEmail) - mailsBefore; n != 1 {
+		t.Fatalf("invite mails to an existing account: %d, want 1", n)
+	}
+	newcomer := fmt.Sprintf("calon-%d@example.test", time.Now().UnixNano())
+	want(t, e.call(owner, "POST", base+"/team/invite", map[string]any{"email": newcomer, "role": "sales"}), 204, "")
+	e.server.WaitMail()
+	if m, ok := e.lastMail(newcomer); !ok || !strings.Contains(m.Body, "/register?email=") {
+		t.Fatalf("invite mail to a new address: %v %+v", ok, m)
 	}
 
 	r = e.call(owner, "GET", base+"/team", nil)
