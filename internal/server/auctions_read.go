@@ -19,6 +19,7 @@ import (
 type auctionRow struct {
 	ID, Code, Title, Category, Type, Status, Visibility, Item, Spec, Unit string
 	MarketID, MarketName, OwnerUserID, OwnerOrgID                         *string
+	OrgAuctionID, WithdrawRule                                            *string // lots of a business auction only
 	RoundNo                                                               *int32
 	Quantity                                                              float64
 	Opening, MinStep                                                      int64
@@ -33,15 +34,16 @@ const auctionSelect = `
 	SELECT a.id, a.code, a.title, a.category_id, a.type, a.status, a.visibility, a.lot_item, a.lot_spec, a.unit,
 	       a.market_id::text, m.name, a.owner_user_id::text, a.owner_org_id::text, a.round_no, a.quantity, a.opening_price_idr,
 	       a.min_step_idr, a.current_price_idr, a.starts_at, a.ends_at, a.ext_window_minutes, a.ext_minutes, a.extension_count,
-	       a.bid_count, a.participant_count, a.last_seq, a.rules
-	FROM auctions a LEFT JOIN markets m ON m.id = a.market_id`
+	       a.bid_count, a.participant_count, a.last_seq, a.rules, ol.org_auction_id::text, oa.withdraw_rule
+	FROM auctions a LEFT JOIN markets m ON m.id = a.market_id
+	LEFT JOIN org_auction_lots ol ON ol.auction_id = a.id LEFT JOIN org_auctions oa ON oa.id = ol.org_auction_id`
 
 func scanAuction(row interface{ Scan(...any) error }) (auctionRow, error) {
 	var r auctionRow
 	err := row.Scan(&r.ID, &r.Code, &r.Title, &r.Category, &r.Type, &r.Status, &r.Visibility, &r.Item, &r.Spec, &r.Unit,
 		&r.MarketID, &r.MarketName, &r.OwnerUserID, &r.OwnerOrgID, &r.RoundNo, &r.Quantity, &r.Opening,
 		&r.MinStep, &r.Current, &r.StartsAt, &r.EndsAt, &r.ExtWindow, &r.ExtMinutes, &r.Extensions,
-		&r.BidCount, &r.Participants, &r.LastSeq, &r.Rules)
+		&r.BidCount, &r.Participants, &r.LastSeq, &r.Rules, &r.OrgAuctionID, &r.WithdrawRule)
 	return r, err
 }
 

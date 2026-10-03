@@ -819,8 +819,10 @@ components:
       properties:
         role:
           type: string
+          description: The required role this decision counts for.
         by:
           type: string
+          description: '"Name (Role)", or "Name · Owner (atas nama Finance)" when an owner signed for a required role that had no active member.'
         at:
           type: string
           format: date-time
@@ -3901,6 +3903,10 @@ components:
           format: date-time
         canWithdraw:
           type: boolean
+          description: "Live, the bid is not leading or withdrawn, and the auction's withdraw rule allows it now: business auction lots follow `OrgAuction.rules.withdraw` (`anytime`, `before_last_30`, `never`); every other auction allows it until 30 minutes before the close."
+        capacity:
+          $ref: "#/components/schemas/Quantity"
+          description: The capacity stated with this bid (the whole lot when none was given). Reverse and sealed auctions only; the bidder's own view.
     MyMarket:
       allOf:
         - $ref: "#/components/schemas/Market"
@@ -4147,7 +4153,7 @@ components:
           type: integer
         capacity:
           $ref: "#/components/schemas/Quantity"
-          description: Most this supplier can deliver.
+          description: Most this supplier can deliver (the capacity stated with the bid, else the whole lot). An award line may not exceed it.
         submittedAt:
           type: string
           format: date-time
@@ -5352,7 +5358,13 @@ components:
         - permissions
         - departments
         - approvalRules
+        - activeRoles
       properties:
+        activeRoles:
+          type: array
+          items:
+            type: string
+          description: Role ids held by at least one active member. A required approver role missing here is signed by the owner on its behalf (`signingRoles` in src/domain/org.ts).
         profile:
           $ref: "#/components/schemas/OrgProfile"
         roles:
@@ -5639,10 +5651,10 @@ components:
           description: Null when the caller has not bid.
         owner:
           type: boolean
-          description: The caller created this auction as a buyer.
+          description: The caller created this auction as a buyer, or the auction is a lot of a business auction and the caller is an active member of the owning organization whose role can view auctions (auctions.view; the owner role always). Other members get the bidder view (owner false).
         evaluateHref:
           type: string
-          description: Where the owner evaluates bids. Owner only.
+          description: "Where the owner evaluates bids: `/app/auctions/{id}/evaluate`, or `/org/{orgId}/auctions/{orgAuctionId}/evaluate` (the business auction, not the lot) for an organization lot. Owner only."
     PersonalAwardInput:
       type: object
       required:
@@ -5671,6 +5683,10 @@ components:
           type: integer
           minimum: 1
           description: Price per unit. Direction of the limit depends on auction type.
+        quantity:
+          type: number
+          exclusiveMinimum: 0
+          description: "Capacity: how much of the lot the bidder can supply, in the lot's unit (reverse and sealed auctions; ignored for forward). At most the lot quantity. Omitted = the whole lot. Shown only in the owner's evaluation (`Offer.capacity`) and the bidder's own `MyBid.capacity`, never to other bidders."
     PersonalContractActionInput:
       type: object
       required:
@@ -8208,6 +8224,7 @@ components:
         - rejected
     WithdrawRule:
       type: string
+      description: "When a supplier may withdraw a (non-leading) bid on the lots: anytime (\"Boleh tarik kapan saja\"), before_last_30 (\"Boleh tarik sampai 30 menit terakhir\", the economy default), never (\"Bid mengikat, tidak bisa ditarik\"). Enforced by `DELETE /auctions/{id}/bids/mine` and listed in the lot's rules as \"Penarikan bid\"."
       enum:
         - anytime
         - before_last_30
@@ -9275,8 +9292,8 @@ paths:
           description: "not_closed: award is only possible after the auction closed."
         "422":
           $ref: "#/components/responses/Validation"
-          description: "validation: lines must contain at least one entry."
-      x-note: The mock does not validate that lines reference real offers, do not exceed offer capacity or the lot quantity, and does not apply the KYC limit or the account_restricted check on award. The BE should validate these.
+          description: "validation: lines must contain at least one entry; fields lines.{i}.offerId (unknown offer, chosen twice), lines.{i}.quantity (<= 0, or above the offer's capacity: \"Melebihi kapasitas penawaran\"), lines (total above the lot quantity)."
+      x-note: The mock does not validate that lines reference real offers, offer capacity or the lot quantity, and does not apply the KYC limit or the account_restricted check on award. The BE validates these.
   /auctions/{id}/bids:
     post:
       operationId: placeBid
@@ -9285,7 +9302,9 @@ paths:
         Checks in order: caller not restricted, auction exists, auction `live` or `extended`, caller `qualified`,
         caller is not the owner, KYC commitment limit (`priceIdr * lot quantity`), then bid rules (reverse/sealed: price must be
         <= limit, forward: >= limit, where limit follows the current best price minus the minimum step; sealed ignores the best price).
-        The bid status is `submitted` for sealed auctions, `leading` otherwise. Increments `participants` on the first bid and
+        The bid status is `submitted` for sealed auctions, `leading` otherwise. Reverse and sealed bids may state a capacity
+        (`quantity`, > 0 and at most the lot quantity, the lot's unit; default the whole lot): the owner's evaluation offers
+        it as `capacity` and an award line may not exceed it. Capacity never appears in public bids or frames. Increments `participants` on the first bid and
         `bidCount` always; with `visibility: full` the public bid list and `currentPriceIdr` update.
         Publishes a realtime `auction.bid` event on `auction:{id}` (price masked as 0 unless visibility is full).
       tags:
@@ -9323,14 +9342,16 @@ paths:
           description: "auction_closed: auction is not live/extended."
         "422":
           $ref: "#/components/responses/Validation"
-          description: "invalid_bid: price not a positive number or violates the limit; fields: price."
+          description: "invalid_bid: price not a positive number or violates the limit; fields: price. validation: fields: quantity (capacity must be > 0 and at most the lot quantity)."
   /auctions/{id}/bids/mine:
     delete:
       operationId: withdrawMyBid
       summary: Withdraw my bid
       description: |
-        Allowed only when the auction is live/extended, the bid is not `leading` and not already withdrawn, and more than
-        30 minutes remain (`MyBid.canWithdraw`). Sets the bid status `withdrawn`.
+        Allowed only when the auction is live/extended, the bid is not `leading` and not already withdrawn, and the withdraw
+        rule allows it (`MyBid.canWithdraw`): lots of a business auction follow its `rules.withdraw` (`anytime`,
+        `before_last_30`, `never`); every other auction allows it until 30 minutes before the close. Sets the bid status
+        `withdrawn`.
       tags:
         - Personal
       x-access: session
@@ -9354,14 +9375,14 @@ paths:
           description: "not_found: auction does not exist or the caller has no bid."
         "409":
           $ref: "#/components/responses/Conflict"
-          description: "cannot_withdraw: leading bid, last 30 minutes, not live, or already withdrawn."
+          description: 'cannot_withdraw: not live or already withdrawn, leading bid ("Bid terdepan tidak bisa ditarik"), last 30 minutes ("Bid terdepan atau 30 menit terakhir tidak bisa ditarik"), or a binding rule `never` ("Bid di auction ini mengikat, tidak bisa ditarik").'
   /auctions/{id}/evaluation:
     get:
       operationId: getAuctionEvaluation
       summary: Get the bid comparison and suggested allocation (buyer)
       description: |
-        Owner only. One offer per bidder (the bidder's lowest price; capacity and reputation are synthesized in the mock,
-        the BE should use real supplier data). `suggestion` is Smart Allocation: cheapest offers first (reputation breaks ties),
+        Owner only. One offer per bidder (the bidder's lowest price, with the capacity stated on that bid, else the whole
+        lot; reputation is the bidder's platform reputation). `suggestion` is Smart Allocation: cheapest offers first (reputation breaks ties),
         each up to its capacity, until the lot is covered. `savingsIdr` = opening price * covered quantity - total.
       tags:
         - Personal
@@ -9388,7 +9409,7 @@ paths:
     get:
       operationId: getMyAuctionState
       summary: Get my qualification, bid and ownership for an auction
-      description: "`evaluateHref` is only present for the owner: the organization evaluate URL when the auction belongs to an org workspace, otherwise `/app/auctions/{id}/evaluate`."
+      description: "`owner` is true for the buyer who created the auction and, for a lot of a business auction, for active members of the owning organization whose role can view auctions (owner role always); other members get the bidder view. `evaluateHref` is only present for owners: `/org/{orgId}/auctions/{orgAuctionId}/evaluate` (the business auction) for an organization lot, otherwise `/app/auctions/{id}/evaluate`. `bid.capacity` is the caller's own stated capacity."
       tags:
         - Personal
       x-access: session
@@ -12433,7 +12454,7 @@ paths:
         - Organization
       operationId: decideOrgAuction
       summary: Approve or reject an auction
-      description: Records the caller's approval for the role it holds. Allowed only while the auction is `pending_approval` and the caller's role is still a pending required approver (the org's approval rules, not the `auctions.approve` permission). When every required role has approved the auction opens as in create (lots go live, status `scheduled` or `live`). One rejection sets status `rejected` and returns a linked procurement request (`in_auction`) to `approved`. A rejection requires `note`, which is stored on the approval and as the audit `reason`.
+      description: Records the caller's approval for the role it holds. Allowed only while the auction is `pending_approval` and the caller's role is still a pending required approver (the org's approval rules, not the `auctions.approve` permission). Deadlock rule (`signingRoles`, src/domain/org.ts) - a pending required role with no active member is signed by an owner on its behalf - the owner's decision is recorded for its own pending role and for each such role (approval `by` "Name · Owner (atas nama Finance)"); a rejection is recorded once. When every required role has approved the auction opens as in create (lots go live, status `scheduled` or `live`). One rejection sets status `rejected` and returns a linked procurement request (`in_auction`) to `approved`. A rejection requires `note`, which is stored on the approval and as the audit `reason`.
       x-access: org:member
       x-audit: true
       x-note: Approvers are notified once, at creation. Audit labels "Approve auction" / "Tolak auction".
@@ -12479,7 +12500,7 @@ paths:
         - Organization
       operationId: awardOrgAuction
       summary: Award an auction
-      description: Records the winners per lot, marks every lot auction `awarded` (winning bids `won`, the rest `lost`, bidders notified) and the linked procurement request `awarded`. Allowed only after all lot auctions are `closed` and no award exists yet. `lines` has one array per lot (same order as `lots`), each with at least one allocation. Every allocation must name an offer of that lot (`offerId` from the evaluation), once, with quantity > 0; a lot's allocations may not exceed its quantity. Price and supplier name are taken from the offer, not the body. The `reason` is stored on the award and as the audit `reason`; the audit entry lists the allocation per lot. Issuing the PO is a separate step.
+      description: Records the winners per lot, marks every lot auction `awarded` (winning bids `won`, the rest `lost`, bidders notified) and the linked procurement request `awarded`. Allowed only after all lot auctions are `closed` and no award exists yet. `lines` has one array per lot (same order as `lots`), each with at least one allocation. Every allocation must name an offer of that lot (`offerId` from the evaluation), once, with quantity > 0 and at most the offer's `capacity`; a lot's allocations may not exceed its quantity. Price and supplier name are taken from the offer, not the body. The `reason` is stored on the award and as the audit `reason`; the audit entry lists the allocation per lot. Issuing the PO is a separate step.
       x-access: org:auctions.manage
       x-audit: true
       x-note: "Check order: 404, awarded, not_closed, reason, lines."
@@ -12510,7 +12531,7 @@ paths:
           description: "awarded: a winner was already set. not_closed: not all lots are closed (also when the auction has no live lots yet, e.g. pending approval)."
         "422":
           $ref: "#/components/responses/Validation"
-          description: 'fields: reason (required); lines (one array per lot), lines.{lot} ("Setiap lot harus punya pemenang", allocations exceed the lot quantity), lines.{lot}.{index} (unknown offer, offer chosen twice, quantity <= 0).'
+          description: 'fields: reason (required); lines (one array per lot), lines.{lot} ("Setiap lot harus punya pemenang", allocations exceed the lot quantity), lines.{lot}.{index} (unknown offer, offer chosen twice, quantity <= 0, quantity above the offer capacity "Melebihi kapasitas penawaran").'
   /orgs/{orgId}/auctions/{aid}/evaluation:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -12525,7 +12546,7 @@ paths:
         - Organization
       operationId: getOrgAuctionEvaluation
       summary: Evaluate offers per lot
-      description: "For each lot: its live status and one offer per bidder (their best active bid: lowest when buying, highest for forward/Dutch selling auctions; hidden bids included, the org owns the auction), sorted best price first. `id` is the bid id (use it as `offerId` in the award). A bidder whose party is in the supplier directory gets that `supplierId` and its latest scorecard (quality, delivery, reliability; reputation = the scorecard average); other bidders get their party id as `supplierId` and an 80 baseline. `capacity` is the whole lot (bids carry no capacity yet). Used by the award simulation (weights, award rule, split)."
+      description: "For each lot: its live status and one offer per bidder (their best active bid: lowest when buying, highest for forward/Dutch selling auctions; hidden bids included, the org owns the auction), sorted best price first. `id` is the bid id (use it as `offerId` in the award). A bidder whose party is in the supplier directory gets that `supplierId` and its latest scorecard (quality, delivery, reliability; reputation = the scorecard average); other bidders get their party id as `supplierId` and an 80 baseline. `capacity` is the capacity the bidder stated with that bid (`PersonalBidInput.quantity`), else the whole lot. Used by the award simulation (weights, award rule, split)."
       x-access: org:member
       responses:
         "200":
@@ -13002,7 +13023,7 @@ paths:
         | Action | Available when | Role needs | Effect |
         |---|---|---|---|
         | submit | status `draft` | procurement.manage or procurement.create | Recomputes `requiredApprovers` from the approval rules, status becomes `approved` (no approver needed) or `pending_approval` (approvers notified as in create). |
-        | approve | `pending_approval` | caller's role is a still-pending required approver | Records an approval; status becomes `approved` when every required role has approved. |
+        | approve | `pending_approval` | caller's role is a still-pending required approver, or the caller is an owner and a pending required role has no active member (`signingRoles`) | Records an approval for each role the caller signs (an owner's on-behalf approvals read "Name · Owner (atas nama Finance)"); status becomes `approved` when every required role has approved. |
         | reject | `pending_approval` | same as approve | Requires `note`. A single rejection sets status `rejected`. |
         | publish | `approved` | procurement.manage or procurement.create | Status `published`. |
         | collective | `approved` or `published` | collective.create | Joins (or creates) the open collective pool with the same category and unit; status `in_collective`, `poolId` set, `visibility` forced to `aggregate`. |

@@ -121,6 +121,14 @@ func (s *Server) PlaceBid(ctx context.Context, req api.PlaceBidRequestObject) (a
 		if err := s.commitGuard(ctx, tx, sess.UserID, int64(math.Round(float64(price)*r.Quantity))); err != nil {
 			return err
 		}
+		var capacity *float64 // reverse/sealed: how much of the lot this bidder can supply; NULL = the whole lot
+		if q := req.Body.Quantity; q != nil && (r.Type == "reverse" || r.Type == "sealed") {
+			if !(*q > 0) || *q > r.Quantity {
+				msg := fmt.Sprintf("Kapasitas harus lebih dari 0 dan maksimal %s %s", qtyLabel(r.Quantity), r.Unit)
+				return &Error{Status: 422, Code: "validation", Message: msg, Fields: map[string]string{"quantity": msg}}
+			}
+			capacity = q
+		}
 		limit := bidLimit(r)
 		if r.Type == "forward" && price < limit {
 			return &Error{Status: 422, Code: "invalid_bid", Message: "Bid harus ≥ " + rupiah(limit), Fields: map[string]string{"price": "Bid harus ≥ " + rupiah(limit)}}
@@ -168,8 +176,8 @@ func (s *Server) PlaceBid(ctx context.Context, req api.PlaceBidRequestObject) (a
 		var at time.Time
 		// seq and bidder_no come from the insert trigger (it also bumps bid_count / participant_count).
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO bids (auction_id, bidder_party_id, bidder_user_id, price_idr, status, seq, bidder_no) VALUES ($1, $2, $3, $4, $5, 0, 0)
-			RETURNING id, seq, bidder_no, created_at`, r.ID, party, sess.UserID, price, status).Scan(&bidID, &seq, &no, &at); err != nil {
+			INSERT INTO bids (auction_id, bidder_party_id, bidder_user_id, price_idr, status, capacity, seq, bidder_no) VALUES ($1, $2, $3, $4, $5, $6, 0, 0)
+			RETURNING id, seq, bidder_no, created_at`, r.ID, party, sess.UserID, price, status, capacity).Scan(&bidID, &seq, &no, &at); err != nil {
 			return err
 		}
 		best := price
@@ -279,8 +287,8 @@ func (s *Server) WithdrawMyBid(ctx context.Context, req api.WithdrawMyBidRequest
 		if b == nil {
 			return &Error{Status: http.StatusNotFound, Code: "not_found", Message: "Belum ada bid"}
 		}
-		if !b.CanWithdraw {
-			return &Error{Status: http.StatusConflict, Code: "cannot_withdraw", Message: "Bid terdepan atau 30 menit terakhir tidak bisa ditarik"}
+		if msg := withdrawBlock(r, string(b.Status), time.Now()); msg != "" {
+			return &Error{Status: http.StatusConflict, Code: "cannot_withdraw", Message: msg}
 		}
 		if _, err := tx.Exec(ctx, `UPDATE bids SET status = 'withdrawn' WHERE auction_id = $1 AND bidder_user_id = $2 AND status <> 'withdrawn'`, r.ID, sess.UserID); err != nil {
 			return err
@@ -563,6 +571,7 @@ type offer struct {
 	BidID, PartyID, Name, Kind string
 	UserID                     *string
 	Price                      int64
+	Capacity                   float64 // stated with the bid, else the whole lot
 	At                         time.Time
 	Verified                   bool
 }
@@ -575,11 +584,12 @@ func offers(ctx context.Context, q dbtx, r auctionRow) ([]offer, error) {
 	}
 	rows, err := q.Query(ctx, `
 		SELECT DISTINCT ON (b.bidder_party_id) b.id, b.bidder_party_id, p.name, p.display_kind, b.bidder_user_id::text, b.price_idr, b.created_at,
+		       coalesce(b.capacity, $2)::float8,
 		       CASE p.kind WHEN 'user' THEN coalesce(i.identity_verified_at IS NOT NULL, false) WHEN 'org' THEN coalesce(op.verification = 'verified', false) ELSE p.verified END
 		FROM bids b JOIN parties p ON p.id = b.bidder_party_id
 		LEFT JOIN identities i ON i.user_id = p.user_id LEFT JOIN org_profiles op ON op.org_id = p.org_id
 		WHERE b.auction_id = $1 AND b.status <> 'withdrawn'
-		ORDER BY b.bidder_party_id, b.`+order+`, b.seq`, r.ID)
+		ORDER BY b.bidder_party_id, b.`+order+`, b.seq`, r.ID, r.Quantity)
 	if err != nil {
 		return nil, err
 	}
@@ -587,7 +597,7 @@ func offers(ctx context.Context, q dbtx, r auctionRow) ([]offer, error) {
 	var out []offer
 	for rows.Next() {
 		var o offer
-		if err := rows.Scan(&o.BidID, &o.PartyID, &o.Name, &o.Kind, &o.UserID, &o.Price, &o.At, &o.Verified); err != nil {
+		if err := rows.Scan(&o.BidID, &o.PartyID, &o.Name, &o.Kind, &o.UserID, &o.Price, &o.At, &o.Capacity, &o.Verified); err != nil {
 			return nil, err
 		}
 		out = append(out, o)
@@ -609,9 +619,9 @@ func ownedAuction(ctx context.Context, q dbtx, s *session, id string, forUpdate 
 	if err != nil {
 		return r, err
 	}
-	if owner, err := isOwner(ctx, q, r, s.UserID); err != nil {
-		return r, err
-	} else if !owner {
+	// Personal buyer auctions only: org lots are evaluated and awarded in the org workspace (org_auctions.go), never as a
+	// member's personal purchase.
+	if r.OwnerUserID == nil || *r.OwnerUserID != s.UserID {
 		return r, errAuctionNotFound
 	}
 	return r, nil
@@ -642,16 +652,15 @@ func (s *Server) GetAuctionEvaluation(ctx context.Context, req api.GetAuctionEva
 		var off api.Offer
 		off.Id, off.PriceIdr, off.SubmittedAt = o.BidID, int(o.Price), o.At
 		off.Supplier.Name, off.Supplier.Kind, off.Supplier.Verified = o.Name, api.OfferSupplierKind(o.Kind), o.Verified
-		// ponytail: bids carry no capacity, so every bidder offers the whole lot and the suggestion is the best price.
 		score, _, err := reputationOf(ctx, q, o.PartyID)
 		if err != nil {
 			return nil, err
 		}
 		off.Supplier.Reputation = float64(score)
-		off.Capacity = api.Quantity{Value: r.Quantity, Unit: r.Unit}
+		off.Capacity = api.Quantity{Value: o.Capacity, Unit: r.Unit}
 		out.Offers = append(out.Offers, off)
 		if left > 0 {
-			take := math.Min(left, r.Quantity)
+			take := math.Min(left, o.Capacity)
 			out.Suggestion.Lines = append(out.Suggestion.Lines, api.AllocationLine{OfferId: o.BidID, Supplier: o.Name, Quantity: take, PriceIdr: int(o.Price)})
 			total += take * float64(o.Price)
 			left -= take
@@ -704,8 +713,8 @@ func (s *Server) AwardAuction(ctx context.Context, req api.AwardAuctionRequestOb
 				f[fmt.Sprintf("lines.%d.offerId", i)] = "Penawaran dipilih dua kali"
 			case !(l.Quantity > 0):
 				f[fmt.Sprintf("lines.%d.quantity", i)] = "Jumlah harus lebih dari 0"
-			default:
-				_ = o
+			case l.Quantity > o.Capacity+1e-9:
+				f[fmt.Sprintf("lines.%d.quantity", i)] = "Melebihi kapasitas penawaran"
 			}
 			seen[l.OfferId] = true
 			sum += l.Quantity

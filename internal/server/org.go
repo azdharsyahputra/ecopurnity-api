@@ -120,26 +120,77 @@ func approvalState(required []string, approvals []approval) (pending []string, r
 	return pending, rejected, !rejected && len(pending) == 0
 }
 
-func canApprove(role string, required []string, approvals []approval) bool {
-	pending, rejected, _ := approvalState(required, approvals)
-	return !rejected && slices.Contains(pending, role)
-}
-
-type orgMemberRole struct{ UserID, Role string }
-
-// approverUserIDs: users holding a still-pending role, except whoever just acted.
-func approverUserIDs(required []string, approvals []approval, members []orgMemberRole, actorID string) []string {
+// signingRoles: the still-pending required roles that role signs now, its own first (src/domain/org.ts signingRoles).
+// Deadlock rule: an owner also signs every pending role that no active member holds (activeRoles), so a rule like
+// "above Rp 50 jt: Finance + Owner" still completes in an org without a Finance member. nil activeRoles = all staffed.
+func signingRoles(role string, required []string, approvals []approval, activeRoles []string) []string {
 	pending, rejected, _ := approvalState(required, approvals)
 	out := []string{}
 	if rejected {
 		return out
 	}
+	if slices.Contains(pending, role) {
+		out = append(out, role)
+	}
+	for _, p := range pending {
+		if p != role && role == "owner" && activeRoles != nil && !slices.Contains(activeRoles, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func canApprove(role string, required []string, approvals []approval, activeRoles []string) bool {
+	return len(signingRoles(role, required, approvals, activeRoles)) > 0
+}
+
+type orgMemberRole struct{ UserID, Role string }
+
+// approverUserIDs: active members who sign a still-pending role (owners included for roles nobody holds), except
+// whoever just acted.
+func approverUserIDs(required []string, approvals []approval, members []orgMemberRole, actorID string) []string {
+	active := []string{}
 	for _, m := range members {
-		if m.UserID != actorID && slices.Contains(pending, m.Role) && !slices.Contains(out, m.UserID) {
+		active = append(active, m.Role)
+	}
+	out := []string{}
+	for _, m := range members {
+		if m.UserID != actorID && canApprove(m.Role, required, approvals, active) && !slices.Contains(out, m.UserID) {
 			out = append(out, m.UserID)
 		}
 	}
 	return out
+}
+
+// activeRoles: role ids held by an active member (OrgSettings.activeRoles; the deadlock rule's input).
+func activeRoles(ctx context.Context, q dbtx, orgID string) ([]string, error) {
+	var out []string
+	err := q.QueryRow(ctx, `SELECT array(SELECT DISTINCT role FROM org_members WHERE org_id = $1 AND status = 'active' AND user_id IS NOT NULL ORDER BY 1)`, orgID).Scan(&out)
+	return nonNil(out), err
+}
+
+// sign records the member's decision for each role in roles (signingRoles; rows for another role are marked on_behalf).
+// A rejection is recorded once, for the first role. table is procurement_approvals or org_auction_approvals.
+func sign(ctx context.Context, tx pgx.Tx, table, idCol, id string, c *orgCtx, roles []string, decision, note string) ([]approval, error) {
+	if decision == "rejected" {
+		roles = roles[:1]
+	}
+	out := []approval{}
+	for _, role := range roles {
+		if _, err := tx.Exec(ctx, `INSERT INTO `+table+` (`+idCol+`, role, decision, note, decided_by, on_behalf) VALUES ($1, $2, $3, nullif($4, ''), $5, $6)`,
+			id, role, decision, note, c.sess.UserID, role != c.Role); err != nil {
+			return nil, err
+		}
+		out = append(out, approval{role, decision})
+	}
+	return out, nil
+}
+
+// approvalBySQL renders Approval.by for approval alias a of org column orgCol: "Name (Role)", or
+// "Name · Owner (atas nama Finance)" for an owner's on-behalf signature.
+func approvalBySQL(orgCol string) string {
+	return `u.name || CASE WHEN a.on_behalf THEN ' · Owner (atas nama ' ELSE ' (' END ||
+		coalesce((SELECT ro.label FROM org_roles ro WHERE ro.org_id = ` + orgCol + ` AND ro.key = a.role), a.role) || ')'`
 }
 
 func statusAfterApproval(required []string, approvals []approval) string {
@@ -174,13 +225,13 @@ func pipelineCounts(statuses []string) map[string]int {
 }
 
 // procurementActions: what the role can do with a request now; the API accepts exactly these.
-func procurementActions(status string, required []string, approvals []approval, role string, perms []string) []string {
+func procurementActions(status string, required []string, approvals []approval, role string, perms, activeRoles []string) []string {
 	out := []string{}
 	manage := can(perms, role, "procurement", "manage") || can(perms, role, "procurement", "create")
 	if status == "draft" && manage {
 		out = append(out, "submit")
 	}
-	if status == "pending_approval" && canApprove(role, required, approvals) {
+	if status == "pending_approval" && canApprove(role, required, approvals, activeRoles) {
 		out = append(out, "approve", "reject")
 	}
 	if status == "approved" && manage {
@@ -434,6 +485,10 @@ func loadOrgSettings(ctx context.Context, q dbtx, orgID string) (api.OrgSettings
 		return a, err
 	})
 	s.ApprovalRules = nonNil(s.ApprovalRules)
+	if err != nil {
+		return s, err
+	}
+	s.ActiveRoles, err = activeRoles(ctx, q, orgID)
 	return s, err
 }
 
@@ -488,13 +543,17 @@ func (s *Server) GetOrgOverview(ctx context.Context, req api.GetOrgOverviewReque
 	if err != nil {
 		return nil, err
 	}
+	active, err := activeRoles(ctx, q, c.OrgID)
+	if err != nil {
+		return nil, err
+	}
 	out.Waiting = []api.WaitingItem{}
 	for _, a := range auctions {
 		auctionStatuses = append(auctionStatuses, string(a.Status))
 		if a.Status == "live" || a.Status == "scheduled" {
 			st.ActiveAuctions++
 		}
-		if a.Status == "pending_approval" && canApprove(c.Role, a.RequiredApprovers, apiApprovals(a.Approvals)) {
+		if a.Status == "pending_approval" && canApprove(c.Role, a.RequiredApprovers, apiApprovals(a.Approvals), active) {
 			out.Waiting = append(out.Waiting, api.WaitingItem{Kind: "auction", Id: a.Id, Code: a.Code, Title: a.Title, ValueIdr: a.ValueIdr, Href: "auctions?review=" + a.Id})
 		}
 	}
@@ -506,7 +565,7 @@ func (s *Server) GetOrgOverview(ctx context.Context, req api.GetOrgOverviewReque
 	var waitingReqs []api.WaitingItem
 	for _, r := range reqs {
 		statuses = append(statuses, string(r.Status))
-		if r.Status == "pending_approval" && canApprove(c.Role, r.RequiredApprovers, apiApprovals(r.Approvals)) {
+		if r.Status == "pending_approval" && canApprove(c.Role, r.RequiredApprovers, apiApprovals(r.Approvals), active) {
 			waitingReqs = append(waitingReqs, api.WaitingItem{Kind: "procurement", Id: r.Id, Code: r.Code, Title: r.Need, ValueIdr: r.BudgetIdr, Href: "procurement/" + r.Id})
 		}
 	}

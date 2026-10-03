@@ -46,7 +46,7 @@ func loadProcurements(ctx context.Context, q dbtx, where string, args ...any) ([
 	}
 	rows, err = q.Query(ctx, `
 		SELECT a.procurement_request_id::text, a.role, a.decision, a.note, a.decided_at,
-		       u.name || ' (' || coalesce((SELECT ro.label FROM org_roles ro WHERE ro.org_id = r.org_id AND ro.key = a.role), a.role) || ')'
+		       `+approvalBySQL("r.org_id")+`
 		FROM procurement_approvals a JOIN procurement_requests r ON r.id = a.procurement_request_id JOIN users u ON u.id = a.decided_by
 		WHERE a.procurement_request_id::text = ANY($1) ORDER BY a.decided_at, a.id`, ids)
 	if err != nil {
@@ -229,7 +229,11 @@ func (s *Server) ActOnOrgProcurement(ctx context.Context, req api.ActOnOrgProcur
 			return err
 		}
 		approvals := apiApprovals(r.Approvals)
-		if !slices.Contains(procurementActions(string(r.Status), r.RequiredApprovers, approvals, c.Role, c.Perms), action) {
+		active, err := activeRoles(ctx, tx, c.OrgID)
+		if err != nil {
+			return err
+		}
+		if !slices.Contains(procurementActions(string(r.Status), r.RequiredApprovers, approvals, c.Role, c.Perms, active), action) {
 			return conflict("invalid_action", "Aksi ini tidak tersedia untuk status atau peranmu sekarang")
 		}
 		before, status := string(r.Status), string(r.Status)
@@ -241,11 +245,11 @@ func (s *Server) ActOnOrgProcurement(ctx context.Context, req api.ActOnOrgProcur
 			if decision == "rejected" && note == "" {
 				return invalid("Tulis alasan penolakan", map[string]string{"note": "Alasan wajib diisi saat menolak"})
 			}
-			if _, err := tx.Exec(ctx, `INSERT INTO procurement_approvals (procurement_request_id, role, decision, note, decided_by) VALUES ($1, $2, $3, nullif($4, ''), $5)`,
-				id, c.Role, decision, note, c.sess.UserID); err != nil {
+			signed, err := sign(ctx, tx, "procurement_approvals", "procurement_request_id", id, c, signingRoles(c.Role, r.RequiredApprovers, approvals, active), decision, note)
+			if err != nil {
 				return err
 			}
-			status = statusAfterApproval(r.RequiredApprovers, append(approvals, approval{c.Role, decision}))
+			status = statusAfterApproval(r.RequiredApprovers, append(approvals, signed...))
 			if _, err := tx.Exec(ctx, `UPDATE procurement_requests SET status = $2, updated_at = now() WHERE id = $1`, id, status); err != nil {
 				return err
 			}

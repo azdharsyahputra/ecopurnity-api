@@ -63,8 +63,8 @@ PersonalAuctionMe:
         - $ref: '#/components/schemas/MyBid'
         - type: 'null'
       description: Null when the caller has not bid.
-    owner: { type: boolean, description: The caller created this auction as a buyer. }
-    evaluateHref: { type: string, description: Where the owner evaluates bids. Owner only. }
+    owner: { type: boolean, description: 'The caller created this auction as a buyer, or the auction is a lot of a business auction and the caller is an active member of the owning organization whose role can view auctions (auctions.view; the owner role always). Other members get the bidder view (owner false).' }
+    evaluateHref: { type: string, description: 'Where the owner evaluates bids: `/app/auctions/{id}/evaluate`, or `/org/{orgId}/auctions/{orgAuctionId}/evaluate` (the business auction, not the lot) for an organization lot. Owner only.' }
 PersonalQualificationInput:
   type: object
   required: [documentName, acceptRules]
@@ -76,6 +76,10 @@ PersonalBidInput:
   required: [priceIdr]
   properties:
     priceIdr: { type: integer, minimum: 1, description: Price per unit. Direction of the limit depends on auction type. }
+    quantity:
+      type: number
+      exclusiveMinimum: 0
+      description: 'Capacity: how much of the lot the bidder can supply, in the lot''s unit (reverse and sealed auctions; ignored for forward). At most the lot quantity. Omitted = the whole lot. Shown only in the owner''s evaluation (`Offer.capacity`) and the bidder''s own `MyBid.capacity`, never to other bidders.'
 PersonalAcceptResult:
   type: object
   required: [transactionId]

@@ -364,7 +364,7 @@ func (s *Server) chPurchases(ctx context.Context, orgID string) ([]purchase, []p
 	}
 	aggs := make([]purchase, len(ps))
 	for i, p := range ps {
-		aggs[i] = purchase{Month: p.Month.Format("2006-01"), Category: p.Category, Item: p.Item, Unit: p.Unit, Supplier: "p:" + p.SupplierParty, Via: p.Via,
+		aggs[i] = purchase{Month: p.Month.Format("2006-01"), Category: p.Category, Item: p.Item, Unit: p.Unit, Supplier: supplierKey(p.SupplierParty), Via: p.Via,
 			Qty: p.Quantity, Spend: int64(p.Spend), Budget: int64(p.Budget), Market: int64(p.Market), Count: int(p.Purchases)}
 	}
 	lines := make([]purchaseLine, len(ts))
@@ -374,11 +374,20 @@ func (s *Server) chPurchases(ctx context.Context, orgID string) ([]purchase, []p
 			opening = int64(t.Budget)
 		}
 		lines[i] = purchaseLine{purchase: purchase{Month: t.At.UTC().Format("2006-01"), Category: t.Category, Item: t.Item, Unit: t.Unit,
-			Supplier: "p:" + t.SupplierParty, Via: t.Via, Qty: t.Quantity, Spend: int64(t.Value), Count: 1},
+			Supplier: supplierKey(t.SupplierParty), Via: t.Via, Qty: t.Quantity, Spend: int64(t.Value), Count: 1},
 			Code: t.Code, At: t.At, UnitPrice: int64(t.UnitPrice), Bidders: int64(t.Bidders), Opening: opening}
 	}
 	slices.Reverse(lines) // oldest first, like the Postgres source
 	return aggs, lines, nil
+}
+
+// supplierKey: a ClickHouse supplier is a party id, or "s:<directory id>" for imported history whose supplier has no party
+// yet (migrations/postgres/00023).
+func supplierKey(party string) string {
+	if strings.HasPrefix(party, "s:") {
+		return party
+	}
+	return "p:" + party
 }
 
 type supplierInfo struct {

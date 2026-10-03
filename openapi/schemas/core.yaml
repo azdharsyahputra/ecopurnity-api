@@ -1494,6 +1494,10 @@ MyBid:
       format: date-time
     canWithdraw:
       type: boolean
+      description: 'Live, the bid is not leading or withdrawn, and the auction''s withdraw rule allows it now: business auction lots follow `OrgAuction.rules.withdraw` (`anytime`, `before_last_30`, `never`); every other auction allows it until 30 minutes before the close.'
+    capacity:
+      $ref: "#/components/schemas/Quantity"
+      description: The capacity stated with this bid (the whole lot when none was given). Reverse and sealed auctions only; the bidder's own view.
 Offer:
   type: object
   required:
@@ -1518,7 +1522,7 @@ Offer:
       type: integer
     capacity:
       $ref: "#/components/schemas/Quantity"
-      description: Most this supplier can deliver.
+      description: Most this supplier can deliver (the capacity stated with the bid, else the whole lot). An award line may not exceed it.
     submittedAt:
       type: string
       format: date-time
