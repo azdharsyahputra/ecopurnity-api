@@ -2308,6 +2308,7 @@ components:
               type: string
             accountNo:
               type: string
+              description: Masked (four dots plus the last 4 digits); the full number is never returned.
             holder:
               type: string
         withdrawals:
@@ -9625,7 +9626,7 @@ paths:
         "422":
           $ref: "#/components/responses/Validation"
           description: "fields: quantity (must be > 0 and at most the listing's remaining quantity)."
-      x-note: An unknown market id returns 409 not_direct rather than 404. Listings from the seeded market catalog (no owner userId) have their in-memory quantity decremented without a stored history.
+      x-note: An unknown market id returns 409 not_direct rather than 404. Listings owned by an external party (seeded catalog) are decremented and get the same history entry.
   /me/auctions:
     get:
       operationId: listMyAuctions
@@ -9709,9 +9710,11 @@ paths:
         Copies item (title before ` · `), quantity, unit price and payment terms (default `escrow`) from one of the caller's
         completed transactions; the caller proposes in their own role (`proposedBy`) and the other side must accept. The
         first run is at 08:00 on `startAt`. Status starts `proposed`, code `CTR-xxxx`. Writes an audit entry
-        and notifies the counterparty when they are a platform account. With a fictional counterparty the mock auto-accepts
-        after ~8 seconds (status `active`) and notifies the proposer; when due, an order (a normal two-sided trade titled
-        `<item> · order n/runs (<code>)`) is placed automatically, `nextAt` advances by the frequency, and the contract `ended`s after the last run.
+        and notifies the counterparty when they are a platform account. A counterparty that is not on the platform accepts
+        only when the server simulates counterparties (`SIMULATE_COUNTERPARTIES`, demo: after ~8 seconds, status `active`,
+        the proposer is notified). When due, an order (a normal two-sided trade titled `<item> · order n/runs (<code>)`) is
+        placed automatically, `nextAt` advances by the frequency, and the contract `ended`s after the last run. The first
+        run is at 08:00 Jakarta time (WIB).
       tags:
         - Personal
       x-access: session
@@ -9948,10 +9951,12 @@ paths:
       operationId: getMyFinance
       summary: Get my escrow, receivable, balance and ledger
       description: |
-        Derived from the caller's transactions. Buyer: `escrowHeldIdr` sums what the buyer paid into escrow (subtotal + 11% PPN).
-        Supplier: `receivableIdr` = amount receivable (escrow held or net terms delivered/accepted) after 1% platform fee and
-        the market maker commission; `availableIdr` = released earnings minus withdrawals. `entries` is a ledger sorted newest first
-        (kinds `escrow`, `payment`, `refund`, `payout`, `fee`, `withdrawal`).
+        Derived from the double-entry ledger. Buyer: `escrowHeldIdr` is what the buyer has in escrow (subtotal + 11% PPN).
+        Supplier: `receivableIdr` = amount receivable (escrowed invoices, or net terms delivered/accepted and unpaid) after the
+        1% platform fee and the market maker commission. `availableIdr` = released earnings (incl. the collected PPN, which the
+        supplier remits) and refunds, minus withdrawals. `entries` is the caller's statement, newest first (kinds `escrow`,
+        `payment`, `refund`, `payout`, `fee`, `withdrawal`; money in positive, money out negative). `bank.accountNo` is
+        masked (`••••` + last 4 digits); the full number is stored encrypted and never returned.
       tags:
         - Personal
       x-access: session
@@ -10017,7 +10022,7 @@ paths:
         "422":
           $ref: "#/components/responses/Validation"
           description: "fields: amountIdr (no bank account yet, amount not positive, or above the available balance; message states the maximum)."
-      x-note: Withdrawal stays `processing` forever in the mock (never becomes `paid`). The 422 field is always amountIdr, even when the problem is the missing bank account. The `no bank` and `over balance` failures share code `validation`.
+      x-note: The withdrawal stays `processing` until finance ops pay it out (no endpoint yet). The 422 field is always amountIdr, even when the problem is the missing bank account. The `no bank` and `over balance` failures share code `validation`.
   /me/identity:
     get:
       operationId: getMyIdentity
@@ -11196,10 +11201,13 @@ paths:
         - `add_evidence`: either side, status `disputed`. Needs `note`; optional `file`. Moves the dispute from `open` to `evidence`.
         - `review`: either side, status `completed` and the caller's side has not reviewed yet. Needs `review` {rating 1-5, quality, timeliness, communication, text}.
 
-        Side effects: the new state is mirrored to the counterparty's record when they are a platform account (`peer`) and
-        they are notified (`payment` for pay, `delivery` for ship/upload_proof, else `transaction_update`). For fictional counterparties
-        a bot plays the other side on a timer. A timeline step timestamp is set when the status changes; an audit entry
-        is written (reason = `note`).
+        Side effects: one trade row serves both sides, so the counterparty sees the new state at once (`peer.txId` is the
+        same id); a counterparty that is a platform account is notified (`payment` for pay, `delivery` for ship/upload_proof,
+        else `transaction_update`) and both sides get a `trade.updated` frame on `user:{id}`. A timeline step timestamp is
+        set when the status changes; an audit entry is written (reason = `note`). Money moves as balanced ledger journals
+        (pay into escrow; release to the supplier minus the platform and maker fees on confirm_receipt (escrow) or pay (net
+        terms); partial QC refunds the short quantity incl. PPN to the buyer's available balance). External counterparties
+        (not on the platform) are played by a bot only when the server runs with `SIMULATE_COUNTERPARTIES` (demo).
       tags:
         - Personal
       x-access: session

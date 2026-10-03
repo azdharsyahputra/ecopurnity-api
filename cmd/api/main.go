@@ -83,9 +83,14 @@ func run(log *slog.Logger) error {
 	api := &server.Server{
 		DB: pg, Analytics: ch, Log: log, Mail: mailer, Keys: keys, Storage: store, SMS: sms.Log{Logger: log},
 		AppURL: cfg.AppURL, CookieSecure: cfg.CookieSecure, SessionTTL: cfg.SessionTTL, GoogleDevLogin: cfg.GoogleDevLogin,
+		SimulateCounterparties: cfg.SimulateCounterparties,
 	}
 	defer api.WaitMail() // let queued emails go out on shutdown
 	go api.RunAuctionClock(ctx, time.Second)
+	go api.RunTradeClock(ctx, 2*time.Second)
+	if cfg.SimulateCounterparties {
+		log.Warn("SIMULATE_COUNTERPARTIES is on: a bot plays external trade counterparties (demo only)")
+	}
 	h, err := api.Handler()
 	if err != nil {
 		return err

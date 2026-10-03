@@ -14,9 +14,10 @@ import (
 
 // Keys are independent 32-byte keys derived from APP_SECRET, one per use, so a key can't be reused across purposes.
 type Keys struct {
-	OTP       []byte // HMAC of one-time codes
-	NIKHash   []byte // HMAC of NIKs (uniqueness)
-	NIKCipher []byte // AES-256-GCM of NIKs
+	OTP        []byte // HMAC of one-time codes
+	NIKHash    []byte // HMAC of NIKs (uniqueness)
+	NIKCipher  []byte // AES-256-GCM of NIKs
+	BankCipher []byte // AES-256-GCM of payout bank account numbers
 }
 
 func Derive(secret []byte) (Keys, error) {
@@ -32,7 +33,10 @@ func Derive(secret []byte) (Keys, error) {
 	if out.NIKHash, err = k("ecopurnity/nik-hash/v1"); err != nil {
 		return out, err
 	}
-	out.NIKCipher, err = k("ecopurnity/nik-cipher/v1")
+	if out.NIKCipher, err = k("ecopurnity/nik-cipher/v1"); err != nil {
+		return out, err
+	}
+	out.BankCipher, err = k("ecopurnity/bank-cipher/v1")
 	return out, err
 }
 

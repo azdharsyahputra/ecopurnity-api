@@ -10,7 +10,7 @@ func TestDeriveEncryptMAC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Equal(k.OTP, k.NIKHash) || bytes.Equal(k.NIKHash, k.NIKCipher) || len(k.NIKCipher) != 32 {
+	if bytes.Equal(k.OTP, k.NIKHash) || bytes.Equal(k.NIKHash, k.NIKCipher) || bytes.Equal(k.NIKCipher, k.BankCipher) || len(k.BankCipher) != 32 || len(k.NIKCipher) != 32 {
 		t.Fatal("keys must be distinct 32-byte keys")
 	}
 	sealed, err := Encrypt(k.NIKCipher, []byte("3205010101900001"), []byte("user-1"))

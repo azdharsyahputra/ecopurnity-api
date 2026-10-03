@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"strings"
 	"time"
 )
 
-// Trade creation, shared by auction award, Dutch accept and (later) RFQ, contracts and settlements. One row per trade
-// with both parties; the full settlement flow (agreement, invoice, shipments, ...) lives with the transactions area.
+// Trade creation, shared by auction award, Dutch accept, direct orders, contracts and (later) RFQ and settlements. One
+// row per trade with both parties; the settlement flow (agreement, invoice, shipments, ...) is trade_engine.go.
 
 type newTrade struct {
 	Title                     string
@@ -19,6 +20,7 @@ type newTrade struct {
 	Terms                     string // escrow (default) | net14 | net30
 	MakerFeeRate              float64
 	MarketID, AuctionID       *string
+	SourceListingID           *string // direct order at a posted price
 	DeliveryAddress           string
 	DueIn                     time.Duration
 	Via                       string // analytics channel: auction | dutch | rfq | contract | direct | settlement
@@ -39,11 +41,16 @@ func createTrade(ctx context.Context, q dbtx, t newTrade) (createdTrade, error) 
 	var out createdTrade
 	if err := q.QueryRow(ctx, `
 		INSERT INTO trades (title, buyer_party_id, supplier_party_id, quantity, unit, unit_price_idr, total_idr, terms, maker_fee_rate,
-		                    market_id, auction_id, delivery_address, due_at)
-		VALUES ($1, $2, $3, $4::numeric, $5, $6::bigint, round($4::numeric * $6::bigint)::bigint, $7, $8, $9, $10, $11, now() + $12)
+		                    market_id, auction_id, source_listing_id, delivery_address, due_at)
+		VALUES ($1, $2, $3, $4::numeric, $5, $6::bigint, round($4::numeric * $6::bigint)::bigint, $7, $8, $9, $10, $11, $12, now() + $13)
 		RETURNING id, code`,
 		t.Title, t.BuyerParty, t.SupplierParty, t.Quantity, t.Unit, t.UnitPriceIdr, t.Terms, t.MakerFeeRate,
-		t.MarketID, t.AuctionID, t.DeliveryAddress, t.DueIn).Scan(&out.ID, &out.Code); err != nil {
+		t.MarketID, t.AuctionID, t.SourceListingID, t.DeliveryAddress, t.DueIn).Scan(&out.ID, &out.Code); err != nil {
+		return out, err
+	}
+	// The purchase order every trade starts with (TransactionDetail.documents, rendered on demand).
+	if _, err := q.Exec(ctx, `INSERT INTO trade_documents (trade_id, kind, name, uploaded_by) VALUES ($1, 'order', $2, $3)`,
+		out.ID, "PO-"+strings.TrimPrefix(out.Code, "TRX-")+".pdf", t.ActorUserID); err != nil {
 		return out, err
 	}
 	if _, err := q.Exec(ctx, `INSERT INTO trade_events (trade_id, status, note, actor_user_id) VALUES ($1, 'agreement', 'Transaksi dibuat', $2)`,
