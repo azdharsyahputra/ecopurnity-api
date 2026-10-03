@@ -64,8 +64,8 @@ func TestRoutingValidationAndErrors(t *testing.T) {
 	}
 }
 
-// Every operation in the spec is routed: with placeholder path params and no body it must reach either the handler
-// (501 until implemented) or request validation (422), never 404/405/500.
+// Every operation in the spec is routed: with placeholder path params, no body and no session it must reach request
+// validation (422), the handler (501 until implemented, or the handler's own 2xx/401/403/...), never 404/405/5xx.
 func TestEveryOperationIsRouted(t *testing.T) {
 	h, err := (&Server{}).Handler()
 	if err != nil {
@@ -84,7 +84,7 @@ func TestEveryOperationIsRouted(t *testing.T) {
 				p = p[:i] + "00000000-0000-0000-0000-000000000000" + p[j+1:]
 			}
 			status, body := do(t, h, method, BasePath+p, "")
-			if status != http.StatusNotImplemented && status != http.StatusUnprocessableEntity {
+			if status == http.StatusNotFound || status == http.StatusMethodNotAllowed || (status >= 500 && status != http.StatusNotImplemented) {
 				t.Errorf("%s %s: %d %v", method, path, status, body)
 			}
 			n++

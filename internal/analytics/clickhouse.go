@@ -25,4 +25,4 @@ func Open(addr, database, user, password string) (*Client, error) {
 }
 
 func (c *Client) Ping(ctx context.Context) error { return c.conn.Ping(ctx) }
-func (c *Client) Close() error                  { return c.conn.Close() }
+func (c *Client) Close() error                   { return c.conn.Close() }

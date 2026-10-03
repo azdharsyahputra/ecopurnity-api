@@ -15,6 +15,7 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/analytics"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/config"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/db"
+	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/server"
 )
 
@@ -47,7 +48,10 @@ func run(log *slog.Logger) error {
 	}
 	defer ch.Close()
 
-	h, err := (&server.Server{DB: pg, Analytics: ch, Log: log}).Handler()
+	h, err := (&server.Server{
+		DB: pg, Analytics: ch, Log: log, Mail: mail.Log{Logger: log},
+		AppURL: cfg.AppURL, CookieSecure: cfg.CookieSecure, SessionTTL: cfg.SessionTTL, GoogleDevLogin: cfg.GoogleDevLogin,
+	}).Handler()
 	if err != nil {
 		return err
 	}

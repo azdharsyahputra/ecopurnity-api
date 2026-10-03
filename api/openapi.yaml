@@ -1057,8 +1057,7 @@ components:
           type: string
         reason:
           type: string
-          minLength: 20
-          description: Trimmed, min 20 characters.
+          description: Min 20 characters after trimming; checked by the handler after the credentials and appeal checks (422 fields.reason).
     AuthPublicAuctionPage:
       type: object
       required:
@@ -1248,7 +1247,7 @@ components:
           description: Trimmed and lower-cased; the username is its local part.
         password:
           type: string
-          minLength: 8
+          description: Min 8 characters; checked by the handler after email uniqueness (422 fields.password).
     AuthPublicResetPasswordRequest:
       type: object
       required:
@@ -1260,7 +1259,7 @@ components:
           description: Token from the reset email link.
         password:
           type: string
-          minLength: 8
+          description: Min 8 characters; checked by the handler after the token (422 fields.password, the token stays valid).
     AuthPublicVerifyEmailRequest:
       type: object
       required:

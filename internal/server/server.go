@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
 	middleware "github.com/oapi-codegen/nethttp-middleware"
@@ -15,6 +16,7 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/analytics"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/db"
+	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
 )
 
 const BasePath = "/api/v1"
@@ -27,6 +29,12 @@ type Server struct {
 	DB        *db.Cluster
 	Analytics *analytics.Client
 	Log       *slog.Logger
+	Mail      mail.Mailer
+
+	AppURL         string        // frontend origin for email links
+	CookieSecure   bool          // Secure flag on the session cookie
+	SessionTTL     time.Duration // sliding session lifetime
+	GoogleDevLogin bool          // mock-compatible POST /auth/google (dev only)
 }
 
 var _ api.StrictServerInterface = (*Server)(nil)
@@ -75,7 +83,13 @@ func (s *Server) Handler() (http.Handler, error) {
 			writeError(w, &Error{Status: http.StatusUnprocessableEntity, Code: "validation", Message: err.Error()})
 		},
 	})
-	mux.Handle(BasePath+"/", validate(apiHandler))
+	// Credential endpoints: 10 attempts per IP per minute each.
+	creds := newLimiter(6*time.Second, 10).limitPaths(
+		BasePath+"/auth/login", BasePath+"/auth/register", BasePath+"/auth/appeal",
+		BasePath+"/auth/forgot-password", BasePath+"/auth/reset-password", BasePath+"/auth/verify-email",
+		BasePath+"/auth/resend-verification", BasePath+"/me/kyc/phone/verify",
+	)
+	mux.Handle(BasePath+"/", creds(s.withSession(validate(apiHandler))))
 	return mux, nil
 }
 
