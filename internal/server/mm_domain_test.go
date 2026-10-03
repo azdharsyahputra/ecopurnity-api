@@ -99,9 +99,12 @@ func TestPipelineMovesAndDefaults(t *testing.T) {
 	if !canMove("detected", "evaluating") || canMove("forming", "market_live") || canMove("market_live", "dismissed") || !canMove("dismissed", "detected") {
 		t.Fatal("moves")
 	}
-	// Thursday 2026-10-08 in WIB → window Mon 5 .. Fri 9.
-	r := defaultRules(1000, 600, "Garut", "collective_procurement", time.Date(2026, 10, 8, 20, 0, 0, 0, time.UTC))
-	if r.WindowStart != "2026-10-05" || r.WindowEnd != "2026-10-09" || r.MinQuantity != 10 || r.MaxQuantity != 240 || r.Award != "pro_rata" || r.Visibility != "full" {
+	// Thursday 2026-10-08 in WIB → window from today to Fri 9; on a weekend (Sat 10) → next Mon 12 .. Fri 16.
+	if r := defaultRules(1, 1, "x", "dutch_auction", time.Date(2026, 10, 10, 5, 0, 0, 0, time.UTC)); r.WindowStart != "2026-10-12" || r.WindowEnd != "2026-10-16" {
+		t.Fatalf("weekend window %+v", r)
+	}
+	r := defaultRules(1000, 600, "Garut", "collective_procurement", time.Date(2026, 10, 8, 10, 0, 0, 0, time.UTC))
+	if r.WindowStart != "2026-10-08" || r.WindowEnd != "2026-10-09" || r.MinQuantity != 10 || r.MaxQuantity != 240 || r.Award != "pro_rata" || r.Visibility != "full" {
 		t.Fatalf("%+v", r)
 	}
 	if r := defaultRules(10, 1, "x", "sealed_bid", time.Now()); r.Visibility != "sealed" || r.Award != "score" || r.MinQuantity != 1 || r.MaxQuantity != 1 {

@@ -105,10 +105,17 @@ func activeVersion(versions []ruleVersion, round int) ruleVersion {
 	return versions[0]
 }
 
-// defaultRules: this week's Mon–Fri window, 1% of demand as minimum order, 40% of supply as cap.
+// defaultRules: today until this week's Friday (next week's Mon–Fri on a weekend), 1% of demand as minimum order, 40%
+// of supply as cap (frontend domain/marketRules.ts).
 func defaultRules(demand, supply float64, region, mechanism string, today time.Time) marketRules {
 	today = today.In(wib) // the frontend's clock for date-only rule windows (wib: contracts.go)
+	weekend := today.Weekday() == time.Saturday || today.Weekday() == time.Sunday
 	monday := today.AddDate(0, 0, -((int(today.Weekday()) + 6) % 7))
+	start := today
+	if weekend {
+		monday = monday.AddDate(0, 0, 7)
+		start = monday
+	}
 	visibility := "full"
 	if mechanism == "sealed_bid" {
 		visibility = "sealed"
@@ -120,7 +127,7 @@ func defaultRules(demand, supply float64, region, mechanism string, today time.T
 	return marketRules{
 		Eligibility: "verified_docs", Visibility: visibility, MinStepPct: 1,
 		MinQuantity: math.Max(1, math.Round(demand*0.01)), MaxQuantity: math.Max(1, math.Round(supply*0.4)),
-		WindowStart: monday.Format(time.DateOnly), WindowEnd: monday.AddDate(0, 0, 4).Format(time.DateOnly),
+		WindowStart: start.Format(time.DateOnly), WindowEnd: monday.AddDate(0, 0, 4).Format(time.DateOnly),
 		Region: region, RadiusKm: 75, Award: award,
 	}
 }
