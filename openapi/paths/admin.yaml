@@ -426,8 +426,11 @@
         timeline "Diputuskan: ...", notification "{code} diputuskan" to both parties, audit "Putuskan dispute (refund penuh |
         lepas dana | refund sebagian)" with status diffs.
       Audit is written for every action ("Minta bukti dispute", "Mulai review dispute", resolve).
-      Money: the resolution row is stored on the case and the trade side (trade status, invoice payment state, escrow
-      ledger journal) is settled in the same transaction by the transactions area.
+      Money: the resolution row is stored on the case and the trade side is settled in the same transaction: the escrow
+      refunds `refundIdr` plus its PPN to the buyer's available balance and releases the rest to the supplier (fees on
+      `releaseIdr`); invoice -> `refunded`/`released`; a "Putusan dispute: ..." timeline step; `trade.updated` to both
+      sides. A net-terms trade with nothing paid yet: `refund` cancels without money, `release` moves the trade to
+      `accepted` (the buyer still pays, new due date), `partial` is refused (422 fields.refundIdr).
     tags: [Admin]
     x-access: capability:admin
     x-audit: true
@@ -452,7 +455,7 @@
       '403': { $ref: '#/components/responses/Forbidden' }
       '404': { $ref: '#/components/responses/NotFound', description: 'not_found: case does not exist.' }
       '409': { $ref: '#/components/responses/Conflict', description: 'invalid_transition: the action is not available for the case status.' }
-      '422': { $ref: '#/components/responses/Validation', description: 'reason_required: fields.reason (request_evidence and resolve; min 10 chars after trim). validation: fields.refundIdr (partial resolution amount must be an integer > 0 and < transaction total).' }
+      '422': { $ref: '#/components/responses/Validation', description: 'reason_required: fields.reason (request_evidence and resolve; min 10 chars after trim). validation: fields.refundIdr (partial resolution amount must be an integer > 0 and < transaction total; or nothing in escrow to split).' }
 
 /admin/alerts:
   get:

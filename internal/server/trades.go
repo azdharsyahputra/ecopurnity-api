@@ -62,5 +62,8 @@ func createTrade(ctx context.Context, q dbtx, t newTrade) (createdTrade, error) 
 		"marketId": t.MarketID, "auctionId": t.AuctionID, "buyerPartyId": t.BuyerParty, "supplierPartyId": t.SupplierParty,
 		"quantity": t.Quantity, "unit": t.Unit, "unitPriceIdr": t.UnitPriceIdr, "valueIdr": total,
 	})
-	return out, emit(ctx, q, "trade.status", out.ID, payload)
+	if err := emit(ctx, q, "trade.status", out.ID, payload); err != nil {
+		return out, err
+	}
+	return out, emitTradeUpdated(ctx, q, out.ID) // every creation path tells both sides' users
 }

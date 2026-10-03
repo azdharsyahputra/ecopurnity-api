@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -377,7 +378,7 @@ func TestTradeDisputes(t *testing.T) {
 	if d := r.Body["dispute"].(map[string]any); d["status"] != "evidence" || len(d["evidence"].([]any)) != 2 {
 		t.Fatalf("evidence: %v", d)
 	}
-	if e.scalar(`SELECT count(*) FROM dispute_events d JOIN disputes x ON x.id = d.dispute_id WHERE x.trade_id = $1`, id).(int64) != 2 {
+	if e.scalar(`SELECT count(*) FROM dispute_events d JOIN disputes x ON x.id = d.dispute_id WHERE x.trade_id = $1`, id).(int64) != 1 {
 		t.Fatal("dispute events")
 	}
 	if f := e.call(buyer, "GET", "/me/finance", nil); num(f.Body["escrowHeldIdr"]) != 166_500 {
@@ -479,5 +480,110 @@ func TestDirectMarketOrder(t *testing.T) {
 	}
 	if n := e.scalar(`SELECT count(*) FROM listing_events WHERE listing_id = $1 AND note LIKE 'Order langsung%'`, big.Body["id"]).(int64); n != 2 {
 		t.Fatal("listing history", n)
+	}
+}
+
+func TestDisputeResolutionMoney(t *testing.T) {
+	e := newEnv(t)
+	admin, _ := e.admin("Admin Uang")
+	buyer, buyerID := e.bidder("Ika Pembeli")
+	supplier, supplierID := e.bidder("Joko Supplier")
+	finance := func(c *http.Client) (escrow, available int64) {
+		t.Helper()
+		f := e.call(c, "GET", "/me/finance", nil)
+		return num(f.Body["escrowHeldIdr"]), num(f.Body["availableIdr"])
+	}
+	// One disputed escrow trade of 1.000.000 (buyer paid 1.110.000) resolved by an admin.
+	resolve := func(resolution map[string]any) (string, map[string]any) {
+		t.Helper()
+		id := e.newTestTrade(newTrade{Title: "Kakao 100 kg", BuyerParty: e.partyOf(buyerID), SupplierParty: e.partyOf(supplierID), Quantity: 100, UnitPriceIdr: 10_000})
+		e.mustAct(buyer, id, map[string]any{"action": "accept_agreement"}, "agreement")
+		e.mustAct(supplier, id, map[string]any{"action": "accept_agreement"}, "agreement")
+		e.mustAct(supplier, id, map[string]any{"action": "issue_invoice"}, "invoiced")
+		e.mustAct(buyer, id, map[string]any{"action": "pay"}, "paid")
+		e.mustAct(buyer, id, map[string]any{"action": "dispute", "note": "Kakao berjamur"}, "disputed")
+		dsp := e.scalar(`SELECT id::text FROM disputes WHERE trade_id = $1`, id).(string)
+		if n := e.scalar(`SELECT count(*) FROM dispute_evidence WHERE dispute_id = $1 AND text = 'Kakao berjamur'`, dsp).(int64); n != 1 {
+			t.Fatal("opening reason is the first evidence", n)
+		}
+		path := "/admin/disputes/" + dsp + "/actions"
+		if r := e.call(admin, "POST", path, map[string]any{"action": "start_review"}); r.Status != 200 {
+			t.Fatal(r.Status, r.Body)
+		}
+		r := e.call(admin, "POST", path, map[string]any{"action": "resolve", "resolution": resolution, "reason": "Sesuai bukti foto kedua pihak"})
+		if r.Status != 200 {
+			t.Fatal("resolve", r.Status, r.Body)
+		}
+		if v := e.scalar(`SELECT coalesce(sum(amount), 0)::bigint FROM ledger_entries WHERE trade_id = $1`, id).(int64); v != 0 {
+			t.Fatal("journals balance", v)
+		}
+		if held, _ := escrowHeld(t0(), e.db.Primary(), id); held != 0 {
+			t.Fatal("escrow emptied", held)
+		}
+		return id, e.call(buyer, "GET", "/me/transactions/"+id, nil).Body
+	}
+	_, buyerAvail := finance(buyer)
+	_, supplierAvail := finance(supplier)
+	check := func(label string, buyerGain, supplierGain int64) {
+		t.Helper()
+		be, ba := finance(buyer)
+		_, sa := finance(supplier)
+		if be != 0 || ba-buyerAvail != buyerGain || sa-supplierAvail != supplierGain {
+			t.Fatalf("%s: buyer escrow %d, buyer +%d (want %d), supplier +%d (want %d)", label, be, ba-buyerAvail, buyerGain, sa-supplierAvail, supplierGain)
+		}
+		buyerAvail, supplierAvail = ba, sa
+	}
+
+	_, d := resolve(map[string]any{"kind": "refund"})
+	if d["status"] != "cancelled" || d["payment"].(map[string]any)["status"] != "refunded" {
+		t.Fatalf("refund: %v %v", d["status"], d["payment"])
+	}
+	check("refund", 1_110_000, 0)
+
+	_, d = resolve(map[string]any{"kind": "release"})
+	tl := d["timeline"].([]any)
+	if d["status"] != "completed" || d["payment"].(map[string]any)["status"] != "released" ||
+		!strings.HasPrefix(fmt.Sprint(tl[len(tl)-1].(map[string]any)["note"]), "Putusan dispute: ") {
+		t.Fatalf("release: %v %v", d["status"], tl)
+	}
+	check("release", 0, 1_110_000-10_000) // platform fee 1% of 1.000.000, no maker
+
+	// Partial: 250.000 (+ PPN 27.500) back to the buyer, 750.000 (+ PPN) to the supplier minus 7.500 fee.
+	_, d = resolve(map[string]any{"kind": "partial", "refundIdr": 250_000})
+	if d["status"] != "completed" {
+		t.Fatal(d["status"])
+	}
+	check("partial", 277_500, 832_500-7_500)
+	if n := e.scalar(`SELECT count(*) FROM notifications WHERE user_id = $1 AND title LIKE '% diputuskan'`, supplierID).(int64); n != 3 {
+		t.Fatal("decision notifications", n)
+	}
+}
+
+func TestTradeOrgFanout(t *testing.T) {
+	e := newEnv(t)
+	buyer, buyerID := e.bidder("Kiki Pembeli")
+	_, ownerID := e.bidder("Lukas Pemilik")
+	var org string
+	if err := e.server.inTx(t0(), func(tx pgx.Tx) error {
+		var err error
+		org, err = createOrg(t0(), tx, newOrg{Name: "PT Fanout " + ownerID[:8], Industry: "Agri", Location: "Bandung", OwnerUserID: ownerID})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	orgParty := e.scalar(`SELECT id::text FROM parties WHERE org_id = $1`, org).(string)
+	id := e.newTestTrade(newTrade{Title: "Jagung 10 kg", BuyerParty: e.partyOf(buyerID), SupplierParty: orgParty, Quantity: 10, UnitPriceIdr: 5_000})
+	e.mustAct(buyer, id, map[string]any{"action": "accept_agreement"}, "agreement")
+	n := 0
+	for _, f := range e.frames("user:" + ownerID) {
+		if f["type"] == "trade.updated" && f["payload"].(map[string]any)["transactionId"] == id {
+			n++
+		}
+	}
+	if n != 2 { // created + accepted
+		t.Fatal("org member frames", n)
+	}
+	if !e.notified(ownerID, e.scalar(`SELECT code FROM trades WHERE id = $1`, id).(string)+": Agreement disetujui") {
+		t.Fatal("org member notified")
 	}
 }

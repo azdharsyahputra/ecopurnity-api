@@ -356,47 +356,24 @@ func loadReports(ctx context.Context, q dbtx, sql string, args ...any) ([]api.Us
 
 // userTransactions is the user's trades as Transactions seen from their side (AdminUserDetail.history).
 func userTransactions(ctx context.Context, q dbtx, userID string) ([]api.Transaction, error) {
-	var party string
-	err := q.QueryRow(ctx, `SELECT id FROM parties WHERE user_id = $1`, userID).Scan(&party)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return []api.Transaction{}, nil
+	out := []api.Transaction{}
+	party, err := myPartyID(ctx, q, userID)
+	if err != nil || party == "" {
+		return out, err
 	}
-	if err != nil {
-		return nil, err
-	}
-	return loadTransactions(ctx, q, party, `$1 IN (t.buyer_party_id, t.supplier_party_id) ORDER BY t.created_at DESC`)
-}
-
-// loadTransactions projects trades onto the side of viewerParty ($1 in where).
-// ponytail: a minimal Transaction projection for governance screens; the transactions area owns the full read model
-// (switch to it once it lands).
-func loadTransactions(ctx context.Context, q dbtx, viewerParty, where string, args ...any) ([]api.Transaction, error) {
-	rows, err := q.Query(ctx, `
-		SELECT t.id, t.code, t.title, CASE WHEN t.buyer_party_id = $1 THEN 'buyer' ELSE 'supplier' END,
-		       cp.name, cp.display_kind, cp.verified, cp.user_id::text, t.status, t.quantity, t.unit, t.unit_price_idr, t.total_idr,
-		       t.created_at, t.updated_at, t.due_at, t.auction_id::text, t.terms
-		FROM trades t JOIN parties cp ON cp.id = CASE WHEN t.buyer_party_id = $1 THEN t.supplier_party_id ELSE t.buyer_party_id END
-		WHERE `+where, append([]any{viewerParty}, args...)...)
+	rows, err := q.Query(ctx, txSelect+` ORDER BY t.created_at DESC LIMIT 500`, party)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []api.Transaction{}
 	for rows.Next() {
-		var t api.Transaction
-		var peer *string
-		var unitPrice, total int64
-		var terms api.PaymentTerms
-		if err := rows.Scan(&t.Id, &t.Code, &t.Title, &t.Role, &t.Counterparty.Name, &t.Counterparty.Kind, &t.Counterparty.Verified, &peer,
-			&t.Status, &t.Quantity.Value, &t.Quantity.Unit, &unitPrice, &total, &t.CreatedAt, &t.UpdatedAt, &t.DueAt, &t.AuctionId, &terms); err != nil {
+		d, err := scanTx(rows)
+		if err != nil {
 			return nil, err
 		}
-		t.UnitPriceIdr, t.TotalIdr, t.Terms = int(unitPrice), int(total), &terms
-		if peer != nil {
-			t.Peer = &struct {
-				TxId   string `json:"txId"`
-				UserId string `json:"userId"`
-			}{TxId: t.Id, UserId: *peer}
+		var t api.Transaction
+		if err := widen(d, &t); err != nil {
+			return nil, err
 		}
 		out = append(out, t)
 	}

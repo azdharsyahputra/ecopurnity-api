@@ -57,13 +57,13 @@ TradeActionInput:
     file: { type: string, description: File name of an attached document or proof. }
     shipment:
       type: object
-      description: For `ship` and `upload_proof`.
-      required: [quantity, dropPoint, carrier, scheduledAt]
+      description: For `ship`.
+      required: [quantity, dropPoint]
       properties:
         quantity: { type: number, exclusiveMinimum: 0 }
         dropPoint: { type: string, minLength: 1 }
-        carrier: { type: string }
-        scheduledAt: { type: string, format: date-time }
+        carrier: { type: string, description: 'Blank or omitted: `Armada supplier`.' }
+        scheduledAt: { type: string, format: date-time, description: 'Omitted: now.' }
     shipmentId:
       type: string
       description: For `upload_proof`; the shipment being confirmed delivered.
