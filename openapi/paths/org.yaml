@@ -1112,7 +1112,7 @@
       | add_evidence | owner, procurement, operations |
       | review | owner, procurement |
 
-      The role gate runs before the state machine. Then the action must be available for the org's side in the current status, otherwise `409 invalid_transition`. Per action: `ship` needs `shipment` (quantity > 0 and <= unscheduled quantity, `dropPoint`), `upload_proof` needs `file`, `confirm_receipt` takes `qc` (outcome `partial` needs `acceptedQty` between 1 and quantity-1, any non-`accepted` outcome needs a `note`; `rejected` opens a dispute), `dispute` and `add_evidence` need `note`, `review` needs `review.rating` 1-5.
+      The role gate runs before the state machine. `pay` is not taken here: the org pays through `POST /orgs/{orgId}/transactions/{tid}/payments` (same role gate), which applies the step when the gateway reports settlement; sending `pay` answers `409 payment_required` after the role gate. Then the action must be available for the org's side in the current status, otherwise `409 invalid_transition`. Per action: `ship` needs `shipment` (quantity > 0 and <= unscheduled quantity, `dropPoint`), `upload_proof` needs `file`, `confirm_receipt` takes `qc` (outcome `partial` needs `acceptedQty` between 1 and quantity-1, any non-`accepted` outcome needs a `note`; `rejected` opens a dispute), `dispute` and `add_evidence` need `note`, `review` needs `review.rating` 1-5.
 
       Side effects: the action is written as an audit entry on the org (with a status change diff; it is the page's `activity`); the transaction timeline, documents and ledger are updated as for personal trades. The counterparty is notified (type `payment`, `delivery` or `transaction_update`): a user directly, an org through its active members whose role may see transactions (href `/org/{orgId}/transactions/{id}`); both sides get `trade.updated`. External counterparties are played by a bot (agreement, invoice, payment, shipment, delivery proof, receipt, review, about 8 s after each change) only when the server runs with `SIMULATE_COUNTERPARTIES` (demo).
     x-access: org:transactions.manage
@@ -1140,7 +1140,7 @@
         description: "not_found: transaction does not exist."
       "409":
         $ref: "#/components/responses/Conflict"
-        description: "invalid_transition: action not available in the current status for the org's side."
+        description: "invalid_transition: action not available in the current status for the org's side. payment_required: `pay` goes through the payment endpoints."
       "422":
         $ref: "#/components/responses/Validation"
         description: "fields per action: quantity, dropPoint (ship), file (upload_proof), acceptedQty and note (confirm_receipt QC), note (dispute, add_evidence), rating (review)."

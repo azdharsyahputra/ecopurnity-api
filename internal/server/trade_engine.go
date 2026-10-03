@@ -15,8 +15,9 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Trade action engine (PRD F6 settlement flow), shared by POST /me/transactions/{id}/actions, the external
-// counterparty bot (trade_clock.go) and, later, POST /orgs/{orgId}/transactions/{tid}/actions.
+// Trade action engine (PRD F6 settlement flow), shared by POST /me/transactions/{id}/actions and
+// POST /orgs/{orgId}/transactions/{tid}/actions (every action but `pay`), the payment gateway settlement (payments.go:
+// `pay`, once per settled payment) and the external counterparty bot (trade_clock.go).
 //
 // Contract of applyTradeAction(ctx, tx, tradeID, actor, in):
 //   - The CALLER authorizes: it has established that `actor` may act for `actor.Side` of this trade (personal: the
@@ -145,6 +146,7 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 	}
 	allDelivered := false
 	qc := ""
+	eventNote := "" // the timeline note when it differs from note (pay: the payment reference)
 
 	switch action {
 	case "accept_agreement":
@@ -176,12 +178,16 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 		}
 
 	case "pay":
-		// ponytail: `pay` records the buyer's transfer as received; a payment gateway callback replaces it later.
+		// Reached from a settled gateway payment (payments.go; note = its reference) or the demo bot; users cannot
+		// send `pay` (the handlers answer 409 payment_required).
 		b := breakdown(t.Total, t.PlatformRate, t.MakerRate).BuyerPays
 		kind, status := "escrow", "escrow"
 		note = "Dana masuk escrow"
 		if t.Terms != "escrow" {
 			kind, status, note = "payment", "released", "Pembayaran diterima supplier"
+		}
+		if inputNote != "" {
+			eventNote = note + " · " + inputNote
 		}
 		acc, err := accounts(ctx, tx, "bank_clearing", "escrow:"+t.Party["buyer"])
 		if err != nil {
@@ -371,7 +377,7 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 	var changes []change
 	if after != before {
 		changes = []change{{Field: "Status", Before: &before, After: after}}
-		if _, err := tx.Exec(ctx, `INSERT INTO trade_events (trade_id, status, note, actor_user_id) VALUES ($1, $2, $3, $4)`, t.ID, after, note, actor.UserID); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO trade_events (trade_id, status, note, actor_user_id) VALUES ($1, $2, $3, $4)`, t.ID, after, nonEmpty(eventNote, note), actor.UserID); err != nil {
 			return err
 		}
 		if err := tradeStatusChanged(ctx, tx, t.ID, after); err != nil {

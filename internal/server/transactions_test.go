@@ -118,7 +118,7 @@ func TestTradeEscrowFlowBetweenUsers(t *testing.T) {
 	}
 
 	// Pay into escrow: 1.000.000 + PPN 110.000.
-	r = e.mustAct(buyer, id, map[string]any{"action": "pay"}, "paid")
+	r = e.payViaGateway(buyer, "/me/transactions/"+id, "paid")
 	if r.Body["payment"].(map[string]any)["status"] != "escrow" {
 		t.Fatal(r.Body["payment"])
 	}
@@ -333,7 +333,7 @@ func TestTradeNetTermsWithSimulatedSupplier(t *testing.T) {
 	if n := e.scalar(`SELECT count(*) FROM notifications WHERE user_id = $1 AND type = 'delivery'`, buyerID).(int64); n != 2 {
 		t.Fatal("delivery notifications", n)
 	}
-	r = e.mustAct(buyer, id, map[string]any{"action": "pay"}, "completed")
+	r = e.payViaGateway(buyer, "/me/transactions/"+id, "completed")
 	if r.Body["payment"].(map[string]any)["status"] != "released" {
 		t.Fatal(r.Body["payment"])
 	}
@@ -361,7 +361,7 @@ func TestTradeDisputes(t *testing.T) {
 		e.mustAct(buyer, id, map[string]any{"action": "accept_agreement"}, "agreement")
 		e.mustAct(supplier, id, map[string]any{"action": "accept_agreement"}, "agreement")
 		e.mustAct(supplier, id, map[string]any{"action": "issue_invoice"}, "invoiced")
-		e.mustAct(buyer, id, map[string]any{"action": "pay"}, "paid")
+		e.payViaGateway(buyer, "/me/transactions/"+id, "paid")
 		return id
 	}
 
@@ -500,7 +500,7 @@ func TestDisputeResolutionMoney(t *testing.T) {
 		e.mustAct(buyer, id, map[string]any{"action": "accept_agreement"}, "agreement")
 		e.mustAct(supplier, id, map[string]any{"action": "accept_agreement"}, "agreement")
 		e.mustAct(supplier, id, map[string]any{"action": "issue_invoice"}, "invoiced")
-		e.mustAct(buyer, id, map[string]any{"action": "pay"}, "paid")
+		e.payViaGateway(buyer, "/me/transactions/"+id, "paid")
 		e.mustAct(buyer, id, map[string]any{"action": "dispute", "note": "Kakao berjamur"}, "disputed")
 		dsp := e.scalar(`SELECT id::text FROM disputes WHERE trade_id = $1`, id).(string)
 		if n := e.scalar(`SELECT count(*) FROM dispute_evidence WHERE dispute_id = $1 AND text = 'Kakao berjamur'`, dsp).(int64); n != 1 {

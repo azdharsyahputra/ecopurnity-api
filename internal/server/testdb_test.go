@@ -24,6 +24,7 @@ import (
 
 	"github.com/azdharsyahputra/ecopurnity-api/internal/db"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
+	"github.com/azdharsyahputra/ecopurnity-api/internal/payments"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/secure"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/storage"
 	"github.com/azdharsyahputra/ecopurnity-api/migrations"
@@ -105,7 +106,7 @@ func newEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{DB: cluster, Mail: mem, Keys: keys, Storage: testStorage(),
+	s := &Server{DB: cluster, Mail: mem, Keys: keys, Storage: testStorage(), Payments: payments.NewFake(0),
 		Log: slog.New(slog.NewTextHandler(testLog{t}, nil)), AppURL: "http://app.test", SessionTTL: 24 * time.Hour, GoogleDevLogin: true}
 	h, err := s.Handler()
 	if err != nil {

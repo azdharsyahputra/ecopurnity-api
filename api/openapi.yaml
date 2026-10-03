@@ -3391,6 +3391,26 @@ components:
         quantity:
           type: number
           description: What the member contributed (demand or supply), in lot units.
+    MidtransNotification:
+      type: object
+      description: Midtrans HTTP notification (only the fields the API reads are listed; the rest is kept as sent).
+      required:
+        - order_id
+        - status_code
+        - gross_amount
+        - signature_key
+      additionalProperties: true
+      properties:
+        order_id:
+          type: string
+        status_code:
+          type: string
+        gross_amount:
+          type: string
+        signature_key:
+          type: string
+        transaction_status:
+          type: string
     MmAlert:
       type: object
       required:
@@ -5486,6 +5506,99 @@ components:
             - business
         verified:
           type: boolean
+    Payment:
+      type: object
+      description: |
+        One payment attempt for a transaction's invoice through the gateway (Midtrans Core API), with the instructions the
+        buyer needs: `vaNumber` (bank_transfer), `billerCode` + `billKey` (echannel, Mandiri bill), `qrUrl` (qris, gopay: an
+        image URL), `deeplinkUrl` (gopay, shopeepay). Payable until `expiresAt` (24 h for transfers, 15 min for QRIS and
+        e-wallets).
+      required:
+        - id
+        - transactionId
+        - orderId
+        - method
+        - amountIdr
+        - status
+        - expiresAt
+        - createdAt
+      properties:
+        id:
+          type: string
+        transactionId:
+          type: string
+        orderId:
+          type: string
+          description: "Gateway order id: `{trade code}-{attempt}-{random}`, unique per attempt."
+        method:
+          $ref: "#/components/schemas/PaymentMethod"
+        bank:
+          type: string
+          enum:
+            - bca
+            - bni
+            - bri
+            - permata
+            - cimb
+            - mandiri
+        amountIdr:
+          type: integer
+          description: What the buyer owes (subtotal + PPN 11%).
+        status:
+          type: string
+          description: "`pending` until the gateway reports the outcome; `settlement` moves the money (escrow or payout) exactly once."
+          enum:
+            - pending
+            - settlement
+            - expire
+            - cancel
+            - deny
+            - failure
+        vaNumber:
+          type: string
+        billerCode:
+          type: string
+        billKey:
+          type: string
+        qrUrl:
+          type: string
+        deeplinkUrl:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        paidAt:
+          type: string
+          format: date-time
+    PaymentInput:
+      type: object
+      description: Body of POST .../transactions/{id}/payments.
+      required:
+        - method
+      properties:
+        method:
+          $ref: "#/components/schemas/PaymentMethod"
+        bank:
+          type: string
+          description: Required for `bank_transfer` (the virtual account's bank); ignored otherwise.
+          enum:
+            - bca
+            - bni
+            - bri
+            - permata
+            - cimb
+    PaymentMethod:
+      type: string
+      description: Midtrans Core API payment type. No credit card yet (needs Midtrans JS tokenization and 3DS).
+      enum:
+        - bank_transfer
+        - echannel
+        - qris
+        - gopay
+        - shopeepay
     PaymentTerms:
       type: string
       enum:
@@ -11374,7 +11487,7 @@ paths:
         Available actions (role / state):
         - `accept_agreement`: status `agreement` and the caller's side has not accepted yet. Records the side's acceptance and an agreement document.
         - `issue_invoice`: supplier, status `agreement`, both sides accepted. Status becomes `invoiced`; due date = +3 days (escrow) or terms days + 5.
-        - `pay`: buyer. Escrow terms: status `invoiced` (payment becomes `escrow`, status `paid`). Net terms: status `accepted` (payment `released`, status `completed`).
+        - `pay`: buyer. Escrow terms: status `invoiced` (payment becomes `escrow`, status `paid`). Net terms: status `accepted` (payment `released`, status `completed`). Not accepted here: the buyer pays through the payment gateway (`POST /me/transactions/{id}/payments`), which applies this step when the money has settled; sending `pay` answers `409 payment_required`. The step stays in the available actions so the client knows paying is open.
         - `ship`: supplier, with unscheduled quantity left, status `paid`/`fulfilling` (escrow) or `invoiced`/`fulfilling` (net). Needs `shipment` {quantity (>0, <= unscheduled quantity), dropPoint (required), carrier (default `Armada supplier`), scheduledAt (default now)}. Status `fulfilling`.
         - `upload_proof`: supplier, status `fulfilling` with at least one open shipment. Needs `file`; delivers `shipmentId` (or the first open shipment). Status becomes `delivered` once every unit is on a delivered shipment, else stays `fulfilling`.
         - `confirm_receipt`: buyer, status `delivered`. Optional `qc` {outcome `accepted` (default) | `partial` (acceptedQty between 1 and quantity-1, note required) | `rejected` (note required)}. accepted: escrow releases payment and the status is `completed`, net terms go to `accepted` and set a payment due date; partial: quantity and total shrink to the accepted amount (escrow refund of the shortfall incl. PPN is computed), same status flow as accepted; rejected: opens a dispute with the note as evidence, status `disputed`, no release.
@@ -11420,12 +11533,133 @@ paths:
           description: not_found.
         "409":
           $ref: "#/components/responses/Conflict"
-          description: "invalid_transition: action not available for the caller's role in the current status (also upload_proof with no open shipment)."
+          description: "invalid_transition: action not available for the caller's role in the current status (also upload_proof with no open shipment). payment_required: `pay` goes through the payment endpoints."
         "422":
           $ref: "#/components/responses/Validation"
           description: |
             validation, with fields: ship -> quantity (required, max unscheduled), dropPoint (required); upload_proof -> file; confirm_receipt -> acceptedQty (partial only), note (partial/rejected); dispute -> note; add_evidence -> note; review -> rating (1-5).
       x-note: Same engine is reused by the organization transaction actions endpoint. The KYC commitment limit is not re-checked on actions.
+  /me/transactions/{id}/payments:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: createMyTransactionPayment
+      summary: Start paying a transaction's invoice
+      description: |
+        The buyer pays the invoice (escrow terms: status `invoiced`; net terms: status `accepted`, i.e. whenever the `pay`
+        step is open for the buyer) through a gateway charge: `bank_transfer` virtual account (`bank` bca, bni, bri,
+        permata, cimb), `echannel` (Mandiri bill: biller code + bill key), `qris`, `gopay` (QR + deeplink) or `shopeepay`
+        (deeplink). The amount is the engine's breakdown of the current total (subtotal + PPN 11%). Expiry: 24 h for
+        transfers, 15 min for QRIS and e-wallets.
+
+        One open payment per invoice: a pending one is cancelled at the gateway first ("Ganti metode"). If the gateway
+        reports that the previous attempt was already paid, that settlement is applied and the answer is 409.
+
+        Nothing moves until the gateway reports `settlement` (`POST /payments/midtrans/notification`, or the reconciler
+        that polls pending payments every ~30 s and expires overdue ones); then the `pay` step is applied once, with its
+        usual ledger journals, timeline event (note carries the gateway order id), audit entry, notification and
+        `trade.updated` frames. `expire`/`cancel`/`deny`/`failure` close the payment, notify the buyer (type `payment`)
+        and leave the trade as it was. Gateway fees (MDR) are absorbed by the platform for now.
+      tags:
+        - Personal
+      x-access: session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentInput"
+      responses:
+        "201":
+          description: The pending payment with its instructions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "not_found: not the caller's transaction."
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: "invalid_transition: the caller is not the buyer or paying is not open in the current status. already_paid: the previous attempt was paid meanwhile (now applied)."
+        "422":
+          $ref: "#/components/responses/Validation"
+          description: "fields: method, bank (required for bank_transfer)."
+        "502":
+          description: "payment_gateway: the gateway refused or did not answer; nothing changed, try again."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /me/transactions/{id}/payments/current:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getMyTransactionPayment
+      summary: Get the newest payment attempt of a transaction
+      description: The newest payment attempt of the caller's side for this transaction (any status), or a JSON `null` (200) when there is none. Only the buyer's side has payments.
+      tags:
+        - Personal
+      x-access: session
+      responses:
+        "200":
+          description: Payment or null.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/Payment"
+                  - type: "null"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "not_found: not the caller's transaction."
+  /me/transactions/{id}/payments/current/cancel:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: cancelMyTransactionPayment
+      summary: Cancel the pending payment
+      description: Cancels the pending payment at the gateway and closes it (status `cancel`); the invoice can be paid again with another method. If the gateway says it was paid meanwhile, the settlement is applied and the payment comes back as `settlement`.
+      tags:
+        - Personal
+      x-access: session
+      responses:
+        "200":
+          description: The payment after the cancel.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "not_found: not the caller's transaction."
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: "invalid_transition: no pending payment."
+        "502":
+          description: "payment_gateway: the gateway refused or did not answer; nothing changed, try again."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /mm/analytics:
     get:
       operationId: getMmAnalytics
@@ -13278,7 +13512,7 @@ paths:
         | add_evidence | owner, procurement, operations |
         | review | owner, procurement |
 
-        The role gate runs before the state machine. Then the action must be available for the org's side in the current status, otherwise `409 invalid_transition`. Per action: `ship` needs `shipment` (quantity > 0 and <= unscheduled quantity, `dropPoint`), `upload_proof` needs `file`, `confirm_receipt` takes `qc` (outcome `partial` needs `acceptedQty` between 1 and quantity-1, any non-`accepted` outcome needs a `note`; `rejected` opens a dispute), `dispute` and `add_evidence` need `note`, `review` needs `review.rating` 1-5.
+        The role gate runs before the state machine. `pay` is not taken here: the org pays through `POST /orgs/{orgId}/transactions/{tid}/payments` (same role gate), which applies the step when the gateway reports settlement; sending `pay` answers `409 payment_required` after the role gate. Then the action must be available for the org's side in the current status, otherwise `409 invalid_transition`. Per action: `ship` needs `shipment` (quantity > 0 and <= unscheduled quantity, `dropPoint`), `upload_proof` needs `file`, `confirm_receipt` takes `qc` (outcome `partial` needs `acceptedQty` between 1 and quantity-1, any non-`accepted` outcome needs a `note`; `rejected` opens a dispute), `dispute` and `add_evidence` need `note`, `review` needs `review.rating` 1-5.
 
         Side effects: the action is written as an audit entry on the org (with a status change diff; it is the page's `activity`); the transaction timeline, documents and ledger are updated as for personal trades. The counterparty is notified (type `payment`, `delivery` or `transaction_update`): a user directly, an org through its active members whose role may see transactions (href `/org/{orgId}/transactions/{id}`); both sides get `trade.updated`. External counterparties are played by a bot (agreement, invoice, payment, shipment, delivery proof, receipt, review, about 8 s after each change) only when the server runs with `SIMULATE_COUNTERPARTIES` (demo).
       x-access: org:transactions.manage
@@ -13308,10 +13542,193 @@ paths:
           description: "not_found: transaction does not exist."
         "409":
           $ref: "#/components/responses/Conflict"
-          description: "invalid_transition: action not available in the current status for the org's side."
+          description: "invalid_transition: action not available in the current status for the org's side. payment_required: `pay` goes through the payment endpoints."
         "422":
           $ref: "#/components/responses/Validation"
           description: "fields per action: quantity, dropPoint (ship), file (upload_proof), acceptedQty and note (confirm_receipt QC), note (dispute, add_evidence), rating (review)."
+  /orgs/{orgId}/transactions/{tid}/payments:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - name: tid
+        in: path
+        required: true
+        description: Transaction id.
+        schema:
+          type: string
+    post:
+      operationId: createOrgTransactionPayment
+      summary: Start paying an organization trade's invoice
+      description: |
+        The buyer pays the invoice (escrow terms: status `invoiced`; net terms: status `accepted`, i.e. whenever the `pay`
+        step is open for the buyer) through a gateway charge: `bank_transfer` virtual account (`bank` bca, bni, bri,
+        permata, cimb), `echannel` (Mandiri bill: biller code + bill key), `qris`, `gopay` (QR + deeplink) or `shopeepay`
+        (deeplink). The amount is the engine's breakdown of the current total (subtotal + PPN 11%). Expiry: 24 h for
+        transfers, 15 min for QRIS and e-wallets.
+
+        One open payment per invoice: a pending one is cancelled at the gateway first ("Ganti metode"). If the gateway
+        reports that the previous attempt was already paid, that settlement is applied and the answer is 409.
+
+        Nothing moves until the gateway reports `settlement` (`POST /payments/midtrans/notification`, or the reconciler
+        that polls pending payments every ~30 s and expires overdue ones); then the `pay` step is applied once, with its
+        usual ledger journals, timeline event (note carries the gateway order id), audit entry, notification and
+        `trade.updated` frames. `expire`/`cancel`/`deny`/`failure` close the payment, notify the buyer (type `payment`)
+        and leave the trade as it was. Gateway fees (MDR) are absorbed by the platform for now.
+      tags:
+        - Organization
+      x-access: org:transactions.manage
+      x-note: 'Gated like the `pay` step: built-in roles Owner and Finance; custom roles need transactions.manage (403 "Bayar hanya untuk Owner, Finance; peranmu …").'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentInput"
+      responses:
+        "201":
+          description: The pending payment with its instructions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+          description: "forbidden: not a member, or the role may not pay."
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "not_found: not the caller's transaction."
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: "invalid_transition: the caller is not the buyer or paying is not open in the current status. already_paid: the previous attempt was paid meanwhile (now applied)."
+        "422":
+          $ref: "#/components/responses/Validation"
+          description: "fields: method, bank (required for bank_transfer)."
+        "502":
+          description: "payment_gateway: the gateway refused or did not answer; nothing changed, try again."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /orgs/{orgId}/transactions/{tid}/payments/current:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - name: tid
+        in: path
+        required: true
+        description: Transaction id.
+        schema:
+          type: string
+    get:
+      operationId: getOrgTransactionPayment
+      summary: Get the newest payment attempt of an organization trade
+      description: The newest payment attempt of the caller's side for this transaction (any status), or a JSON `null` (200) when there is none. Only the buyer's side has payments.
+      tags:
+        - Organization
+      x-access: org:transactions.view
+      responses:
+        "200":
+          description: Payment or null.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/Payment"
+                  - type: "null"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+          description: "forbidden: not a member, or the role may not see transactions."
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "not_found: not the caller's transaction."
+  /orgs/{orgId}/transactions/{tid}/payments/current/cancel:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - name: tid
+        in: path
+        required: true
+        description: Transaction id.
+        schema:
+          type: string
+    post:
+      operationId: cancelOrgTransactionPayment
+      summary: Cancel the pending payment of an organization trade
+      description: Cancels the pending payment at the gateway and closes it (status `cancel`); the invoice can be paid again with another method. If the gateway says it was paid meanwhile, the settlement is applied and the payment comes back as `settlement`.
+      tags:
+        - Organization
+      x-access: org:transactions.manage
+      x-note: Gated like the `pay` step (Owner, Finance; custom roles transactions.manage).
+      responses:
+        "200":
+          description: The payment after the cancel.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+          description: "forbidden: not a member, or the role may not pay."
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "not_found: not the caller's transaction."
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: "invalid_transition: no pending payment."
+        "502":
+          description: "payment_gateway: the gateway refused or did not answer; nothing changed, try again."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+  /payments/midtrans/notification:
+    post:
+      operationId: midtransNotification
+      summary: Receive a Midtrans payment notification
+      description: |
+        Webhook for Midtrans (set `{public API URL}/api/v1/payments/midtrans/notification` as the Payment Notification URL
+        in the Midtrans dashboard). No session. The body is verified with `signature_key` = SHA512(order_id + status_code +
+        gross_amount + server key) (403 otherwise), then the order's status is fetched from Midtrans and only that answer
+        is applied (the body's status and amount are never trusted; a gross amount that differs from the payment's is
+        logged and not settled). Idempotent: repeated notifications change nothing. An unknown order answers 200 so
+        Midtrans stops retrying. The body is stored on the payment without `signature_key`.
+      tags:
+        - Public
+      x-access: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MidtransNotification"
+      responses:
+        "200":
+          description: Received.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - received
+                properties:
+                  received:
+                    type: boolean
+        "403":
+          $ref: "#/components/responses/Forbidden"
+          description: "forbidden: bad signature_key."
+        "422":
+          $ref: "#/components/responses/Validation"
+          description: Missing order_id, status_code, gross_amount or signature_key.
+        "502":
+          description: "payment_gateway: Midtrans status could not be fetched; Midtrans retries the notification."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /profiles/b/{slug}:
     get:
       operationId: getBusinessProfile

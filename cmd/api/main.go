@@ -18,6 +18,7 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/config"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/db"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
+	"github.com/azdharsyahputra/ecopurnity-api/internal/payments"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/secure"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/server"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/storage"
@@ -79,16 +80,24 @@ func run(log *slog.Logger) error {
 			}
 		}
 	}
+	var gateway payments.Gateway = payments.NewMidtrans(cfg.MidtransServerKey, cfg.MidtransProduction, nil)
+	if cfg.MidtransServerKey == "" {
+		log.Warn("MIDTRANS_SERVER_KEY is empty: fake payment gateway, payments settle by themselves after 10 s (dev only)")
+		gateway = payments.NewFake(10 * time.Second)
+	} else {
+		log.Info("midtrans", "production", cfg.MidtransProduction)
+	}
 	api := &server.Server{
 		DB: pg, Analytics: ch, Log: log, Mail: mailer, Keys: keys, Storage: store,
 		AppURL: cfg.AppURL, CookieSecure: cfg.CookieSecure, SessionTTL: cfg.SessionTTL, GoogleDevLogin: cfg.GoogleDevLogin,
-		SimulateCounterparties: cfg.SimulateCounterparties,
+		SimulateCounterparties: cfg.SimulateCounterparties, Payments: gateway,
 	}
 	defer api.WaitMail() // let queued emails go out on shutdown
 	go api.RunAuctionClock(ctx, time.Second)
 	go api.RunOpportunityEngine(ctx, time.Minute)
 	go api.RunNotificationMailer(ctx, 5*time.Second)
 	go api.RunTradeClock(ctx, 2*time.Second)
+	go api.RunPaymentReconciler(ctx, 30*time.Second)
 	if cfg.SimulateCounterparties {
 		log.Warn("SIMULATE_COUNTERPARTIES is on: bots play external trade parties and RFQ suppliers (demo only)")
 		go api.RunCounterparties(ctx, time.Second)

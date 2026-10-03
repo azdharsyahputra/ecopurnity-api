@@ -111,6 +111,14 @@ func (Unimplemented) AwardOrgAuction(context.Context, AwardOrgAuctionRequestObje
 	return nil, ErrNotImplemented
 }
 
+func (Unimplemented) CancelMyTransactionPayment(context.Context, CancelMyTransactionPaymentRequestObject) (CancelMyTransactionPaymentResponseObject, error) {
+	return nil, ErrNotImplemented
+}
+
+func (Unimplemented) CancelOrgTransactionPayment(context.Context, CancelOrgTransactionPaymentRequestObject) (CancelOrgTransactionPaymentResponseObject, error) {
+	return nil, ErrNotImplemented
+}
+
 func (Unimplemented) CloseRfq(context.Context, CloseRfqRequestObject) (CloseRfqResponseObject, error) {
 	return nil, ErrNotImplemented
 }
@@ -139,6 +147,10 @@ func (Unimplemented) CreateMyListing(context.Context, CreateMyListingRequestObje
 	return nil, ErrNotImplemented
 }
 
+func (Unimplemented) CreateMyTransactionPayment(context.Context, CreateMyTransactionPaymentRequestObject) (CreateMyTransactionPaymentResponseObject, error) {
+	return nil, ErrNotImplemented
+}
+
 func (Unimplemented) CreateMyWithdrawal(context.Context, CreateMyWithdrawalRequestObject) (CreateMyWithdrawalResponseObject, error) {
 	return nil, ErrNotImplemented
 }
@@ -152,6 +164,10 @@ func (Unimplemented) CreateOrgPool(context.Context, CreateOrgPoolRequestObject) 
 }
 
 func (Unimplemented) CreateOrgProcurement(context.Context, CreateOrgProcurementRequestObject) (CreateOrgProcurementResponseObject, error) {
+	return nil, ErrNotImplemented
+}
+
+func (Unimplemented) CreateOrgTransactionPayment(context.Context, CreateOrgTransactionPaymentRequestObject) (CreateOrgTransactionPaymentResponseObject, error) {
 	return nil, ErrNotImplemented
 }
 
@@ -311,6 +327,10 @@ func (Unimplemented) GetMyTransaction(context.Context, GetMyTransactionRequestOb
 	return nil, ErrNotImplemented
 }
 
+func (Unimplemented) GetMyTransactionPayment(context.Context, GetMyTransactionPaymentRequestObject) (GetMyTransactionPaymentResponseObject, error) {
+	return nil, ErrNotImplemented
+}
+
 func (Unimplemented) GetOpportunity(context.Context, GetOpportunityRequestObject) (GetOpportunityResponseObject, error) {
 	return nil, ErrNotImplemented
 }
@@ -348,6 +368,10 @@ func (Unimplemented) GetOrgTeam(context.Context, GetOrgTeamRequestObject) (GetOr
 }
 
 func (Unimplemented) GetOrgTransaction(context.Context, GetOrgTransactionRequestObject) (GetOrgTransactionResponseObject, error) {
+	return nil, ErrNotImplemented
+}
+
+func (Unimplemented) GetOrgTransactionPayment(context.Context, GetOrgTransactionPaymentRequestObject) (GetOrgTransactionPaymentResponseObject, error) {
 	return nil, ErrNotImplemented
 }
 
@@ -552,6 +576,10 @@ func (Unimplemented) Logout(context.Context, LogoutRequestObject) (LogoutRespons
 }
 
 func (Unimplemented) MarkNotificationsRead(context.Context, MarkNotificationsReadRequestObject) (MarkNotificationsReadResponseObject, error) {
+	return nil, ErrNotImplemented
+}
+
+func (Unimplemented) MidtransNotification(context.Context, MidtransNotificationRequestObject) (MidtransNotificationResponseObject, error) {
 	return nil, ErrNotImplemented
 }
 

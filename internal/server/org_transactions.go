@@ -119,19 +119,15 @@ func (s *Server) ActOnOrgTransaction(ctx context.Context, req api.ActOnOrgTransa
 		if err != nil {
 			return err
 		}
-		if party == "" || !isUUID(req.Tid) {
-			return errTradeNotFound
-		}
-		var side string
-		if err := tx.QueryRow(ctx, `
-			SELECT CASE WHEN buyer_party_id = $2 THEN 'buyer' ELSE 'supplier' END FROM trades
-			WHERE id = $1 AND $2 IN (buyer_party_id, supplier_party_id)`, req.Tid, party).Scan(&side); errors.Is(err, pgx.ErrNoRows) {
-			return errTradeNotFound
-		} else if err != nil {
+		side, err := tradeSide(ctx, tx, req.Tid, party)
+		if err != nil {
 			return err
 		}
 		if msg := txDeniedReason(c.Perms, c.Role, c.RoleLabel, string(req.Body.Action)); msg != "" {
 			return &Error{Status: http.StatusForbidden, Code: "forbidden", Message: msg}
+		}
+		if req.Body.Action == "pay" {
+			return errPayViaGateway
 		}
 		if err := applyTradeAction(ctx, tx, req.Tid, tradeActor{Side: side, UserID: &c.sess.UserID, Name: c.actor(), OrgID: &c.OrgID}, *req.Body); err != nil {
 			return err

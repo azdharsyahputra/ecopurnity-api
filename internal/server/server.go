@@ -20,6 +20,7 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/db"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
+	"github.com/azdharsyahputra/ecopurnity-api/internal/payments"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/secure"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/storage"
 )
@@ -42,6 +43,8 @@ type Server struct {
 	GoogleDevLogin bool           // mock-compatible POST /auth/google (dev only)
 	Keys           secure.Keys    // derived from APP_SECRET: OTP HMAC, NIK hash/cipher
 	Storage        *storage.Store // object storage (nil: uploads answer 503)
+
+	Payments payments.Gateway // Midtrans Core API, or the fake gateway (payments.go)
 
 	SimulateCounterparties bool // a bot plays external trade/contract counterparties (trade_clock.go); demo only
 

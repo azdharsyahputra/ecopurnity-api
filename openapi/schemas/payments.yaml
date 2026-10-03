@@ -1,0 +1,55 @@
+PaymentMethod:
+  type: string
+  description: Midtrans Core API payment type. No credit card yet (needs Midtrans JS tokenization and 3DS).
+  enum: [bank_transfer, echannel, qris, gopay, shopeepay]
+
+PaymentInput:
+  type: object
+  description: Body of POST .../transactions/{id}/payments.
+  required: [method]
+  properties:
+    method: { $ref: '#/components/schemas/PaymentMethod' }
+    bank:
+      type: string
+      description: Required for `bank_transfer` (the virtual account's bank); ignored otherwise.
+      enum: [bca, bni, bri, permata, cimb]
+
+Payment:
+  type: object
+  description: |
+    One payment attempt for a transaction's invoice through the gateway (Midtrans Core API), with the instructions the
+    buyer needs: `vaNumber` (bank_transfer), `billerCode` + `billKey` (echannel, Mandiri bill), `qrUrl` (qris, gopay: an
+    image URL), `deeplinkUrl` (gopay, shopeepay). Payable until `expiresAt` (24 h for transfers, 15 min for QRIS and
+    e-wallets).
+  required: [id, transactionId, orderId, method, amountIdr, status, expiresAt, createdAt]
+  properties:
+    id: { type: string }
+    transactionId: { type: string }
+    orderId: { type: string, description: 'Gateway order id: `{trade code}-{attempt}-{random}`, unique per attempt.' }
+    method: { $ref: '#/components/schemas/PaymentMethod' }
+    bank: { type: string, enum: [bca, bni, bri, permata, cimb, mandiri] }
+    amountIdr: { type: integer, description: What the buyer owes (subtotal + PPN 11%). }
+    status:
+      type: string
+      description: '`pending` until the gateway reports the outcome; `settlement` moves the money (escrow or payout) exactly once.'
+      enum: [pending, settlement, expire, cancel, deny, failure]
+    vaNumber: { type: string }
+    billerCode: { type: string }
+    billKey: { type: string }
+    qrUrl: { type: string }
+    deeplinkUrl: { type: string }
+    expiresAt: { type: string, format: date-time }
+    createdAt: { type: string, format: date-time }
+    paidAt: { type: string, format: date-time }
+
+MidtransNotification:
+  type: object
+  description: Midtrans HTTP notification (only the fields the API reads are listed; the rest is kept as sent).
+  required: [order_id, status_code, gross_amount, signature_key]
+  additionalProperties: true
+  properties:
+    order_id: { type: string }
+    status_code: { type: string }
+    gross_amount: { type: string }
+    signature_key: { type: string }
+    transaction_status: { type: string }

@@ -373,7 +373,7 @@ func TestAdminDisputes(t *testing.T) {
 	e.mustAct(buyer, tr.ID, map[string]any{"action": "accept_agreement"}, "agreement")
 	e.mustAct(supplier, tr.ID, map[string]any{"action": "accept_agreement"}, "agreement")
 	e.mustAct(supplier, tr.ID, map[string]any{"action": "issue_invoice"}, "invoiced")
-	e.mustAct(buyer, tr.ID, map[string]any{"action": "pay"}, "paid")
+	e.payViaGateway(buyer, "/me/transactions/"+tr.ID, "paid")
 	e.mustAct(buyer, tr.ID, map[string]any{"action": "dispute", "note": "Barang tidak sesuai"}, "disputed")
 	dsp := e.scalar(`SELECT id::text FROM disputes WHERE trade_id = $1`, tr.ID).(string)
 

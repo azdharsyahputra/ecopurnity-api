@@ -69,8 +69,10 @@ func TestOrgTransactions(t *testing.T) {
 	if r := do(buyerOrg, procurement, "pay", nil); r.Status != 403 {
 		t.Fatal("procurement pays", r.Status)
 	}
-	r = do(buyerOrg, finance, "pay", nil)
-	ok(r, "paid")
+	if r := do(buyerOrg, finance, "pay", nil); r.Status != 409 || r.code() != "payment_required" {
+		t.Fatal("pay goes through the gateway", r.Status, r.Body)
+	}
+	r = e.payViaGateway(finance, base(buyerOrg), "paid")
 	if acts := r.Body["activity"].([]any); len(acts) != 2 || !strings.HasSuffix(acts[0].(map[string]any)["actor"].(string), "(Finance)") {
 		t.Fatalf("org activity on the trade: %v", acts)
 	}
