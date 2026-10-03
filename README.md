@@ -113,6 +113,17 @@ the configured SMTP (Mailpit locally) so you can check them. Provider examples a
 Email verification is a 6-digit code: 10 minutes, 5 attempts, one resend per minute; only an HMAC of the code (keyed by
 `APP_SECRET`) is stored.
 
+## Trades and money
+
+The F6 settlement flow (agreement, invoice, payment, staged shipments, QC, disputes, reviews) is one engine,
+`applyTradeAction` in `internal/server/trade_engine.go`; its header lists who may call it and the ledger journal each
+action posts. Money is a double-entry ledger (`ledger_entries`, balanced per journal at commit); `/me/finance` is derived
+from it (`internal/server/finance.go`). `RunTradeClock` places due standing-contract orders.
+
+`SIMULATE_COUNTERPARTIES=true` (in `.env.example`, for local demos) lets a bot play counterparties that are not on the
+platform (external parties): it accepts agreements and contract proposals, invoices, ships, confirms and reviews, so
+every flow can be finished alone. **Leave it unset (false) in production.**
+
 ## File uploads (Cloudflare R2)
 
 Uploads never pass through the API: `POST /uploads` returns a presigned PUT URL, the browser sends the file straight to

@@ -1057,7 +1057,7 @@ Finance:
       required: [bank, accountNo, holder]
       properties:
         bank: { type: string }
-        accountNo: { type: string }
+        accountNo: { type: string, description: 'Masked (four dots plus the last 4 digits); the full number is never returned.' }
         holder: { type: string }
     withdrawals:
       type: array

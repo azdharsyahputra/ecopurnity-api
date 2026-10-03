@@ -31,7 +31,8 @@ with the same name is defined on `*server.Server`. This is how the existing ones
     `emitAuctionState` for auction channels; `emitBidStatus` for a bidder's own status.
   - `emit(ctx, tx, topic, aggregateID, payload)` for analytics facts (topics and payloads in `migrations/clickhouse/README.md`).
 - Shared building blocks: `userParty` (party of a user, created on first use), `createTrade` (`trades.go`),
-  `createOrg` (`onboarding.go`), `loadUser`, `loadMarkets`, `loadOpportunities`, `loadAuctions` / `loadAuction` /
+  `createOrg` (`onboarding.go`), `applyTradeAction` (`trade_engine.go`: the F6 settlement flow, contract at the top
+  of the file), `loadTransaction` (a trade from one party's side), `post` / `accounts` (ledger journals, `finance.go`), `loadUser`, `loadMarkets`, `loadOpportunities`, `loadAuctions` / `loadAuction` /
   `auctionDetail` / `myBid` (auction read model with visibility masking), `s.commitGuard` (KYC limit), `claimUpload`
   (verified uploads), `pageParams`, `likeEscape`, `rupiah`, `ptr`, `deref*`.
 - Responses: return the generated typed response objects. Two generator gaps need a hand-written response type
