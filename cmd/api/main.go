@@ -88,6 +88,7 @@ func run(log *slog.Logger) error {
 	defer api.WaitMail() // let queued emails go out on shutdown
 	go api.RunAuctionClock(ctx, time.Second)
 	go api.RunOpportunityEngine(ctx, time.Minute)
+	go api.RunNotificationMailer(ctx, 5*time.Second)
 	go api.RunTradeClock(ctx, 2*time.Second)
 	if cfg.SimulateCounterparties {
 		log.Warn("SIMULATE_COUNTERPARTIES is on: bots play external trade parties and RFQ suppliers (demo only)")
