@@ -219,7 +219,7 @@
     description: |
       Opportunities scored for the caller (`reasons`, `distanceKm`, `relation`, `personalValueIdr`), sorted by score
       descending (reasons*10 - distanceKm/100 + confidence). Not paginated.
-      Tab filters: `for_you` = has at least one match reason; `nearby` = distanceKm <= 75; `market_gap`, `collective`
+      Tab filters: `all` = no filter; `for_you` = has at least one match reason; `nearby` = distanceKm <= 75; `market_gap`, `collective`
       (collective_demand), `supply_gap` = by opportunity kind; `joined` / `following` = by relation.
       `distanceKm` is the great-circle distance from the caller's location (or first preferred location) to the opportunity's
       region (known Indonesian cities/provinces; unknown locations count as 500 km). `Dekat` = the region is the caller's
@@ -229,8 +229,8 @@
     parameters:
       - name: tab
         in: query
-        schema: { type: string, enum: [for_you, nearby, market_gap, collective, supply_gap, joined, following], default: for_you }
-        description: Defaults to `for_you`. An unknown value is rejected (422).
+        schema: { type: string, enum: [all, for_you, nearby, market_gap, collective, supply_gap, joined, following], default: for_you }
+        description: Defaults to `for_you`; `all` is the unfiltered list. Any other value is rejected (422).
     responses:
       '200':
         description: Opportunities.

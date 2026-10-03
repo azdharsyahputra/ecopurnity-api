@@ -188,6 +188,9 @@ func TestOpportunityEngineAndPersonal(t *testing.T) {
 		r.Body["contribution"].(map[string]any)["quantity"].(map[string]any)["value"] != 40.0 {
 		t.Fatalf("re-join replaces: %d %v", r.Status, r.Body)
 	}
+	if all, forYou := e.callList(c4, "/me/opportunities?tab=all"), e.callList(c4, "/me/opportunities"); len(all) < len(forYou) || len(all) == 0 {
+		t.Fatalf("tab=all: %d vs for_you %d", len(all), len(forYou))
+	}
 	if got := e.callList(c4, "/me/opportunities?tab=joined"); len(got) != 1 || got[0]["id"] != oppID {
 		t.Fatalf("joined tab: %v", got)
 	}
