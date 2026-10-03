@@ -161,6 +161,84 @@ func (c *Client) InsertEvents(ctx context.Context, evs []Event) error {
 	return b.Send()
 }
 
+// MmEfficiencyWeek is one week of value-weighted matched demand and supply utilization (README /mm/analytics).
+type MmEfficiencyWeek struct {
+	Week                 time.Time // Monday
+	Matched, Utilization float64
+}
+
+// MmEfficiency returns the last 8 weeks (current included) of the markets' closed rounds, oldest first; weeks without
+// closed rounds are absent.
+func (c *Client) MmEfficiency(ctx context.Context, marketIDs []string) ([]MmEfficiencyWeek, error) {
+	rows, err := c.conn.Query(ctx, `
+		SELECT toMonday(at) AS week,
+		       ifNull(sum(matched_idr) / nullIf(sum(demand_idr), 0), 0) AS matched,
+		       ifNull(sum(matched_idr) / nullIf(sum(supply_idr), 0), 0) AS utilization
+		FROM auction_results
+		WHERE market_id IN ? AND at >= toMonday(today()) - 49
+		GROUP BY week ORDER BY week`, marketIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MmEfficiencyWeek
+	for rows.Next() {
+		var w MmEfficiencyWeek
+		if err := rows.Scan(&w.Week, &w.Matched, &w.Utilization); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// MmGrowthWeek is one week of active parties, completed trades, distinct buyer-supplier pairs and repeat trades.
+type MmGrowthWeek struct {
+	Week                                            time.Time // Monday
+	Participants, Transactions, Connections, Repeat uint64
+}
+
+// MmGrowth returns the last 8 weeks (current included) of the markets, oldest first; empty weeks are absent.
+func (c *Client) MmGrowth(ctx context.Context, marketIDs []string) ([]MmGrowthWeek, error) {
+	rows, err := c.conn.Query(ctx, `
+		WITH toMonday(today()) - 49 AS since
+		SELECT week, participants, transactions, connections, repeat
+		FROM
+		(
+			SELECT toMonday(day) AS week, uniqMerge(parties) AS participants
+			FROM participants_daily
+			WHERE market_id IN ? AND day >= since
+			GROUP BY week
+		) AS p
+		FULL JOIN
+		(
+			SELECT week, count() AS transactions, uniqExact(buyer_party_id, supplier_party_id) AS connections, countIf(nth > 1) AS repeat
+			FROM
+			(
+				SELECT toMonday(at) AS week, buyer_party_id, supplier_party_id,
+				       row_number() OVER (PARTITION BY buyer_party_id, supplier_party_id ORDER BY at) AS nth
+				FROM trades
+				WHERE market_id IN ? AND status = 'completed'
+			)
+			WHERE week >= since
+			GROUP BY week
+		) AS t USING (week)
+		ORDER BY week`, marketIDs, marketIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MmGrowthWeek
+	for rows.Next() {
+		var w MmGrowthWeek
+		if err := rows.Scan(&w.Week, &w.Participants, &w.Transactions, &w.Connections, &w.Repeat); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
 // Public stats, activity and explorer reads (queries from migrations/clickhouse/README.md). `days` is a range the
 // caller validated; `category` "" means every category.
 

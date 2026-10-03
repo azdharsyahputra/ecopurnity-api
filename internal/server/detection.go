@@ -127,9 +127,7 @@ func classify(g *gapGroup, hasMarket bool) (kind, mechanism string, ok bool) {
 var kindLabel = map[string]string{"collective_demand": "Collective demand", "supply_gap": "Supply gap", "market_gap": "Market gap",
 	"capacity_match": "Capacity match"}
 
-// Copy of the frontend's MECHANISMS labels (src/domain/catalog.ts).
-var mechanismLabel = map[string]string{"forward_auction": "Forward auction", "reverse_auction": "Reverse auction", "sealed_bid": "Sealed bid",
-	"dutch_auction": "Dutch auction", "direct_market": "Direct market", "collective_procurement": "Collective procurement"}
+// mechanismLabel (frontend MECHANISMS labels) lives in mm_domain.go.
 
 type detected struct {
 	title, description, contribution, reason string

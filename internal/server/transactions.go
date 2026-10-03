@@ -108,8 +108,8 @@ func loadTransaction(ctx context.Context, q dbtx, party, id string) (api.Transac
 		return d, err
 	}
 
-	// Timeline: the happy path of the terms with when/why each step was reached (latest event per status), then the
-	// off-path statuses (cancelled, disputed) after the last reached step.
+	// Timeline: the happy path of the terms with when/why each step was reached (latest event per status); off-path
+	// statuses (cancelled, disputed) go right after the last step reached before them.
 	type ev struct {
 		status string
 		at     time.Time
@@ -141,20 +141,24 @@ func loadTransaction(ctx context.Context, q dbtx, party, id string) (api.Transac
 		last[e.status] = e
 	}
 	d.Timeline = []step{}
-	lastReached := -1
 	for _, st := range path {
 		x := step{Status: api.TransactionStatus(st)}
 		if e, ok := last[st]; ok {
 			x.At, x.Note = &e.at, e.note
-			lastReached = len(d.Timeline)
 		}
 		d.Timeline = append(d.Timeline, x)
 	}
 	for _, e := range evs {
-		if !slices.Contains(path, e.status) {
-			lastReached++
-			d.Timeline = slices.Insert(d.Timeline, lastReached, step{Status: api.TransactionStatus(e.status), At: &e.at, Note: e.note})
+		if slices.Contains(path, e.status) {
+			continue
 		}
+		at := 0
+		for i, x := range d.Timeline {
+			if x.At != nil && !x.At.After(e.at) {
+				at = i + 1
+			}
+		}
+		d.Timeline = slices.Insert(d.Timeline, at, step{Status: api.TransactionStatus(e.status), At: &e.at, Note: e.note})
 	}
 
 	d.Documents = []struct {
@@ -466,12 +470,10 @@ func (s *Server) CreateDirectMarketOrder(ctx context.Context, req api.CreateDire
 			return err
 		}
 		if l.OwnerUser != nil {
-			if err := notify(ctx, tx, *l.OwnerUser, notification{Type: "transaction_update", Title: "Agreement baru: " + title,
-				Body: sess.Name + " menunggu persetujuanmu.", Href: "/app/transactions/" + t.ID}); err != nil {
-				return err
-			}
+			return notify(ctx, tx, *l.OwnerUser, notification{Type: "transaction_update", Title: "Agreement baru: " + title,
+				Body: sess.Name + " menunggu persetujuanmu.", Href: "/app/transactions/" + t.ID})
 		}
-		return emitTradeUpdated(ctx, tx, t.ID)
+		return nil
 	})
 	if err != nil {
 		return nil, err
