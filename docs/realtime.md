@@ -12,7 +12,7 @@ Ground rules:
   REST, where validation, KYC limits and idempotency already live. The socket only fans out. Chat is the one exception:
   `chat.send` is accepted on the socket, with `POST /me/conversations/{id}/messages` as the fallback.
 - **The database is the source of truth, the socket is a hint stream.** Every event can be recovered from REST,
-  and the sequenced channels can also be replayed from Postgres. Delivery is at-least-once, so clients dedupe.
+  and the sequenced channels can also be replayed from the Postgres outbox. Delivery is at-least-once, so clients dedupe.
 
 ## Connection lifecycle
 
@@ -20,8 +20,11 @@ Ground rules:
    (HTTP 403 otherwise, protection against cross-site WebSocket hijacking) and reads the session cookie:
    - valid session: the connection belongs to that user;
    - no or expired session: anonymous, public channels only;
-   - suspended account: HTTP 403 `account_suspended`, same as REST.
+   - suspended account: treated as anonymous (public channels only; every private channel and chat frame answers
+     `unauthenticated`, as REST answers 403 for them).
    The identity is fixed for the life of the socket. **After sign-in or sign-out the client reconnects.**
+   The upgrade is refused with HTTP 429 `rate_limited` past the connection limits, and with HTTP 503 `unavailable`
+   while the instance has lost its fan-out feed (see Lost feed); back off and retry.
 2. **Subscribe** to what the current screen needs (`subscribe {channel, sinceSeq?}`), unsubscribe when it unmounts.
    Subscriptions are reference counted on the client; the server only sees one subscribe per channel.
 3. **Heartbeat.** The client sends `{type:"ping", id}` every 25 s; the server acks. No ack within 10 s means the
@@ -30,7 +33,8 @@ Ground rules:
    re-subscribe every channel. Sequenced channels pass their `lastSeq` as `sinceSeq`; unsequenced ones refetch over
    REST (see [Resume](#ordering-and-resume)).
 5. **Session ends mid-connection** (logout elsewhere, expiry, revoke): the server closes with 4401. Suspension: 4403.
-   The client refreshes `GET /auth/me` and reconnects (anonymously if signed out).
+   The client refreshes `GET /auth/me` and reconnects (anonymously if signed out). The server re-reads the session of
+   each signed-in socket once a minute, so this takes up to 60 s.
 
 ### Frames
 
@@ -42,8 +46,8 @@ Client frames are `{ type, id?, ... }`. `id` is any string the client picks; whe
 | `subscribe` | `channel`, `sinceSeq?` | `{ok: true, headSeq?}` after any replayed frames |
 | `unsubscribe` | `channel` | `{ok: true}` (also when not subscribed) |
 | `ping` | | `{ok: true}` |
-| `chat.send` | `conversationId`, `clientMsgId` (uuid), `text` (1..4000 chars, trimmed) | `{ok: true, result: {messageId, seq}}` |
-| `chat.typing` | `conversationId` | `{ok: true}` |
+| `chat.send` | `conversationId`, `clientMsgId` (uuid), `text` (1..4000 chars, trimmed) | `{ok: true, result: {messageId, seq}}`. **Not built yet:** answers `not_implemented` until the conversations REST exists |
+| `chat.typing` | `conversationId` | `{ok: true}` (also when throttled and dropped) |
 | `chat.read` | `conversationId`, `seq` | `{ok: true}` |
 
 Server frames:
@@ -53,7 +57,8 @@ Server frames:
 - **`error`**: `{ type: "error", code, message }`.
 
 Error codes (`ack.error.code` / `error.code`): `bad_frame`, `unauthenticated`, `forbidden`, `not_found`,
-`validation`, `rate_limited`, `subscription_limit`, `resync_required`, `internal`.
+`validation`, `rate_limited`, `subscription_limit`, `resync_required`, `internal`, and for now `not_implemented`
+(`chat.send` only).
 
 ## Channels
 
@@ -111,7 +116,7 @@ Nobody gets a privileged live view: owners, market makers and admins read hidden
 | `auction.extended` | the bid landed inside the anti-sniping window and the extension cap is not reached; sent right after that bid | `AuctionEventExtended` (status becomes `extended`) |
 | `auction.price` | a Dutch auction's ask steps down | `AuctionEventPrice` |
 | `auction.closed` | `endsAt` passed (`closed`) or a Dutch price was accepted (`awarded`) | `AuctionEventClosed` |
-| `auction.state` | other status changes: start, freeze, unfreeze, award, cancel; and the last frame of every replay | `AuctionEventState` (`kind: "state"`: status, endsAt, masked currentPriceIdr, bidCount, participants) |
+| `auction.state` | other status changes: start, freeze, unfreeze, award, cancel | `AuctionEventState` (`kind: "state"`: status, endsAt, masked currentPriceIdr, bidCount, participants) |
 
 Closing, extensions, Dutch steps and scheduled starts are decided by the server. Postgres `now()` is the clock: the
 bid transaction rejects a bid when `now() >= ends_at` under the auction row lock, so a bid and the closer cannot both win.
@@ -163,13 +168,17 @@ Server side of `subscribe {sinceSeq}`:
 3. If `head - sinceSeq > 200` or `sinceSeq > head`: ack `{ok: false, error: {code: "resync_required"}}`, drop the
    subscription. The client refetches REST and subscribes again with the new seq.
 4. Otherwise send the replay, then `ack {ok: true, headSeq: head}`, then flush buffered live frames with `seq > head`.
-   - Auctions: one `auction.bid` per bid with `bids.seq > sinceSeq` (masked exactly like live; `currentPriceIdr`,
-     `bidCount`, `participants` carry current values), then one `auction.state` with `seq = head`. Non-bid events are
-     not stored individually; the state snapshot covers them.
-   - Conversations: messages with `seq > sinceSeq` as `message.created` (current content), then messages created
-     earlier but changed after `sinceSeq` as `message.updated` / `message.deleted`, ordered by the seq that changed them.
+   The replay is the stored frames themselves: the `outbox` rows of the channel (`topic = 'rt'`, `aggregate_id` =
+   channel) with `seq > sinceSeq`, in order, byte for byte what was sent live (so an auction frame carries the
+   `currentPriceIdr` / `bidCount` of its time, not today's). Every seq in `(sinceSeq, head]` must still be there;
+   if one is missing the answer is `resync_required` too.
+5. Without `sinceSeq` the server still reads the head and acks it (`headSeq`), with nothing to replay.
 
-Replayed frames may skip numbers (the snapshot stands in for them); `headSeq` in the ack is the new `lastSeq`.
+Replayed frames are gap-free; `headSeq` in the ack is the new `lastSeq`.
+
+**Retention.** The publisher deletes outbox rows 2 days after they were published, so a client can resume after at
+most 2 days away; older gaps (and seq numbers that never had a frame, such as seeded bids) answer `resync_required`.
+The horizon is `outboxRetention` in `internal/server/publisher.go` (see `migrations/postgres/00008_outbox_replay.sql`).
 
 Unsequenced channels (`public:*`, `user:{id}`, `typing`, `read`) are never replayed. On reconnect the client refetches
 what they feed: public stats and activity, `/me/notifications` (and everything under `me`), and the participant state
@@ -203,7 +212,7 @@ frame had an `id`, `error` frame otherwise). More than 100 dropped frames within
 | Inbound frame size | 16 KiB (close 1009) |
 | Inbound frames, all types | 20/s, burst 40 |
 | `chat.send` | 1/s, burst 5 |
-| `chat.typing` | 1 per 3 s per conversation (extra frames are dropped, nothing is broadcast) |
+| `chat.typing` | 1 per 3 s per conversation (extra frames are acked `ok` and dropped, nothing is broadcast; they do not count as drops) |
 | Subscribed channels | 100 (`subscription_limit`) |
 | Connections | 10 per user, 20 anonymous per IP (upgrade refused with HTTP 429) |
 | Outbound buffer | 256 frames; a write blocked for 10 s or a full buffer closes with 4503 |
@@ -231,13 +240,21 @@ The REST fallback for messages keeps its own HTTP rate limit; the socket limits 
   `user:{id}`, a `notification.created` per notified user. Visibility masking happens here, in one function shared
   with replay, never per connection. The row lock taken for the seq serializes writers of one channel, so outbox rows
   of a channel are committed in seq order.
-- **Publisher.** One instance holds a Postgres advisory lock and runs the outbox publisher (the same loop that feeds
-  ClickHouse). For each unpublished row it sends `pg_notify('ecp_rt', '{"c": channel, "o": outboxId}')` and marks the
-  row published. It wakes on `outbox_new` (notified inside the writing transaction, delivered on commit) and polls
-  every 250 ms as a fallback.
+- **Publisher** (`internal/server/publisher.go`). One instance holds a Postgres advisory lock (on a dedicated
+  connection, which also runs the realtime loop: if it dies the lock and the in-flight batch go with it). For each
+  batch of unpublished rows, in id order, it sends `pg_notify('ecp_rt', '{"c": channel, "o": outboxId}')` for the `rt`
+  rows and sets `published_at`, in one transaction (the NOTIFYs go out at commit). It wakes on `outbox_new` (an
+  `AFTER INSERT` statement trigger on `outbox`, delivered on commit) and polls every 250 ms as a fallback.
+- **ClickHouse never holds up realtime.** The same leader feeds ClickHouse `events` from a second loop with its own
+  marker, `ch_published_at`: rows of every topic except `rt`, with the dedupe steps of
+  `migrations/clickhouse/README.md`. While ClickHouse is down that loop backs off (up to 1 min) and the rows wait; bids
+  keep flowing. `rt` rows are not copied to ClickHouse: they are rendered copies of facts that have their own topics,
+  and they carry chat text and notification bodies. Rows both loops are done with are deleted after 2 days.
 - **Instances.** Every API instance keeps one dedicated `LISTEN ecp_rt` connection and an in-memory hub
   (`channel -> connections`). On a notification it fetches the frame only if it has local subscribers for that channel
-  (batched `WHERE id = ANY($1)`, from the primary) and writes it to each connection's outbound buffer.
+  (one `WHERE id = $1` read per notification, from the primary, in order; batching is the upgrade when one instance
+  follows most of a busy feed) and writes it to each connection's outbound buffer. A frame it cannot read counts as a
+  lost feed (below).
 - **Ephemeral events.** `typing` is the only event that skips the outbox: the receiving instance sends
   `pg_notify('ecp_rt', '{"c": channel, "f": frame}')` with the frame inline (always under the 8000-byte NOTIFY limit).
   `read` is persisted (`conversation_participants.last_read_seq`) and goes through the outbox like everything else.
@@ -247,7 +264,9 @@ The REST fallback for messages keeps its own HTTP rate limit; the socket limits 
   everything needed to resume is in Postgres (seq) or behind REST. The load balancer only needs WebSocket upgrade
   support and an idle timeout above 60 s.
 - **Lost feed.** If an instance's LISTEN connection drops, NOTIFYs sent meanwhile are gone for that instance. It closes
-  all its sockets with 1012; clients reconnect (anywhere) and resume by seq or refetch.
+  all its sockets with 1012 and refuses upgrades (HTTP 503) until it listens again; clients reconnect (anywhere) and
+  resume by seq or refetch. `GET /readyz` shows `realtime: {feed, publisher, sockets}` (informational: REST stays in
+  rotation).
 - **Upgrade path.** LISTEN/NOTIFY goes through one Postgres connection per instance and a single notification queue
   per database (a few thousand notifications per second is comfortable). When that is the bottleneck, or the outbox
   lag grows, the publisher publishes to Redis pub/sub or NATS (subject = channel) instead of `pg_notify`, and the
@@ -258,10 +277,12 @@ The REST fallback for messages keeps its own HTTP rate limit; the socket limits 
 | Column | Purpose |
 | --- | --- |
 | `auctions.last_seq bigint NOT NULL DEFAULT 0` | channel head; the `bids` insert trigger takes the next value for each bid, and the app bumps it for `auction.extended/price/closed/state` |
-| `bids.seq bigint NOT NULL`, `UNIQUE (auction_id, seq)` | replay of bid events |
+| `bids.seq bigint NOT NULL`, `UNIQUE (auction_id, seq)` | gapless bid order (the replay itself reads the stored frames) |
 | `auctions.extension_count int NOT NULL DEFAULT 0` | anti-sniping cap (the mock caps at 3 extensions) |
 | `conversations.message_seq bigint NOT NULL DEFAULT 0` | channel head; the `messages` insert trigger takes the next value |
-| `messages.seq bigint NOT NULL`, `UNIQUE (conversation_id, seq)` | replay of message events |
+| `messages.seq bigint NOT NULL`, `UNIQUE (conversation_id, seq)` | gapless message order |
+| `outbox (aggregate_id, id) WHERE topic = 'rt'` | replay: a channel's stored frames, newest first (00008) |
+| `outbox.ch_published_at` | ClickHouse side of the publisher, independent of `published_at` (00008) |
 | `messages.client_msg_id uuid`, `UNIQUE (author_user_id, client_msg_id)` | `chat.send` idempotency (catch 23505 and return the existing message; never `ON CONFLICT DO NOTHING`, which would burn a seq) |
 | `conversation_participants.last_read_seq bigint NOT NULL DEFAULT 0`, `last_read_at timestamptz` | read receipts |
 | `messages.edited_at`, `deleted_at`, `edit_seq` | only once message edit/delete exists |

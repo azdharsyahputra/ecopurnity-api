@@ -108,3 +108,55 @@ func (c *Client) MarketActivity(ctx context.Context, marketID string, limit int)
 	}
 	return out, rows.Err()
 }
+
+// Event is one outbox row as stored in `events` (README: dedupe).
+type Event struct {
+	OutboxID    int64
+	Topic       string
+	AggregateID string
+	OccurredAt  time.Time
+	Payload     string
+}
+
+// KnownEvents returns which of the outbox ids are already in `events`: the publisher's dedupe check (README step 3),
+// covering a crash between the insert and marking the rows, and an insert that timed out but landed.
+func (c *Client) KnownEvents(ctx context.Context, ids []int64) (map[int64]bool, error) {
+	known := map[int64]bool{}
+	if len(ids) == 0 {
+		return known, nil
+	}
+	u := make([]uint64, len(ids))
+	for i, id := range ids {
+		u[i] = uint64(id)
+	}
+	rows, err := c.conn.Query(ctx, `SELECT outbox_id FROM events WHERE outbox_id IN ?`, u)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uint64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		known[int64(id)] = true
+	}
+	return known, rows.Err()
+}
+
+// InsertEvents appends outbox rows to `events` in one block (README step 4).
+func (c *Client) InsertEvents(ctx context.Context, evs []Event) error {
+	if len(evs) == 0 {
+		return nil
+	}
+	b, err := c.conn.PrepareBatch(ctx, `INSERT INTO events (outbox_id, topic, aggregate_id, occurred_at, payload)`)
+	if err != nil {
+		return err
+	}
+	for _, e := range evs {
+		if err := b.Append(uint64(e.OutboxID), e.Topic, e.AggregateID, e.OccurredAt, e.Payload); err != nil {
+			return err
+		}
+	}
+	return b.Send()
+}

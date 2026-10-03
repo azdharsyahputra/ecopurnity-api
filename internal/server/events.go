@@ -74,15 +74,20 @@ func notify(ctx context.Context, q dbtx, userID string, n notification) error {
 // channel. The frame is final: masked for its channel's audience before it is written (the publisher never reshapes
 // it). seq is the per-channel sequence for channels that have one (auction:{id}, conversation:{id}).
 func emitFrame(ctx context.Context, q dbtx, channel, typ string, seq *int64, payload any) error {
-	frame := map[string]any{"channel": channel, "type": typ, "payload": payload, "ts": time.Now().UTC().Format(time.RFC3339Nano)}
-	if seq != nil {
-		frame["seq"] = *seq
-	}
-	b, err := json.Marshal(frame)
+	b, err := renderFrame(channel, typ, seq, payload)
 	if err != nil {
 		return err
 	}
 	return emit(ctx, q, "rt", channel, b)
+}
+
+// renderFrame is the server event envelope; ephemeral frames (typing) use it without the outbox.
+func renderFrame(channel, typ string, seq *int64, payload any) ([]byte, error) {
+	frame := map[string]any{"channel": channel, "type": typ, "payload": payload, "ts": time.Now().UTC().Format(time.RFC3339Nano)}
+	if seq != nil {
+		frame["seq"] = *seq
+	}
+	return json.Marshal(frame)
 }
 
 // notifyAdmins notifies every user with the admin capability.
