@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -45,9 +46,14 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "integration tests skipped: no postgres:", err)
 		os.Exit(m.Run())
 	}
-	cfg, _ := pgx.ParseConfig(admin)
-	cfg.Database = name
-	testDSN = cfg.ConnString()
+	// Point the DSN at the new database. (pgx.Config.ConnString() returns the original string, so rewrite the URL.)
+	u, err := url.Parse(admin)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "TEST_POSTGRES_URL:", err)
+		os.Exit(1)
+	}
+	u.Path = "/" + name
+	testDSN = u.String()
 	if err := migrate(testDSN); err != nil {
 		fmt.Fprintln(os.Stderr, "migrate:", err)
 		os.Exit(1)
