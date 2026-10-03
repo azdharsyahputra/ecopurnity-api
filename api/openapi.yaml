@@ -47,7 +47,7 @@ tags:
   - name: RFQ
     description: Requests for quotation, quotes, counter-offers, conversations
   - name: Verification
-    description: Phone OTP and KTP verification, commitment limits
+    description: Email and KTP verification levels, commitment limits
   - name: Uploads
     description: Presigned uploads to object storage (S3-compatible / Cloudflare R2)
   - name: Roles
@@ -1115,24 +1115,6 @@ components:
         selfieUploadId:
           type: string
           description: Upload id (POST /uploads, purpose kyc_selfie) of the selfie holding the KTP.
-    AuthPublicKycPhoneRequest:
-      type: object
-      required:
-        - phone
-      properties:
-        phone:
-          type: string
-          description: Non-digits are stripped; the digits must match `^(62|0)8\d{7,11}$`.
-          examples:
-            - 0812xxxxxxxx
-    AuthPublicKycPhoneVerifyRequest:
-      type: object
-      required:
-        - code
-      properties:
-        code:
-          type: string
-          description: The OTP sent to the phone. The mock accepts the fixed code `246810`.
     AuthPublicLoginRequest:
       type: object
       required:
@@ -2577,12 +2559,9 @@ components:
               type: object
               required:
                 - email
-                - phone
                 - identity
               properties:
                 email:
-                  type: boolean
-                phone:
                   type: boolean
                 identity:
                   type: string
@@ -2784,7 +2763,6 @@ components:
         - label
         - limitIdr
         - verification
-        - otpPending
       properties:
         level:
           $ref: "#/components/schemas/KycLevel"
@@ -2800,12 +2778,9 @@ components:
           description: Same as Identity.profile.verification.
           required:
             - email
-            - phone
             - identity
           properties:
             email:
-              type: boolean
-            phone:
               type: boolean
             identity:
               type: string
@@ -2813,21 +2788,15 @@ components:
                 - none
                 - pending
                 - verified
-        otpPending:
-          type: boolean
     KycAction:
       description: |
-        Frontend action union. `type` selects the endpoint (`phone` POST /me/kyc/phone, `otp` POST /me/kyc/phone/verify,
-        `identity` POST /me/kyc/identity); the request body is the rest of the object without `type`.
+        Frontend action union. `type` selects the endpoint (`identity` POST /me/kyc/identity); the request body is the
+        rest of the object without `type`.
       oneOf:
-        - $ref: "#/components/schemas/KycActionPhone"
-        - $ref: "#/components/schemas/KycActionOtp"
         - $ref: "#/components/schemas/KycActionIdentity"
       discriminator:
         propertyName: type
         mapping:
-          phone: "#/components/schemas/KycActionPhone"
-          otp: "#/components/schemas/KycActionOtp"
           identity: "#/components/schemas/KycActionIdentity"
     KycActionIdentity:
       type: object
@@ -2850,36 +2819,12 @@ components:
           type: string
         selfieFile:
           type: string
-    KycActionOtp:
-      type: object
-      required:
-        - type
-        - code
-      properties:
-        type:
-          type: string
-          const: otp
-        code:
-          type: string
-    KycActionPhone:
-      type: object
-      required:
-        - type
-        - phone
-      properties:
-        type:
-          type: string
-          const: phone
-        phone:
-          type: string
-          pattern: ^(62|0)8\d{7,11}$
     KycLevel:
       type: integer
       enum:
         - 0
         - 1
-        - 2
-      description: 0 email (limit Rp 10 jt), 1 email + phone (Rp 100 jt), 2 KTP verified (Rp 2 M), per commitment.
+      description: 0 email verified (limit Rp 10 jt), 1 KTP verified (Rp 2 M), per commitment.
     LabeledValue:
       type: object
       required:
@@ -6098,12 +6043,9 @@ components:
           description: Same as Identity.profile.verification.
           required:
             - email
-            - phone
             - identity
           properties:
             email:
-              type: boolean
-            phone:
               type: boolean
             identity:
               type: string
@@ -8785,7 +8727,7 @@ paths:
         - audit entry ("Setujui verifikasi bisnis" / "Tolak verifikasi bisnis" / "Minta unggah ulang dokumen") with a status diff;
         - when `owner` matches a platform user name: a `transaction_update` notification "Verifikasi {business}: disetujui | ditolak |
           perlu unggah ulang" (body = decision note, href `/app/settings`);
-        - `personal`: approve marks the user's identity verified (KYC level 2) and stores the NIK hash (one verified account per
+        - `personal`: approve marks the user's identity verified (KYC level 1) and stores the NIK hash (one verified account per
           NIK: 409 `nik_in_use` when another account was verified with the same NIK); reject/reupload leaves the identity
           `none` so the user can submit again.
         - `business`: the organization's verification becomes `verified` (approve), `rejected` (reject) or `unverified`
@@ -10104,7 +10046,7 @@ paths:
         "422":
           $ref: "#/components/responses/Validation"
           description: "fields: name (required, non-blank profile.name)."
-      x-note: The mock performs no other validation (phone/KTP verification state in the body is trusted; the BE should not accept `profile.verification` changes from this endpoint, those go through /me/kyc).
+      x-note: The mock performs no other validation (KTP verification state in the body is trusted; the BE should not accept `profile.verification` changes from this endpoint, those go through /me/kyc).
   /me/invitations:
     get:
       operationId: listMyInvitations
@@ -10163,7 +10105,7 @@ paths:
     get:
       operationId: getMyKyc
       summary: Get my verification level and limits
-      description: Level 0 email (Rp 10 jt), 1 email + phone (Rp 100 jt), 2 KTP verified (Rp 2 M). The limit applies per commitment (bid, Dutch accept, buyer auction, accepted quote, direct order); exceeding it fails with `403 kyc_limit`.
+      description: Level 0 email verified (Rp 10 jt), 1 KTP verified by an admin (Rp 2 M). There is no phone verification (email only). The limit applies per commitment (bid, Dutch accept, buyer auction, accepted quote, direct order); exceeding it fails with `403 kyc_limit`.
       tags:
         - Verification
       x-access: session
@@ -10183,7 +10125,7 @@ paths:
       description: |
         Puts the submission in the admin verification queue as a pending `personal` verification (documents `ktp` and
         `selfie`) and sets the identity status to `pending`. Admins approve or reject it from the verification queue,
-        which sets level 2. Writes an audit entry (`Ajukan verifikasi KTP`).
+        which sets level 1. Writes an audit entry (`Ajukan verifikasi KTP`).
 
         The photos are uploaded first with `POST /uploads` (purposes `kyc_ktp` and `kyc_selfie`) and referenced here by
         upload id. The server checks that each upload belongs to the caller, has that purpose, exists in storage with the
@@ -10214,78 +10156,6 @@ paths:
         "422":
           $ref: "#/components/responses/Validation"
           description: "fields: nik (exactly 16 digits), fullName (required), ktpUploadId / selfieUploadId (missing, not yours, wrong purpose, not uploaded, or not an image)."
-  /me/kyc/phone:
-    post:
-      operationId: requestPhoneOtp
-      summary: Send a phone verification code
-      description: |
-        Sends a 6-digit code to the number (SMS/WhatsApp provider), valid for 5 minutes; a new request replaces the
-        pending one. At most one request per 60 seconds. Only an HMAC of the code is stored. The frontend mock does not
-        send anything and accepts only the fixed code `246810`.
-      tags:
-        - Verification
-      x-access: session
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AuthPublicKycPhoneRequest"
-      responses:
-        "200":
-          description: "Status with `otpPending: true`."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Kyc"
-        "401":
-          $ref: "#/components/responses/Unauthenticated"
-        "422":
-          $ref: "#/components/responses/Validation"
-          description: "fields: phone (Indonesian mobile number, 08... or 628..., 9 to 13 digits)."
-        "429":
-          description: "`otp_cooldown`: a code was sent less than 60 seconds ago. `Retry-After` gives the seconds left."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ApiError"
-  /me/kyc/phone/verify:
-    post:
-      operationId: verifyPhoneOtp
-      summary: Verify the phone code
-      description: |
-        Marks the phone verified (level 1) and stores the verified number. Checks run in this order: pending and
-        unexpired OTP, then the code. 5 wrong codes burn the OTP.
-      tags:
-        - Verification
-      x-access: session
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AuthPublicKycPhoneVerifyRequest"
-      responses:
-        "200":
-          description: Updated status.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Kyc"
-        "401":
-          $ref: "#/components/responses/Unauthenticated"
-        "409":
-          $ref: "#/components/responses/Conflict"
-          description: "otp_expired: no pending OTP or it expired; request a new one."
-        "422":
-          $ref: "#/components/responses/Validation"
-          description: invalid_code with fields.code ("Kode salah. Sisa N percobaan."); the OTP stays pending.
-        "429":
-          description: "`too_many_attempts`: the 5th wrong code; the OTP is burned and a new one must be requested."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ApiError"
   /me/listings:
     get:
       operationId: listMyListings

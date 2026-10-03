@@ -277,8 +277,8 @@ Contract:
 
 KycLevel:
   type: integer
-  enum: [0, 1, 2]
-  description: 0 email (limit Rp 10 jt), 1 email + phone (Rp 100 jt), 2 KTP verified (Rp 2 M), per commitment.
+  enum: [0, 1]
+  description: 0 email verified (limit Rp 10 jt), 1 KTP verified (Rp 2 M), per commitment.
 
 # ───────────────────────── domain/pricing.ts ─────────────────────────
 
@@ -985,10 +985,9 @@ PublicProfile:
     verification:
       type: object
       description: Same as Identity.profile.verification.
-      required: [email, phone, identity]
+      required: [email, identity]
       properties:
         email: { type: boolean }
-        phone: { type: boolean }
         identity: { type: string, enum: [none, pending, verified] }
     reputation: { $ref: '#/components/schemas/ProfileReputation' }
     supply:
@@ -1092,7 +1091,7 @@ Finance:
 Kyc:
   type: object
   description: Verification status and commitment limit of the signed-in user.
-  required: [level, label, limitIdr, verification, otpPending]
+  required: [level, label, limitIdr, verification]
   properties:
     level: { $ref: '#/components/schemas/KycLevel' }
     label: { type: string }
@@ -1101,26 +1100,10 @@ Kyc:
     verification:
       type: object
       description: Same as Identity.profile.verification.
-      required: [email, phone, identity]
+      required: [email, identity]
       properties:
         email: { type: boolean }
-        phone: { type: boolean }
         identity: { type: string, enum: [none, pending, verified] }
-    otpPending: { type: boolean }
-
-KycActionPhone:
-  type: object
-  required: [type, phone]
-  properties:
-    type: { type: string, const: phone }
-    phone: { type: string, pattern: '^(62|0)8\d{7,11}$' }
-
-KycActionOtp:
-  type: object
-  required: [type, code]
-  properties:
-    type: { type: string, const: otp }
-    code: { type: string }
 
 KycActionIdentity:
   type: object
@@ -1135,17 +1118,13 @@ KycActionIdentity:
 
 KycAction:
   description: |
-    Frontend action union. `type` selects the endpoint (`phone` POST /me/kyc/phone, `otp` POST /me/kyc/phone/verify,
-    `identity` POST /me/kyc/identity); the request body is the rest of the object without `type`.
+    Frontend action union. `type` selects the endpoint (`identity` POST /me/kyc/identity); the request body is the
+    rest of the object without `type`.
   oneOf:
-    - $ref: '#/components/schemas/KycActionPhone'
-    - $ref: '#/components/schemas/KycActionOtp'
     - $ref: '#/components/schemas/KycActionIdentity'
   discriminator:
     propertyName: type
     mapping:
-      phone: '#/components/schemas/KycActionPhone'
-      otp: '#/components/schemas/KycActionOtp'
       identity: '#/components/schemas/KycActionIdentity'
 
 ContractView:

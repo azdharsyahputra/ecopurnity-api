@@ -41,7 +41,7 @@ tags:
   - { name: Personal, description: 'Participant workspace under /me (identity, listings, bids, transactions, finance, contracts, notifications)' }
   - { name: Matching, description: 'Smart matching and reputation' }
   - { name: RFQ, description: 'Requests for quotation, quotes, counter-offers, conversations' }
-  - { name: Verification, description: 'Phone OTP and KTP verification, commitment limits' }
+  - { name: Verification, description: 'Email and KTP verification levels, commitment limits' }
   - { name: Uploads, description: 'Presigned uploads to object storage (S3-compatible / Cloudflare R2)' }
   - { name: Roles, description: 'Market maker applications, organization invitations, creating organizations' }
   - { name: Organization, description: 'Business workspace under /orgs/{orgId}' }

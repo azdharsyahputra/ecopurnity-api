@@ -10,7 +10,7 @@ Authoring rules: [migrations/CONVENTIONS.md](../migrations/CONVENTIONS.md).
 | File | Area | Main tables |
 | --- | --- | --- |
 | 00001_foundation | shared | users, sessions, orgs, org_members, parties, notifications, audit_log, outbox |
-| 00002_identity_governance | participant identity, KYC, governance | identities, capacity_items, phone_verifications, kyc_submissions, verification_requests, suspension_appeals, mm_applications, fraud_alerts |
+| 00002_identity_governance | participant identity, KYC, governance | identities, capacity_items, phone_verifications (unused: KYC is email + KTP only), kyc_submissions, verification_requests, suspension_appeals, mm_applications, fraud_alerts |
 | 00003_economy | public economy | listings, opportunities, markets (+ rule versions, participants, operators), auctions, bids, auction_awards, matches |
 | 00004_trade | settlement, money, chat | trades (+ acceptances, events, invoices, shipments, qc, reviews), disputes, ledger, withdrawals, settlements, rfqs/quotes, conversations/messages, supply_contracts |
 | 00005_org | business workspace | org_profiles, org_roles, approval rules, inventory, procurement_requests, collective_pools, org_auctions, purchase_orders, suppliers |

@@ -575,10 +575,6 @@ func (Unimplemented) RequestOrgVerification(context.Context, RequestOrgVerificat
 	return nil, ErrNotImplemented
 }
 
-func (Unimplemented) RequestPhoneOtp(context.Context, RequestPhoneOtpRequestObject) (RequestPhoneOtpResponseObject, error) {
-	return nil, ErrNotImplemented
-}
-
 func (Unimplemented) ResendVerificationEmail(context.Context, ResendVerificationEmailRequestObject) (ResendVerificationEmailResponseObject, error) {
 	return nil, ErrNotImplemented
 }
@@ -660,10 +656,6 @@ func (Unimplemented) UploadOrgDocument(context.Context, UploadOrgDocumentRequest
 }
 
 func (Unimplemented) VerifyEmail(context.Context, VerifyEmailRequestObject) (VerifyEmailResponseObject, error) {
-	return nil, ErrNotImplemented
-}
-
-func (Unimplemented) VerifyPhoneOtp(context.Context, VerifyPhoneOtpRequestObject) (VerifyPhoneOtpResponseObject, error) {
 	return nil, ErrNotImplemented
 }
 

@@ -20,7 +20,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/secure"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/server"
-	"github.com/azdharsyahputra/ecopurnity-api/internal/sms"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/storage"
 )
 
@@ -81,7 +80,7 @@ func run(log *slog.Logger) error {
 		}
 	}
 	api := &server.Server{
-		DB: pg, Analytics: ch, Log: log, Mail: mailer, Keys: keys, Storage: store, SMS: sms.Log{Logger: log},
+		DB: pg, Analytics: ch, Log: log, Mail: mailer, Keys: keys, Storage: store,
 		AppURL: cfg.AppURL, CookieSecure: cfg.CookieSecure, SessionTTL: cfg.SessionTTL, GoogleDevLogin: cfg.GoogleDevLogin,
 		SimulateCounterparties: cfg.SimulateCounterparties,
 	}

@@ -218,7 +218,7 @@ func TestAdminVerifications(t *testing.T) {
 	if r := e.call(a, "POST", "/admin/verifications/"+pid+"/actions", map[string]any{"action": "approve", "reason": "KTP dan selfie cocok"}); r.Status != 200 {
 		t.Fatalf("approve personal: %d %v", r.Status, r.Body)
 	}
-	if k := e.call(user, "GET", "/me/kyc", nil); k.Body["level"] != float64(2) {
+	if k := e.call(user, "GET", "/me/kyc", nil); k.Body["level"] != float64(1) {
 		t.Fatalf("kyc after approve: %v", k.Body)
 	}
 	if e.scalar(`SELECT nik_hash IS NOT NULL AND identity_verified_by IS NOT NULL FROM identities WHERE user_id = $1`, userID) != true {
