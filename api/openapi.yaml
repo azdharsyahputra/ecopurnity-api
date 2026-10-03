@@ -2303,6 +2303,9 @@ components:
           type: string
         file:
           type: string
+        url:
+          type: string
+          description: Short-lived (1 h) presigned GET for the attached file; absent for name-only (legacy/demo) attachments.
         at:
           type: string
           format: date-time
@@ -7264,6 +7267,9 @@ components:
           format: date-time
         proof:
           type: string
+        proofUrl:
+          type: string
+          description: Short-lived (1 h) presigned GET for the proof file; absent for name-only (legacy/demo) proofs.
     Subject:
       type: object
       required:
@@ -7567,9 +7573,12 @@ components:
           $ref: "#/components/schemas/TradeAction"
         note:
           type: string
+        uploadId:
+          type: string
+          description: "Verified upload (POST /uploads) attached to the step: purpose `trade_proof` for `upload_proof` (required), `dispute_evidence` for `dispute` / `add_evidence` (optional). Owned by the acting user (for an org, the acting member); single use. Ignored by the other actions."
         file:
           type: string
-          description: File name of an attached document or proof.
+          description: Legacy bare file name. Only the server's simulated counterparties (demo) attach files this way; a user's `file` is ignored, send `uploadId`.
         shipment:
           type: object
           description: For `ship`.
@@ -7783,6 +7792,9 @@ components:
                       - proof
                   name:
                     type: string
+                  url:
+                    type: string
+                    description: Short-lived (1 h) presigned GET for an uploaded file (delivery proofs); absent for generated documents and name-only proofs.
                   at:
                     type: string
                     format: date-time
@@ -7851,6 +7863,9 @@ components:
                         type: string
                       file:
                         type: string
+                      url:
+                        type: string
+                        description: Short-lived (1 h) presigned GET for the attached file; absent for name-only (legacy/demo) attachments.
                       at:
                         type: string
                         format: date-time
@@ -7946,7 +7961,11 @@ components:
         - kyc_ktp
         - kyc_selfie
         - org_document
-      description: What the file is for; decides the allowed types, the size limit and who may read it. More purposes are added with the features that need them.
+        - trade_proof
+        - dispute_evidence
+      description: |-
+        What the file is for; decides the allowed types, the size limit and who may read it. More purposes are added with the features that need them.
+        `trade_proof` (shipment proof for `upload_proof`) and `dispute_evidence` (`dispute` / `add_evidence` attachment): JPEG, PNG, WebP or PDF, max 10 MB; readable by both sides of the trade (personal party / org members with transactions.view) and by admins on the dispute case.
     UploadRequest:
       type: object
       required:
@@ -8543,7 +8562,7 @@ paths:
     get:
       operationId: getAdminDispute
       summary: Get a dispute case
-      description: Full case with parties, the transaction, evidence from both sides plus admin entries, timeline and the resolution once decided.
+      description: Full case with parties, the transaction, evidence from both sides plus admin entries, timeline and the resolution once decided. Uploaded evidence files and delivery proofs carry a presigned `url` (valid 1 hour).
       tags:
         - Admin
       x-access: capability:admin
@@ -11475,6 +11494,7 @@ paths:
     get:
       operationId: getMyTransaction
       summary: Get a transaction
+      description: The trade from the caller's side. Uploaded files (delivery proofs in `documents` / `shipments[].proofUrl`, dispute evidence) carry a presigned `url` valid for 1 hour; only the two sides of the trade (and admins on its dispute case) get them. The org view (`GET /orgs/{orgId}/transactions/{tid}`, transactions.view) has the same URLs.
       tags:
         - Personal
       x-access: session
@@ -11510,11 +11530,11 @@ paths:
         - `issue_invoice`: supplier, status `agreement`, both sides accepted. Status becomes `invoiced`; due date = +3 days (escrow) or terms days + 5.
         - `pay`: buyer. Escrow terms: status `invoiced` (payment becomes `escrow`, status `paid`). Net terms: status `accepted` (payment `released`, status `completed`). Not accepted here: the buyer pays through the payment gateway (`POST /me/transactions/{id}/payments`), which applies this step when the money has settled; sending `pay` answers `409 payment_required`. The step stays in the available actions so the client knows paying is open.
         - `ship`: supplier, with unscheduled quantity left, status `paid`/`fulfilling` (escrow) or `invoiced`/`fulfilling` (net). Needs `shipment` {quantity (>0, <= unscheduled quantity), dropPoint (required), carrier (default `Armada supplier`), scheduledAt (default now)}. Status `fulfilling`.
-        - `upload_proof`: supplier, status `fulfilling` with at least one open shipment. Needs `file`; delivers `shipmentId` (or the first open shipment). Status becomes `delivered` once every unit is on a delivered shipment, else stays `fulfilling`.
+        - `upload_proof`: supplier, status `fulfilling` with at least one open shipment. Needs `uploadId` (purpose `trade_proof`; 422 `uploadId` when missing, someone else's, the wrong purpose, already used or not in storage); delivers `shipmentId` (or the first open shipment). Status becomes `delivered` once every unit is on a delivered shipment, else stays `fulfilling`.
         - `confirm_receipt`: buyer, status `delivered`. Optional `qc` {outcome `accepted` (default) | `partial` (acceptedQty between 1 and quantity-1, note required) | `rejected` (note required)}. accepted: escrow releases payment and the status is `completed`, net terms go to `accepted` and set a payment due date; partial: quantity and total shrink to the accepted amount (escrow refund of the shortfall incl. PPN is computed), same status flow as accepted; rejected: opens a dispute with the note as evidence, status `disputed`, no release.
         - `cancel`: either side, status `agreement` or `invoiced`. An escrowed payment becomes `refunded`. Status `cancelled`.
-        - `dispute`: either side, status `paid`/`fulfilling`/`delivered` (escrow) or `fulfilling`/`delivered`/`accepted` (net). Needs `note` (reason); optional `file`. Status `disputed`.
-        - `add_evidence`: either side, status `disputed`. Needs `note`; optional `file`. Moves the dispute from `open` to `evidence`.
+        - `dispute`: either side, status `paid`/`fulfilling`/`delivered` (escrow) or `fulfilling`/`delivered`/`accepted` (net). Needs `note` (reason); optional `uploadId` (purpose `dispute_evidence`). Status `disputed`.
+        - `add_evidence`: either side, status `disputed`. Needs `note`; optional `uploadId` (purpose `dispute_evidence`). Moves the dispute from `open` to `evidence`.
         - `review`: either side, status `completed` and the caller's side has not reviewed yet. Needs `review` {rating 1-5, quality, timeliness, communication, text}.
 
         Side effects: one trade row serves both sides, so the counterparty sees the new state at once (`peer.txId` is the
@@ -13533,7 +13553,7 @@ paths:
         | add_evidence | owner, procurement, operations |
         | review | owner, procurement |
 
-        The role gate runs before the state machine. `pay` is not taken here: the org pays through `POST /orgs/{orgId}/transactions/{tid}/payments` (same role gate), which applies the step when the gateway reports settlement; sending `pay` answers `409 payment_required` after the role gate. Then the action must be available for the org's side in the current status, otherwise `409 invalid_transition`. Per action: `ship` needs `shipment` (quantity > 0 and <= unscheduled quantity, `dropPoint`), `upload_proof` needs `file`, `confirm_receipt` takes `qc` (outcome `partial` needs `acceptedQty` between 1 and quantity-1, any non-`accepted` outcome needs a `note`; `rejected` opens a dispute), `dispute` and `add_evidence` need `note`, `review` needs `review.rating` 1-5.
+        The role gate runs before the state machine. `pay` is not taken here: the org pays through `POST /orgs/{orgId}/transactions/{tid}/payments` (same role gate), which applies the step when the gateway reports settlement; sending `pay` answers `409 payment_required` after the role gate. Then the action must be available for the org's side in the current status, otherwise `409 invalid_transition`. Per action: `ship` needs `shipment` (quantity > 0 and <= unscheduled quantity, `dropPoint`), `upload_proof` needs `uploadId` (purpose `trade_proof`, uploaded by the acting member), `confirm_receipt` takes `qc` (outcome `partial` needs `acceptedQty` between 1 and quantity-1, any non-`accepted` outcome needs a `note`; `rejected` opens a dispute), `dispute` and `add_evidence` need `note` and take an optional `uploadId` (purpose `dispute_evidence`, uploaded by the acting member), `review` needs `review.rating` 1-5.
 
         Side effects: the action is written as an audit entry on the org (with a status change diff; it is the page's `activity`); the transaction timeline, documents and ledger are updated as for personal trades. The counterparty is notified (type `payment`, `delivery` or `transaction_update`): a user directly, an org through its active members whose role may see transactions (href `/org/{orgId}/transactions/{id}`); both sides get `trade.updated`. External counterparties are played by a bot (agreement, invoice, payment, shipment, delivery proof, receipt, review, about 8 s after each change) only when the server runs with `SIMULATE_COUNTERPARTIES` (demo).
       x-access: org:transactions.manage

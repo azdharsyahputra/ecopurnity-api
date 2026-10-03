@@ -54,7 +54,13 @@ TradeActionInput:
   properties:
     action: { $ref: '#/components/schemas/TradeAction' }
     note: { type: string }
-    file: { type: string, description: File name of an attached document or proof. }
+    uploadId:
+      type: string
+      description: |-
+        Verified upload (POST /uploads) attached to the step: purpose `trade_proof` for `upload_proof` (required), `dispute_evidence` for `dispute` / `add_evidence` (optional). Owned by the acting user (for an org, the acting member); single use. Ignored by the other actions.
+    file:
+      type: string
+      description: Legacy bare file name. Only the server's simulated counterparties (demo) attach files this way; a user's `file` is ignored, send `uploadId`.
     shipment:
       type: object
       description: For `ship`.
@@ -642,6 +648,7 @@ Evidence:
     by: { type: string }
     text: { type: string }
     file: { type: string }
+    url: { type: string, description: 'Short-lived (1 h) presigned GET for the attached file; absent for name-only (legacy/demo) attachments.' }
     at: { type: string, format: date-time }
 
 DisputeCase:

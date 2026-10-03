@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -61,6 +63,30 @@ func (e *testEnv) mustAct(c *http.Client, id string, body map[string]any, status
 	return r
 }
 
+// needStorage skips a test that attaches files when the docker-compose SeaweedFS is not running.
+func (e *testEnv) needStorage() {
+	e.t.Helper()
+	if e.server.Storage == nil {
+		e.t.Skip("object storage not running (docker compose up seaweedfs)")
+	}
+}
+
+// fetch GETs a presigned file URL (as the browser would) and returns the status and body.
+func fetch(t *testing.T, url any) (int, []byte) {
+	t.Helper()
+	s, _ := url.(string)
+	if s == "" {
+		t.Fatalf("no url: %v", url)
+	}
+	res, err := http.Get(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	return res.StatusCode, b
+}
+
 func num(v any) int64 {
 	f, _ := v.(float64)
 	return int64(f)
@@ -68,6 +94,7 @@ func num(v any) int64 {
 
 func TestTradeEscrowFlowBetweenUsers(t *testing.T) {
 	e := newEnv(t)
+	e.needStorage()
 	buyer, buyerID := e.bidder("Rina Pembeli")
 	supplier, supplierID := e.bidder("Ajar Supplier")
 	market := e.seedMarket("Kopi Escrow", "agri", "kg", "active", "auto")
@@ -143,14 +170,42 @@ func TestTradeEscrowFlowBetweenUsers(t *testing.T) {
 		t.Fatal("over-ship", r.Status, r.Body)
 	}
 	e.mustAct(supplier, id, ship(40), "fulfilling")
-	if r := e.act(supplier, id, map[string]any{"action": "upload_proof"}); r.Status != 422 || r.field("file") == "" {
+	// Proof files are verified uploads (purpose trade_proof) of the acting user; a bare file name is the demo bot's only.
+	if r := e.act(supplier, id, map[string]any{"action": "upload_proof"}); r.Status != 422 || r.field("uploadId") != "Pilih file bukti pengiriman" {
 		t.Fatal("proof without file", r.Status, r.Body)
 	}
-	e.mustAct(supplier, id, map[string]any{"action": "upload_proof", "file": "sj-1.jpg"}, "fulfilling")
-	r = e.mustAct(supplier, id, map[string]any{"action": "upload_proof", "file": "sj-2.jpg"}, "delivered")
+	if r := e.act(supplier, id, map[string]any{"action": "upload_proof", "file": "sj-1.jpg"}); r.Status != 422 || r.field("uploadId") == "" {
+		t.Fatal("bare file name from a user", r.Status, r.Body)
+	}
+	if r := e.act(supplier, id, map[string]any{"action": "upload_proof", "uploadId": e.upload(supplier, "dispute_evidence", "image/png", pngBytes(t))}); r.Status != 422 || r.field("uploadId") != "File ini diunggah untuk keperluan lain." {
+		t.Fatal("wrong purpose", r.Status, r.Body)
+	}
+	if r := e.act(supplier, id, map[string]any{"action": "upload_proof", "uploadId": e.upload(buyer, "trade_proof", "image/png", pngBytes(t))}); r.Status != 422 || r.field("uploadId") != "File tidak ditemukan. Unggah ulang." {
+		t.Fatal("someone else's upload", r.Status, r.Body)
+	}
+	proof1 := e.upload(supplier, "trade_proof", "image/png", pngBytes(t))
+	e.mustAct(supplier, id, map[string]any{"action": "upload_proof", "uploadId": proof1}, "fulfilling")
+	if r := e.act(supplier, id, map[string]any{"action": "upload_proof", "uploadId": proof1}); r.Status != 422 || r.field("uploadId") != "File ini sudah dipakai. Unggah ulang." {
+		t.Fatal("reused upload", r.Status, r.Body)
+	}
+	jpg := jpegBytes(t)
+	r = e.mustAct(supplier, id, map[string]any{"action": "upload_proof", "uploadId": e.upload(supplier, "trade_proof", "image/jpeg", jpg)}, "delivered")
 	sh := r.Body["shipments"].([]any)
-	if len(sh) != 2 || sh[0].(map[string]any)["carrier"] != "Armada supplier" || sh[1].(map[string]any)["proof"] != "sj-2.jpg" {
+	if len(sh) != 2 || sh[0].(map[string]any)["carrier"] != "Armada supplier" || sh[1].(map[string]any)["proof"] != "foto.jpeg" {
 		t.Fatalf("shipments: %v", sh)
+	}
+	// The buyer gets a working presigned link to the file; generated documents have none; strangers see no trade.
+	got = e.call(buyer, "GET", "/me/transactions/"+id, nil)
+	if code, body := fetch(t, got.Body["shipments"].([]any)[1].(map[string]any)["proofUrl"]); code != 200 || !bytes.Equal(body, jpg) {
+		t.Fatalf("proof url: %d", code)
+	}
+	for _, d := range got.Body["documents"].([]any) {
+		if d := d.(map[string]any); (d["kind"] == "proof") != (d["url"] != nil) {
+			t.Fatalf("document urls: %v", got.Body["documents"])
+		}
+	}
+	if r := e.call(outsider, "GET", "/me/transactions/"+id, nil); r.Status != 404 {
+		t.Fatal("outsider after proof", r.Status)
 	}
 
 	// Partial QC: 90 accepted, the short 10 kg refunded with its PPN, the rest released minus fees.
@@ -354,6 +409,7 @@ func TestTradeNetTermsWithSimulatedSupplier(t *testing.T) {
 
 func TestTradeDisputes(t *testing.T) {
 	e := newEnv(t)
+	e.needStorage()
 	buyer, buyerID := e.bidder("Dewi Dispute")
 	supplier, supplierID := e.bidder("Eko Dispute")
 	mk := func() string {
@@ -370,13 +426,23 @@ func TestTradeDisputes(t *testing.T) {
 	if r := e.act(supplier, id, map[string]any{"action": "dispute", "note": "  "}); r.Status != 422 || r.field("note") == "" {
 		t.Fatal("dispute without reason", r.Status, r.Body)
 	}
-	r := e.mustAct(supplier, id, map[string]any{"action": "dispute", "note": "Pembeli minta ganti spek", "file": "chat.png"}, "disputed")
-	if d := r.Body["dispute"].(map[string]any); d["status"] != "open" || d["evidence"].([]any)[0].(map[string]any)["file"] != "chat.png" {
+	chat := pngBytes(t)
+	r := e.mustAct(supplier, id, map[string]any{"action": "dispute", "note": "Pembeli minta ganti spek", "uploadId": e.upload(supplier, "dispute_evidence", "image/png", chat)}, "disputed")
+	if d := r.Body["dispute"].(map[string]any); d["status"] != "open" || d["evidence"].([]any)[0].(map[string]any)["file"] != "foto.png" || d["evidence"].([]any)[0].(map[string]any)["url"] == nil {
 		t.Fatalf("dispute: %v", d)
 	}
-	r = e.mustAct(buyer, id, map[string]any{"action": "add_evidence", "note": "Spek sesuai PO"}, "disputed")
-	if d := r.Body["dispute"].(map[string]any); d["status"] != "evidence" || len(d["evidence"].([]any)) != 2 {
-		t.Fatalf("evidence: %v", d)
+	if r := e.act(buyer, id, map[string]any{"action": "add_evidence", "note": "Foto", "uploadId": e.upload(buyer, "trade_proof", "image/png", pngBytes(t))}); r.Status != 422 || r.field("uploadId") == "" {
+		t.Fatal("evidence with a proof upload", r.Status, r.Body)
+	}
+	r = e.mustAct(buyer, id, map[string]any{"action": "add_evidence", "note": "Spek sesuai PO", "file": "abaikan.png"}, "disputed")
+	if d := r.Body["dispute"].(map[string]any); d["status"] != "evidence" || len(d["evidence"].([]any)) != 2 || d["evidence"].([]any)[1].(map[string]any)["file"] != nil {
+		t.Fatalf("evidence (a user's bare file name is ignored): %v", d)
+	}
+	// The admin case links the evidence file.
+	admin, _ := e.admin("Admin Bukti")
+	dc := e.call(admin, "GET", "/admin/disputes/"+e.scalar(`SELECT id::text FROM disputes WHERE trade_id = $1`, id).(string), nil)
+	if code, body := fetch(t, dc.Body["evidence"].([]any)[0].(map[string]any)["url"]); dc.Status != 200 || code != 200 || !bytes.Equal(body, chat) {
+		t.Fatalf("admin evidence url: %d %d %v", dc.Status, code, dc.Body["evidence"])
 	}
 	if e.scalar(`SELECT count(*) FROM dispute_events d JOIN disputes x ON x.id = d.dispute_id WHERE x.trade_id = $1`, id).(int64) != 1 {
 		t.Fatal("dispute events")
@@ -391,7 +457,7 @@ func TestTradeDisputes(t *testing.T) {
 	// QC rejection opens a dispute with the note as evidence.
 	id = mk()
 	e.mustAct(supplier, id, map[string]any{"action": "ship", "shipment": map[string]any{"quantity": 10, "dropPoint": "Toko", "carrier": "JNE", "scheduledAt": time.Now().UTC().Format(time.RFC3339)}}, "fulfilling")
-	e.mustAct(supplier, id, map[string]any{"action": "upload_proof", "file": "sj.jpg"}, "delivered")
+	e.mustAct(supplier, id, map[string]any{"action": "upload_proof", "uploadId": e.upload(supplier, "trade_proof", "image/png", pngBytes(t))}, "delivered")
 	r = e.mustAct(buyer, id, map[string]any{"action": "confirm_receipt", "qc": map[string]any{"outcome": "rejected", "note": "Basah semua"}}, "disputed")
 	if d := r.Body["dispute"].(map[string]any); d["reason"] != "QC menolak barang: Basah semua" || r.Body["qc"].(map[string]any)["acceptedQty"] != float64(0) {
 		t.Fatalf("rejected QC: %v", r.Body)

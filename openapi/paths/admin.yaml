@@ -392,7 +392,7 @@
   get:
     operationId: getAdminDispute
     summary: Get a dispute case
-    description: Full case with parties, the transaction, evidence from both sides plus admin entries, timeline and the resolution once decided.
+    description: Full case with parties, the transaction, evidence from both sides plus admin entries, timeline and the resolution once decided. Uploaded evidence files and delivery proofs carry a presigned `url` (valid 1 hour).
     tags: [Admin]
     x-access: capability:admin
     parameters:

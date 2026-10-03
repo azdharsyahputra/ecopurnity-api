@@ -162,6 +162,10 @@ Uploads never pass through the API: `POST /uploads` returns a presigned PUT URL,
 the bucket, and the endpoint that uses the file verifies it (owner, purpose, size, sniffed content type) before
 attaching it. The bucket is private; files are read back with short-lived presigned GET URLs.
 
+- Trade files (`trade_proof` delivery proofs, `dispute_evidence`): JPEG/PNG/WebP/PDF up to 10 MB, attached through the
+  trade action's `uploadId`; read models give a 1 h presigned `url` to the trade's two sides (org members with
+  transactions.view) and admins on the dispute case only.
+
 Locally `docker compose` runs SeaweedFS (S3-compatible) and the API creates the bucket and its CORS rule at startup.
 
 For R2, in `.env` (never commit it):

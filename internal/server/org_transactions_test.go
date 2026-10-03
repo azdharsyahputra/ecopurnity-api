@@ -9,6 +9,7 @@ import (
 
 func TestOrgTransactions(t *testing.T) {
 	e := newEnv(t)
+	e.needStorage()
 	owner, _, buyerOrg := e.workspace("Pembeli Org")
 	finance, financeID := e.member(buyerOrg, "finance")
 	procurement, _ := e.member(buyerOrg, "procurement")
@@ -77,7 +78,14 @@ func TestOrgTransactions(t *testing.T) {
 		t.Fatalf("org activity on the trade: %v", acts)
 	}
 	ok(do(supplierOrg, supOps, "ship", map[string]any{"shipment": map[string]any{"quantity": 1000, "dropPoint": "Gudang Bandung"}}), "fulfilling")
-	ok(do(supplierOrg, supOps, "upload_proof", map[string]any{"file": "sj.jpg"}), "delivered")
+	// The proof is the acting member's own upload; the buyer org's members with transactions.view get the link.
+	if r := do(supplierOrg, supOps, "upload_proof", map[string]any{"uploadId": e.upload(sales, "trade_proof", "image/png", pngBytes(t))}); r.Status != 422 || r.field("uploadId") == "" {
+		t.Fatal("another member's upload", r.Status, r.Body)
+	}
+	ok(do(supplierOrg, supOps, "upload_proof", map[string]any{"uploadId": e.upload(supOps, "trade_proof", "image/png", pngBytes(t))}), "delivered")
+	if code, _ := fetch(t, e.call(finance, "GET", base(buyerOrg), nil).Body["shipments"].([]any)[0].(map[string]any)["proofUrl"]); code != 200 {
+		t.Fatal("buyer org proof url", code)
+	}
 	if r := do(buyerOrg, finance, "confirm_receipt", nil); r.Status != 403 {
 		t.Fatal("finance confirms receipt", r.Status)
 	}

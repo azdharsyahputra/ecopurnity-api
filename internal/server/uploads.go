@@ -32,7 +32,12 @@ var uploadRules = map[api.UploadPurpose]uploadRule{
 	api.UploadPurposeKycSelfie: {types: imageTypes, maxBytes: 8 << 20},
 	api.UploadPurposeOrgDocument: {types: map[string]string{"application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"},
 		maxBytes: 10 << 20},
+	api.UploadPurposeTradeProof:      {types: docTypes, maxBytes: 10 << 20},
+	api.UploadPurposeDisputeEvidence: {types: docTypes, maxBytes: 10 << 20},
 }
+
+// ponytail: no video evidence; MP4 would need a per-type size limit (50 MB) in uploadRule.
+var docTypes = map[string]string{"application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 
 var errStorageUnavailable = &Error{Status: http.StatusServiceUnavailable, Code: "storage_unavailable", Message: "Penyimpanan file belum tersedia. Coba lagi nanti."}
 

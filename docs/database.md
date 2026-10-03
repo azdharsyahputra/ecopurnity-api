@@ -19,6 +19,7 @@ Authoring rules: [migrations/CONVENTIONS.md](../migrations/CONVENTIONS.md).
 | 00021_bid_capacity | auctions | bids.capacity (quantity a supplier can deliver with a reverse/sealed bid; NULL = whole lot; owner and bidder only) |
 | 00022_org_approval_on_behalf | business workspace | procurement_approvals / org_auction_approvals.on_behalf (owner signed for a required role with no active member) |
 | 00023_org_purchase_history_outbox | business workspace | trigger: org_purchase_history rows queue trade.status (+ auction.closed) facts for ClickHouse org_purchase_monthly |
+| 00025_trade_uploads | settlement | uploads purposes `trade_proof`, `dispute_evidence`; delivery proofs (trade_documents.object_key) and dispute evidence (dispute_evidence.file_key) are verified uploads, served as 1 h presigned URLs to the trade's sides and admins |
 
 ## Key decisions
 
