@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // audit is one audit_log row; written in the same transaction as the change it records, and mirrored to the outbox
@@ -64,9 +65,24 @@ func notify(ctx context.Context, q dbtx, userID string, n notification) error {
 		userID, n.Type, n.Title, n.Body, n.Href).Scan(&id); err != nil {
 		return err
 	}
-	payload, _ := json.Marshal(map[string]any{"channel": "user:" + userID, "type": "notification.created",
-		"payload": map[string]any{"id": id, "type": n.Type, "title": n.Title, "body": n.Body, "href": n.Href, "read": false}})
-	return emit(ctx, q, "notification", userID, payload)
+	return emitFrame(ctx, q, "user:"+userID, "notification.created", nil,
+		map[string]any{"id": id, "type": n.Type, "title": n.Title, "body": n.Body, "href": n.Href, "read": false})
+}
+
+// emitFrame queues one realtime frame (api/asyncapi.yaml envelope {channel, type, seq?, payload, ts}) in the outbox,
+// in the caller's transaction, so it is delivered if and only if the change commits. Topic 'rt'; aggregate_id is the
+// channel. The frame is final: masked for its channel's audience before it is written (the publisher never reshapes
+// it). seq is the per-channel sequence for channels that have one (auction:{id}, conversation:{id}).
+func emitFrame(ctx context.Context, q dbtx, channel, typ string, seq *int64, payload any) error {
+	frame := map[string]any{"channel": channel, "type": typ, "payload": payload, "ts": time.Now().UTC().Format(time.RFC3339Nano)}
+	if seq != nil {
+		frame["seq"] = *seq
+	}
+	b, err := json.Marshal(frame)
+	if err != nil {
+		return err
+	}
+	return emit(ctx, q, "rt", channel, b)
 }
 
 // notifyAdmins notifies every user with the admin capability.
