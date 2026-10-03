@@ -13080,7 +13080,7 @@ paths:
           description: "unauthenticated: no session."
         "403":
           $ref: "#/components/responses/Forbidden"
-          description: "forbidden: the caller is not a member of this organization."
+          description: "forbidden: the caller is not a member of this organization, or the role lacks transactions.view."
   /orgs/{orgId}/transactions/{tid}:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -13109,7 +13109,7 @@ paths:
           description: "unauthenticated: no session."
         "403":
           $ref: "#/components/responses/Forbidden"
-          description: "forbidden: the caller is not a member of this organization."
+          description: "forbidden: the caller is not a member of this organization, or the role lacks transactions.view."
         "404":
           $ref: "#/components/responses/NotFound"
           description: "not_found: transaction does not exist in this org."
@@ -13147,10 +13147,10 @@ paths:
 
         The role gate runs before the state machine. Then the action must be available for the org's side in the current status, otherwise `409 invalid_transition`. Per action: `ship` needs `shipment` (quantity > 0 and <= unscheduled quantity, `dropPoint`), `upload_proof` needs `file`, `confirm_receipt` takes `qc` (outcome `partial` needs `acceptedQty` between 1 and quantity-1, any non-`accepted` outcome needs a `note`; `rejected` opens a dispute), `dispute` and `add_evidence` need `note`, `review` needs `review.rating` 1-5.
 
-        Side effects: the action is written as an audit entry on the org (with a status change diff); the transaction timeline and documents are updated; the peer account is notified when the counterparty is a platform account. Fictional counterparties are played by a bot that advances the trade (agreement, invoice, payment, shipment, delivery proof, receipt, review) about 8 s after each change and notifies every org member (type `payment`, `delivery` or `transaction_update`, href `/org/{orgId}/transactions/{id}`).
+        Side effects: the action is written as an audit entry on the org (with a status change diff; it is the page's `activity`); the transaction timeline, documents and ledger are updated as for personal trades. The counterparty is notified (type `payment`, `delivery` or `transaction_update`): a user directly, an org through its active members whose role may see transactions (href `/org/{orgId}/transactions/{id}`); both sides get `trade.updated`. External counterparties are played by a bot (agreement, invoice, payment, shipment, delivery proof, receipt, review, about 8 s after each change) only when the server runs with `SIMULATE_COUNTERPARTIES` (demo).
       x-access: org:transactions.manage
       x-audit: true
-      x-note: "`x-access` shows the custom-role fallback; built-in roles are gated by the per-action table in the description. A missing or unknown `action` is a server error (403 check indexes TX_ACTION_ROLES with it)."
+      x-note: "`x-access` shows the custom-role fallback; built-in roles are gated by the per-action table in the description. A missing or unknown `action` is 422 (schema validation)."
       requestBody:
         required: true
         content:

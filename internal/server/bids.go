@@ -218,6 +218,13 @@ func (s *Server) PlaceBid(ctx context.Context, req api.PlaceBidRequestObject) (a
 		if err := emit(ctx, tx, "auction.bid", r.ID, fact); err != nil {
 			return err
 		}
+		var bidValue *int64 // public feed: the lot value at the bid price, only where prices are public
+		if r.Visibility == "full" {
+			bidValue = ptr(round(float64(price) * r.Quantity))
+		}
+		if err := emitActivity(ctx, tx, "bid_placed", "Bid baru di auction "+r.Title, bidValue, r.MarketID); err != nil {
+			return err
+		}
 		r.EndsAt = endsAt
 		if r2, err := loadAuction(ctx, tx, r.ID, false); err == nil {
 			r = r2
