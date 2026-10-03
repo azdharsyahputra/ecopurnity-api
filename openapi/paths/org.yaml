@@ -966,7 +966,7 @@
       - Organization
     operationId: getOrgSupplier
     summary: Get a supplier
-    description: "Supplier with scorecard, this org's trades with them (`history`, newest first, summary fields: counterparty, status, amounts, timeline, payment and delivery; documents empty), up to 12 latest purchase-history rows (`purchases`, newest first) and this org's audit entries about the supplier (`activity`)."
+    description: "Supplier with scorecard, this org's trades with them (`history`, newest first, the full TransactionDetail as in `GET /me/transactions/{id}` from the org's side), up to 12 latest purchase-history rows (`purchases`, newest first) and this org's audit entries about the supplier (`activity`)."
     x-access: org:member
     responses:
       "200":

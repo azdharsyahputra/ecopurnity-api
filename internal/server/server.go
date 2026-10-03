@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -44,7 +45,13 @@ type Server struct {
 	Storage        *storage.Store // object storage (nil: uploads answer 503)
 	SMS            sms.Sender     // phone OTP delivery
 
+	SimulateCounterparties bool // a bot plays external trade/contract counterparties (trade_clock.go); demo only
+
 	mailWG sync.WaitGroup
+
+	hubOnce sync.Once
+	hub     *hub        // realtime sockets of this instance (hub.go)
+	leader  atomic.Bool // this instance holds the outbox publisher lock (publisher.go)
 }
 
 var _ api.StrictServerInterface = (*Server)(nil)
@@ -99,6 +106,8 @@ func (s *Server) Handler() (http.Handler, error) {
 		BasePath+"/auth/forgot-password", BasePath+"/auth/reset-password", BasePath+"/auth/verify-email",
 		BasePath+"/auth/resend-verification", BasePath+"/me/kyc/phone/verify",
 	)
+	// The WebSocket is not in the OpenAPI spec: mounted ahead of the validator (more specific pattern wins).
+	mux.Handle("GET "+BasePath+"/ws", s.withSession(http.HandlerFunc(s.serveWS)))
 	mux.Handle(BasePath+"/", creds(s.withSession(validate(apiHandler))))
 	return s.recoverPanics(mux), nil
 }
@@ -155,6 +164,8 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 			body["clickhouse"] = err.Error()
 		}
 	}
+	// Informational: a lost feed closes this instance's sockets and refuses new ones, REST keeps serving.
+	body["realtime"] = map[string]any{"feed": s.rt().live.Load(), "publisher": s.leader.Load(), "sockets": s.rt().sockets()}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(body)

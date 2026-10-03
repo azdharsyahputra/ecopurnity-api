@@ -164,8 +164,8 @@ func TestOrgAnalyticsCompute(t *testing.T) {
 
 // ── Integration ──────────────────────────────────────────────────
 
-// org creates an organization owned by a fresh verified user (categories packaging, Bandung).
-func (e *testEnv) org(name string) (*http.Client, string, string) {
+// workspace creates an organization owned by a fresh verified user (categories packaging, Bandung).
+func (e *testEnv) workspace(name string) (*http.Client, string, string) {
 	e.t.Helper()
 	c, userID := e.bidder("Owner " + name)
 	var orgID string
@@ -212,7 +212,7 @@ func want(t *testing.T, r resp, status int, code string) {
 
 func TestOrgAccessProfileAndTeam(t *testing.T) {
 	e := newEnv(t)
-	owner, ownerID, orgID := e.org("Akses")
+	owner, ownerID, orgID := e.workspace("Akses")
 	base := "/orgs/" + orgID
 	stranger, _ := e.bidder("Orang Luar")
 	want(t, e.call(e.client(), "GET", base, nil), 401, "unauthenticated")
@@ -328,7 +328,7 @@ func TestOrgAccessProfileAndTeam(t *testing.T) {
 
 func TestOrgInventoryOverviewAnalytics(t *testing.T) {
 	e := newEnv(t)
-	owner, _, orgID := e.org("Gudang")
+	owner, _, orgID := e.workspace("Gudang")
 	base := "/orgs/" + orgID
 	sales, _ := e.member(orgID, "sales")
 	item := map[string]any{"name": "Kraft liner", "categoryId": "packaging", "quantity": map[string]any{"value": 38, "unit": "ton"}, "moq": 5}
@@ -389,7 +389,7 @@ func TestOrgInventoryOverviewAnalytics(t *testing.T) {
 
 func TestOrgSuppliers(t *testing.T) {
 	e := newEnv(t)
-	owner, _, orgID := e.org("Pemasok")
+	owner, _, orgID := e.workspace("Pemasok")
 	base := "/orgs/" + orgID
 	sales, _ := e.member(orgID, "sales")
 	procurement, _ := e.member(orgID, "procurement")
@@ -451,7 +451,7 @@ func TestOrgSuppliers(t *testing.T) {
 
 func TestOrgProcurementAndPools(t *testing.T) {
 	e := newEnv(t)
-	owner, ownerID, orgID := e.org("Pengadaan")
+	owner, ownerID, orgID := e.workspace("Pengadaan")
 	base := "/orgs/" + orgID
 	finance, financeID := e.member(orgID, "finance")
 	proc, _ := e.member(orgID, "procurement")
@@ -519,7 +519,7 @@ func TestOrgProcurementAndPools(t *testing.T) {
 		t.Fatalf("detail: %v", r.Body)
 	}
 	// Another org joins without opting in: masked for us, own row for them.
-	other, _, otherID := e.org("Tetangga")
+	other, _, otherID := e.workspace("Tetangga")
 	want(t, e.call(other, "POST", "/orgs/"+otherID+"/collective/"+poolID+"/join", map[string]any{"quantity": 0}), 422, "validation")
 	r = e.call(other, "POST", "/orgs/"+otherID+"/collective/"+poolID+"/join", map[string]any{"quantity": 300})
 	want(t, r, 200, "")
@@ -584,7 +584,7 @@ func (e *testEnv) closeAuction(id string) {
 
 func TestOrgAuctionLifecycle(t *testing.T) {
 	e := newEnv(t)
-	owner, _, orgID := e.org("Lelang")
+	owner, _, orgID := e.workspace("Lelang")
 	base := "/orgs/" + orgID
 	finance, _ := e.member(orgID, "finance")
 	proc, _ := e.member(orgID, "procurement")
@@ -774,7 +774,7 @@ func TestOrgDocumentsAndVerification(t *testing.T) {
 	if e.server.Storage == nil {
 		t.Skip("no object storage")
 	}
-	owner, _, orgID := e.org("Dokumen")
+	owner, _, orgID := e.workspace("Dokumen")
 	base := "/orgs/" + orgID
 	admin, adminID := e.bidder("Admin Verifikasi")
 	_ = admin
@@ -821,7 +821,7 @@ func TestOrgDocumentsAndVerification(t *testing.T) {
 
 func TestOrgAnalyticsSources(t *testing.T) {
 	e := newEnv(t)
-	owner, _, orgID := e.org("Analitik")
+	owner, _, orgID := e.workspace("Analitik")
 	supID := e.scalar(`INSERT INTO suppliers (name, categories, region) VALUES ('CV Analitik', '{packaging}', 'Jawa Barat') RETURNING id::text`).(string)
 	e.exec(`INSERT INTO org_purchase_history (org_id, code, month, item, category_id, supplier_id, quantity, unit, unit_price_idr, budget_unit_idr, market_unit_idr, via)
 		VALUES ($1, 'HST-9', date_trunc('month', now())::date, 'Lem', 'packaging', $2, 3, 'kg', 1000, 1000, 1000, 'direct')`, orgID, supID)

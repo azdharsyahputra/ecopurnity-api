@@ -179,7 +179,10 @@ func (s *Server) closeOne(ctx context.Context) (bool, error) {
 		fact, _ := json.Marshal(map[string]any{"code": r.Code, "title": r.Title, "marketId": marketID, "orgId": orgID, "categoryId": r.Category,
 			"bidders": len(os), "openingIdr": r.Opening, "clearingIdr": clearing,
 			"demandIdr": int64(r.Quantity * float64(r.Opening)), "supplyIdr": 0, "matchedIdr": 0})
-		return emit(ctx, tx, "auction.closed", id, fact)
+		if err := emit(ctx, tx, "auction.closed", id, fact); err != nil {
+			return err
+		}
+		return emitRoundResult(ctx, tx, id) // market rounds only (mm_markets.go): the round's recorded prices
 	})
 	return did, err
 }

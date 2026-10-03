@@ -19,7 +19,7 @@ outbox (Postgres) --publisher--> events --MV--> bids / trades / listings / round
 | `bids` | MergeTree `(auction_id, at)` | Every bid, in time order per auction: distinct bidders, bid runs, price jumps | admin auction findings, `/admin/alerts` engine |
 | `trades` | MergeTree `(market_id, at, trade_id)`, bloom on `buyer_org_id` | One row per trade status change (plus `settled`) with the full trade snapshot | `/mm/analytics` growth, `/orgs/{orgId}/analytics` auctions + history |
 | `listings` | MergeTree `(kind, category_id, at)` | Supply and demand listings as created, with value | `/explorer/overview` demandSupply, `/explorer/{side}` |
-| `round_results` | ReplacingMergeTree(outbox_id) `(market_id, round)` | Latest state of each market round (RoundResult). Read with `FINAL` | `/mm/analytics` priceDiscovery |
+| `round_results` | ReplacingMergeTree(outbox_id) `(market_id, round)` | Latest state of each market round (RoundResult). Read with `FINAL` | cross-market reporting (`/mm/analytics` priceDiscovery reads the few rounds of the caller's markets from Postgres `auctions`, always fresh) |
 | `auction_results` | MergeTree `(market_id, at, auction_id)` | Closed auctions: bidders, opening vs clearing, demand/supply/matched value | `/mm/analytics` efficiency, `/orgs/{orgId}/analytics` auctions |
 | `activity` | MergeTree `(at, id)`, TTL 90 days | Public activity feed (ActivityEvent) | `/public/activity`, `/markets/{id}` activity |
 | `audit_log` | ReplacingMergeTree `(at, id)`, ngram index on text, bloom on entity/org/market, no TTL | Audit trail mirror: newest first, by entity, by org/market, substring search | `/admin/audit`, `/admin/alerts/{id}` case history |
@@ -63,13 +63,15 @@ raw table back to 33 rows, and `activity` kept the extra row. The publisher ther
 twice:
 
 1. One publisher at a time (`pg_try_advisory_lock`).
-2. Read a batch: `SELECT ... FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT 500`.
+2. Read a batch: `SELECT ... FROM outbox WHERE ch_published_at IS NULL AND topic <> 'rt' ORDER BY id LIMIT 500 FOR
+   UPDATE SKIP LOCKED`. (`published_at` is the realtime side's marker; `rt` frames never come here, see
+   `migrations/postgres/00008_outbox_replay.sql`.)
 3. Drop ids already in ClickHouse: `SELECT outbox_id FROM events WHERE outbox_id IN (...)`. The minmax index on
    `outbox_id` makes this a few-granule read. It covers a crash between the insert and step 5, and an insert that timed
    out but landed.
 4. `INSERT INTO events (outbox_id, topic, aggregate_id, occurred_at, payload)` with the rest. `occurred_at` =
    `outbox.created_at`, `payload` = `payload::text`.
-5. `UPDATE outbox SET published_at = now() WHERE id = ANY(...)`.
+5. `UPDATE outbox SET ch_published_at = now() WHERE id = ANY(...)`.
 
 If a view throws mid-insert (a schema bug), the events row exists but some facts may be missing. To fix it, replay that
 month from `events`:
@@ -87,7 +89,7 @@ The same recipe rebuilds everything after a schema change.
 | `trade.settled` | trade id | same snapshot (stored as status `settled`) |
 | `listing.created` | listing id | `kind` (supply/demand), `categoryId, region, item, quantity, unit, valueIdr` (quantity x indicative price), `partyId` |
 | `opportunity.detected` | opportunity id | `categoryId, region` (read from `events` directly) |
-| `market.round_result` | market id | RoundResult: `round, auctionId?, title, status, at, openingIdr, currentIdr?, medianIdr?, clearingIdr?`. Re-sent on change, newest wins |
+| `market.round_result` | market id | RoundResult: `round, auctionId?, title, status, at, openingIdr, currentIdr?, medianIdr?, clearingIdr?`. Sent when a round opens live, closes (auction clock) and is settled; newest wins |
 | `auction.closed` | auction id | `code, title, marketId?, orgId?, categoryId, region, bidders, openingIdr, clearingIdr?, demandIdr, supplyIdr, matchedIdr` (values = quantity x reference price) |
 | `activity` | activity id | ActivityEvent: `type, title, amountIdr?, marketId?` |
 | `audit` | `audit_log.id` | AuditEntry: `actorUserId?, actor, action, entity{type,id,label}, orgId?, marketId?, reason?, changes[]` |

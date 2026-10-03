@@ -59,6 +59,10 @@ type Config struct {
 	// GoogleDevLogin enables the mock-compatible POST /auth/google (fixed test account). Never in production;
 	// the real OAuth flow replaces it.
 	GoogleDevLogin bool
+
+	// SimulateCounterparties runs the demo bots: external (off-platform) trade and contract counterparties
+	// (trade_clock.go) and fictional RFQ suppliers that quote, counter and chat (counterparties.go). Dev/demo only.
+	SimulateCounterparties bool
 }
 
 func Load() (Config, error) {
@@ -116,6 +120,7 @@ func Load() (Config, error) {
 	c.AppURL = env("APP_URL", "http://localhost:5173")
 	c.CookieSecure = env("COOKIE_SECURE", "true") == "true"
 	c.GoogleDevLogin = env("GOOGLE_DEV_LOGIN", "false") == "true"
+	c.SimulateCounterparties = env("SIMULATE_COUNTERPARTIES", "false") == "true"
 	days, err := strconv.Atoi(env("SESSION_TTL_DAYS", "30"))
 	if err != nil || days < 1 {
 		return c, fmt.Errorf("SESSION_TTL_DAYS must be a positive integer")

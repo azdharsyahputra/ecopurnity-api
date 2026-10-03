@@ -426,7 +426,7 @@
       '404': { $ref: '#/components/responses/NotFound', description: 'not_found: the listing does not exist in this market or is not a supply listing.' }
       '409': { $ref: '#/components/responses/Conflict', description: 'not_direct: the market is not a direct_market or is not active (also returned for an unknown market). own_listing: the listing belongs to the caller.' }
       '422': { $ref: '#/components/responses/Validation', description: 'fields: quantity (must be > 0 and at most the listing''s remaining quantity).' }
-    x-note: An unknown market id returns 409 not_direct rather than 404. Listings from the seeded market catalog (no owner userId) have their in-memory quantity decremented without a stored history.
+    x-note: An unknown market id returns 409 not_direct rather than 404. Listings owned by an external party (seeded catalog) are decremented and get the same history entry.
 
 /auctions:
   get:

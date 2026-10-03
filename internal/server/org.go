@@ -29,9 +29,9 @@ var (
 	builtInRoleIDs = []string{"owner", "procurement", "finance", "operations", "sales"}
 	moduleLabel    = map[string]string{"procurement": "Procurement", "auctions": "Auctions", "collective": "Collective", "suppliers": "Suppliers",
 		"inventory": "Inventory", "transactions": "Transactions", "analytics": "Analytics", "team": "Tim", "profile": "Profil bisnis"}
-	actionLabel = map[string]string{"view": "Lihat", "create": "Buat", "approve": "Approve", "manage": "Kelola"}
-	roleLabel   = map[string]string{"owner": "Owner", "procurement": "Procurement", "finance": "Finance", "operations": "Operations", "sales": "Sales"}
-	categoryLbl = map[string]string{"agri": "Pertanian", "food": "Pangan", "packaging": "Kemasan", "manufacturing": "Manufaktur", "logistics": "Logistik",
+	actionLabel  = map[string]string{"view": "Lihat", "create": "Buat", "approve": "Approve", "manage": "Kelola"}
+	orgRoleLabel = map[string]string{"owner": "Owner", "procurement": "Procurement", "finance": "Finance", "operations": "Operations", "sales": "Sales"}
+	categoryLbl  = map[string]string{"agri": "Pertanian", "food": "Pangan", "packaging": "Kemasan", "manufacturing": "Manufaktur", "logistics": "Logistik",
 		"it": "Jasa IT", "energy": "Energi"}
 )
 
@@ -59,13 +59,9 @@ var txActionRoles = map[string][]string{
 	"review":           {"owner", "procurement"},
 }
 
-var tradeActionLabel = map[string]string{"accept_agreement": "Setujui agreement", "issue_invoice": "Terbitkan invoice", "pay": "Bayar",
-	"ship": "Jadwalkan pengiriman", "upload_proof": "Konfirmasi terkirim", "confirm_receipt": "Periksa & terima barang", "cancel": "Batalkan",
-	"dispute": "Ajukan dispute", "add_evidence": "Kirim bukti", "review": "Beri ulasan"}
-
 // canTransact: built-in roles follow txActionRoles; custom roles fall back to transactions.manage.
 func canTransact(perms []string, role, action string) bool {
-	if _, builtIn := roleLabel[role]; builtIn {
+	if _, builtIn := orgRoleLabel[role]; builtIn {
 		return slices.Contains(txActionRoles[action], role)
 	}
 	return can(perms, role, "transactions", "manage")
@@ -76,12 +72,12 @@ func txDeniedReason(perms []string, role, label, action string) string {
 	if canTransact(perms, role, action) {
 		return ""
 	}
-	if _, builtIn := roleLabel[role]; !builtIn {
+	if _, builtIn := orgRoleLabel[role]; !builtIn {
 		return deniedReason(label, "transactions", "manage")
 	}
 	var who []string
 	for _, r := range txActionRoles[action] {
-		who = append(who, roleLabel[r])
+		who = append(who, orgRoleLabel[r])
 	}
 	return fmt.Sprintf("%s hanya untuk %s; peranmu %s", tradeActionLabel[action], strings.Join(who, ", "), label)
 }
@@ -258,14 +254,6 @@ func invalid(msg string, fields map[string]string) error {
 		return nil
 	}
 	return &Error{Status: http.StatusUnprocessableEntity, Code: "validation", Message: msg, Fields: fields}
-}
-
-func conflict(code, msg string) error {
-	return &Error{Status: http.StatusConflict, Code: code, Message: msg}
-}
-
-func notFound(msg string) error {
-	return &Error{Status: http.StatusNotFound, Code: "not_found", Message: msg}
 }
 
 // orgParty is the org's party row, created on first use.
@@ -992,7 +980,7 @@ func (s *Server) UpdateOrgTeamSettings(ctx context.Context, req api.UpdateOrgTea
 		f := map[string]string{}
 		ids := []string{}
 		for _, r := range in.Roles {
-			_, builtIn := roleLabel[r.Id]
+			_, builtIn := orgRoleLabel[r.Id]
 			switch {
 			case strings.TrimSpace(r.Label) == "":
 				f["roles"] = "Nama peran tidak boleh kosong"
@@ -1005,7 +993,7 @@ func (s *Server) UpdateOrgTeamSettings(ctx context.Context, req api.UpdateOrgTea
 		}
 		for _, b := range builtInRoleIDs {
 			if !slices.Contains(ids, b) {
-				f["roles"] = "Peran bawaan tidak boleh dihapus: " + roleLabel[b]
+				f["roles"] = "Peran bawaan tidak boleh dihapus: " + orgRoleLabel[b]
 			}
 		}
 		perms := map[string][]string{}

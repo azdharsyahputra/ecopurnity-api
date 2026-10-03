@@ -147,7 +147,7 @@ func (s *Server) GetOrgSupplier(ctx context.Context, req api.GetOrgSupplierReque
 	out := api.GetOrgSupplier200JSONResponse{Id: sup.Id, Name: sup.Name, Categories: sup.Categories, Region: sup.Region, Rating: sup.Rating,
 		Verified: sup.Verified, Documents: sup.Documents, Capacity: sup.Capacity, Scorecard: sup.Scorecard, Relation: sup.Relation, MyRating: sup.MyRating,
 		Transactions: sup.Transactions, SpendIdr: sup.SpendIdr}
-	if out.History, err = orgTrades(ctx, q, c.OrgID, `cp.id = (SELECT party_id FROM suppliers WHERE id::text = $2)`, sup.Id); err != nil {
+	if out.History, err = supplierHistory(ctx, q, c.OrgID, sup.Id); err != nil {
 		return nil, err
 	}
 	rows, err := q.Query(ctx, `
@@ -269,111 +269,33 @@ func (s *Server) ActOnOrgSupplier(ctx context.Context, req api.ActOnOrgSupplierR
 	return api.ActOnOrgSupplier200JSONResponse(out), nil
 }
 
-// ── Org trades (summary) ─────────────────────────────────────────
-
-var happyPath = []string{"agreement", "invoiced", "paid", "fulfilling", "delivered", "completed"}
-
-// orgTrades: the org's trades (either side) matching cond over aliases t (trade) and cp (counterparty party), newest
-// first, as TransactionDetail summaries: no documents, payment derived from the status timeline.
-// ponytail: the full F6 projection (agreement, invoice, shipments, QC, dispute...) belongs to the transactions area;
-// swap this for its loader when it lands.
-func orgTrades(ctx context.Context, q dbtx, orgID, cond string, args ...any) ([]api.TransactionDetail, error) {
+// supplierHistory: the org's trades with a directory supplier, newest first, as the transactions area renders them.
+func supplierHistory(ctx context.Context, q dbtx, orgID, supplierID string) ([]api.TransactionDetail, error) {
+	var party string
+	err := q.QueryRow(ctx, `SELECT id::text FROM parties WHERE org_id = $1`, orgID).Scan(&party)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return []api.TransactionDetail{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	rows, err := q.Query(ctx, `
-		SELECT t.id::text, t.code, t.title, t.status, t.quantity, t.unit, t.unit_price_idr, t.total_idr, t.terms, t.maker_fee_rate::float8, t.auction_id::text,
-		       t.delivery_address, t.due_at, t.created_at, t.updated_at, bp.org_id IS NOT DISTINCT FROM $1::uuid, cp.name, cp.display_kind,
-		       CASE cp.kind WHEN 'org' THEN coalesce(op.verification = 'verified', false) ELSE cp.verified END
-		FROM trades t JOIN parties bp ON bp.id = t.buyer_party_id JOIN parties sp ON sp.id = t.supplier_party_id
-		JOIN parties cp ON cp.id = CASE WHEN bp.org_id IS NOT DISTINCT FROM $1::uuid THEN t.supplier_party_id ELSE t.buyer_party_id END
-		LEFT JOIN org_profiles op ON op.org_id = cp.org_id
-		WHERE (bp.org_id = $1::uuid OR sp.org_id = $1::uuid) AND `+cond+` ORDER BY t.created_at DESC, t.id`, append([]any{orgID}, args...)...)
+		SELECT t.id::text FROM trades t JOIN suppliers s ON s.party_id IN (t.buyer_party_id, t.supplier_party_id)
+		WHERE s.id::text = $2 AND $1::uuid IN (t.buyer_party_id, t.supplier_party_id) ORDER BY t.created_at DESC, t.id`, party, supplierID)
 	if err != nil {
 		return nil, err
 	}
-	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (api.TransactionDetail, error) {
-		var t api.TransactionDetail
-		var buyer bool
-		var fee float64
-		var terms api.PaymentTerms
-		err := r.Scan(&t.Id, &t.Code, &t.Title, &t.Status, &t.Quantity.Value, &t.Quantity.Unit, &t.UnitPriceIdr, &t.TotalIdr, &terms, &fee, &t.AuctionId,
-			&t.Delivery.Address, &t.DueAt, &t.CreatedAt, &t.UpdatedAt, &buyer, &t.Counterparty.Name, &t.Counterparty.Kind, &t.Counterparty.Verified)
-		t.Role, t.Terms, t.MakerFeeRate = "supplier", &terms, &fee
-		if buyer {
-			t.Role = "buyer"
-		}
-		t.Documents = []struct {
-			At   time.Time                          `json:"at"`
-			Id   string                             `json:"id"`
-			Kind api.TransactionDetailDocumentsKind `json:"kind"`
-			Name string                             `json:"name"`
-		}{}
-		return t, err
-	})
-	if err != nil || len(out) == 0 {
-		return nonNil(out), err
-	}
-	ids := make([]string, len(out))
-	idx := map[string]int{}
-	for i, t := range out {
-		ids[i], idx[t.Id] = t.Id, i
-	}
-	type ev struct {
-		status string
-		at     time.Time
-		note   *string
-	}
-	events := map[string][]ev{}
-	rows, err = q.Query(ctx, `SELECT trade_id::text, status, at, note FROM trade_events WHERE trade_id::text = ANY($1) ORDER BY at, id`, ids)
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var id string
-		var e ev
-		if err := rows.Scan(&id, &e.status, &e.at, &e.note); err != nil {
+	out := []api.TransactionDetail{}
+	for _, id := range ids {
+		d, err := loadTransaction(ctx, q, party, id)
+		if err != nil {
 			return nil, err
 		}
-		events[id] = append(events[id], e)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for i := range out {
-		t := &out[i]
-		evs := events[t.Id]
-		reached := func(s string) *ev {
-			for k := range evs {
-				if evs[k].status == s {
-					return &evs[k]
-				}
-			}
-			return nil
-		}
-		for _, s := range happyPath {
-			step := struct {
-				At     *time.Time            `json:"at,omitempty"`
-				Note   *string               `json:"note,omitempty"`
-				Status api.TransactionStatus `json:"status"`
-			}{Status: api.TransactionStatus(s)}
-			if e := reached(s); e != nil {
-				step.At, step.Note = &e.at, e.note
-			}
-			t.Timeline = append(t.Timeline, step)
-		}
-		paid := reached("paid")
-		switch {
-		case t.Status == "completed":
-			t.Payment.Status = "released"
-		case t.Status == "cancelled" && paid != nil:
-			t.Payment.Status = "refunded"
-		case paid != nil:
-			t.Payment.Status = "escrow"
-		default:
-			t.Payment.Status = "unpaid"
-		}
-		if paid != nil {
-			t.Payment.PaidAt = &paid.at
-		}
+		out = append(out, d)
 	}
 	return out, nil
 }

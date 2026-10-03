@@ -32,6 +32,7 @@ cp .env.example .env
 make up            # postgres :5432 (replica :5433), clickhouse :9000/:8123, mailpit :1025 (UI :8025), seaweedfs S3 :8333
 make run           # API on :8080  ->  GET /healthz, GET /readyz
 make reset         # stop and wipe volumes
+make seed-admin EMAIL=you@example.id   # grant the admin capability to an account you registered
 ```
 
 ## OpenAPI workflow
@@ -80,6 +81,30 @@ handlers + models + embedded spec) and regenerates `internal/api/unimplemented.g
 - `go test ./internal/server` walks all 163 operations and fails if any is not routed.
 - `make check-gen` fails when the committed generated code is stale.
 
+## Realtime (WebSocket)
+
+`GET /api/v1/ws`: contract `api/asyncapi.yaml`, guide `docs/realtime.md`. Every instance keeps a `LISTEN ecp_rt`
+connection; one instance at a time (advisory lock) publishes the outbox to that feed and to ClickHouse. Try it with
+[websocat](https://github.com/vi/websocat) after `make migrate && make run`, one JSON frame per line:
+
+```bash
+websocat ws://localhost:8080/api/v1/ws                    # anonymous: public:* and auction:{id}
+{"type":"subscribe","id":"1","channel":"public:activity"}
+{"type":"subscribe","id":"2","channel":"auction:<auction id>","sinceSeq":0}
+{"type":"ping","id":"3"}
+
+websocat -H 'Cookie: ecp_session=<cookie value>' ws://localhost:8080/api/v1/ws   # signed in: also user:{your id}
+```
+
+`GET /readyz` shows `realtime: {feed, publisher, sockets}` for the instance.
+
+## Simulated counterparties (demo only)
+
+`SIMULATE_COUNTERPARTIES=true` (the `.env.example` default) starts a background tick
+(`internal/server/counterparties.go`) that plays the frontend mock's fictional suppliers: they quote on new RFQs, answer
+the buyer's counters and reply in chat, so one tester can walk the RFQ flow alone. **Production: leave it unset or
+`false`.** Without it, external parties (no platform account) never act on their own.
+
 ## Email
 
 Transactional email (verification code, password reset link) goes through SMTP when `SMTP_HOST` is set, otherwise it is
@@ -95,6 +120,17 @@ the configured SMTP (Mailpit locally) so you can check them. Provider examples a
 
 Email verification is a 6-digit code: 10 minutes, 5 attempts, one resend per minute; only an HMAC of the code (keyed by
 `APP_SECRET`) is stored.
+
+## Trades and money
+
+The F6 settlement flow (agreement, invoice, payment, staged shipments, QC, disputes, reviews) is one engine,
+`applyTradeAction` in `internal/server/trade_engine.go`; its header lists who may call it and the ledger journal each
+action posts. Money is a double-entry ledger (`ledger_entries`, balanced per journal at commit); `/me/finance` is derived
+from it (`internal/server/finance.go`). `RunTradeClock` places due standing-contract orders.
+
+`SIMULATE_COUNTERPARTIES=true` (in `.env.example`, for local demos) lets a bot play counterparties that are not on the
+platform (external parties): it accepts agreements and contract proposals, invoices, ships, confirms and reviews, so
+every flow can be finished alone. **Leave it unset (false) in production.**
 
 ## File uploads (Cloudflare R2)
 
