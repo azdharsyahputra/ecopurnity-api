@@ -210,6 +210,17 @@ func want(t *testing.T, r resp, status int, code string) {
 	}
 }
 
+// An address without an account gets the invitation by email, with a register link.
+func TestOrgInviteNewAddress(t *testing.T) {
+	e := newEnv(t)
+	owner, _, orgID := e.workspace("Undangan Baru")
+	newcomer := fmt.Sprintf("calon-%d@example.test", time.Now().UnixNano())
+	want(t, e.call(owner, "POST", "/orgs/"+orgID+"/team/invite", map[string]any{"email": newcomer, "role": "sales"}), 204, "")
+	if m, ok := e.lastMail(newcomer); !ok || !strings.Contains(m.Body, "/register?email=") || e.mailCount(newcomer) != 1 {
+		t.Fatalf("invite mail to a new address: %v %+v", ok, m)
+	}
+}
+
 func TestOrgAccessProfileAndTeam(t *testing.T) {
 	e := newEnv(t)
 	owner, ownerID, orgID := e.workspace("Akses")
@@ -274,12 +285,6 @@ func TestOrgAccessProfileAndTeam(t *testing.T) {
 	}
 	if n := e.mailCount(inviteeEmail) - mailsBefore; n != 1 {
 		t.Fatalf("invite mails to an existing account: %d, want 1", n)
-	}
-	newcomer := fmt.Sprintf("calon-%d@example.test", time.Now().UnixNano())
-	want(t, e.call(owner, "POST", base+"/team/invite", map[string]any{"email": newcomer, "role": "sales"}), 204, "")
-	e.server.WaitMail()
-	if m, ok := e.lastMail(newcomer); !ok || !strings.Contains(m.Body, "/register?email=") {
-		t.Fatalf("invite mail to a new address: %v %+v", ok, m)
 	}
 
 	r = e.call(owner, "GET", base+"/team", nil)
