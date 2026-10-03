@@ -294,8 +294,8 @@ func TestOnboarding(t *testing.T) {
 	checks := map[string]any{
 		`SELECT count(*) FROM listings l JOIN parties p ON p.id = l.owner_party_id JOIN users u ON u.id = p.user_id
 		  WHERE u.email = $1 AND l.kind = 'supply' AND l.price_idr = 1500 AND l.category_id = 'packaging' AND l.code LIKE 'SUP-%'`: int64(1),
-		`SELECT count(*) FROM org_roles r JOIN orgs o ON o.id = r.org_id JOIN org_members m ON m.org_id = o.id JOIN users u ON u.id = m.user_id WHERE u.email = $1`: int64(5),
-		`SELECT count(*) FROM mm_applications a JOIN users u ON u.id = a.user_id WHERE u.email = $1 AND a.status = 'pending'`:                                  int64(1),
+		`SELECT count(*) FROM org_roles r JOIN orgs o ON o.id = r.org_id JOIN org_members m ON m.org_id = o.id JOIN users u ON u.id = m.user_id WHERE u.email = $1`:      int64(5),
+		`SELECT count(*) FROM mm_applications a JOIN users u ON u.id = a.user_id WHERE u.email = $1 AND a.status = 'pending'`:                                            int64(1),
 		`SELECT count(*) FROM identities i JOIN users u ON u.id = i.user_id WHERE u.email = $1 AND i.delivery_radius_km = 50 AND i.pref_categories = '{packaging,agri}'`: int64(1),
 	}
 	for q, want := range checks {
