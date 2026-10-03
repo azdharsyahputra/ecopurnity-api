@@ -30,6 +30,8 @@ with the same name is defined on `*server.Server`. This is how the existing ones
   - `emitFrame(ctx, tx, channel, type, seq, payload)` for realtime frames (`api/asyncapi.yaml`); `emitAuction` /
     `emitAuctionState` for auction channels; `emitBidStatus` for a bidder's own status.
   - `emit(ctx, tx, topic, aggregateID, payload)` for analytics facts (topics and payloads in `migrations/clickhouse/README.md`).
+  - `emitActivity(ctx, tx, type, title, amountIdr, marketID)` for the public activity feed (`ActivityType`; topic
+    `activity` + a `public:activity` frame). `detection.go` emits `opportunity_detected`.
 - Shared building blocks: `userParty` (party of a user, created on first use), `createTrade` (`trades.go`),
   `createOrg` (`onboarding.go`), `applyTradeAction` (`trade_engine.go`: the F6 settlement flow, contract at the top
   of the file), `loadTransaction` (a trade from one party's side), `post` / `accounts` (ledger journals, `finance.go`), `loadUser`, `loadMarkets`, `loadOpportunities`, `loadAuctions` / `loadAuction` /

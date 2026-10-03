@@ -3,7 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // audit is one audit_log row; written in the same transaction as the change it records, and mirrored to the outbox
@@ -57,12 +60,19 @@ type notification struct {
 	Type, Title, Body, Href string
 }
 
-// notify stores an in-app notification and queues it for the user's realtime channel.
+// notify stores an in-app notification and queues it for the user's realtime channel. A type the user switched off
+// in-app (notification_prefs.in_app = false) is skipped; no row means the default (on).
 func notify(ctx context.Context, q dbtx, userID string, n notification) error {
 	var id string
-	if err := q.QueryRow(ctx, `
-		INSERT INTO notifications (user_id, type, title, body, href) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		userID, n.Type, n.Title, n.Body, n.Href).Scan(&id); err != nil {
+	err := q.QueryRow(ctx, `
+		INSERT INTO notifications (user_id, type, title, body, href) SELECT $1, $2, $3, $4, $5
+		WHERE NOT EXISTS (SELECT 1 FROM notification_prefs WHERE user_id = $1 AND type = $2 AND NOT in_app)
+		RETURNING id`,
+		userID, n.Type, n.Title, n.Body, n.Href).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
 	return emitFrame(ctx, q, "user:"+userID, "notification.created", nil,

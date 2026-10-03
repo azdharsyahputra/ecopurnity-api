@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
 func do(t *testing.T, h http.Handler, method, path, body string) (int, map[string]any) {
@@ -37,11 +39,16 @@ func TestRoutingValidationAndErrors(t *testing.T) {
 		t.Fatalf("healthz: %d", status)
 	}
 
-	// A routed, valid request to an operation nobody implemented yet: 501 in the error contract.
-	status, body := do(t, h, "GET", "/api/v1/opportunities?page=1", "")
-	if status != http.StatusNotImplemented || code(body) != "not_implemented" {
-		t.Fatalf("opportunities: %d %v", status, body)
+	// An operation without a handler (the embedded api.Unimplemented) answers 501 in the error contract. Checked on the
+	// error mapping itself, so it does not depend on which operations are still unimplemented.
+	rec := httptest.NewRecorder()
+	(&Server{}).handlerError(rec, httptest.NewRequest("GET", "/api/v1/x", nil), api.ErrNotImplemented)
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if rec.Code != http.StatusNotImplemented || code(body) != "not_implemented" {
+		t.Fatalf("unimplemented: %d %v", rec.Code, body)
 	}
+	var status int
 
 	// Request validation against the spec: wrong type in the body is a 422 with fields.
 	status, body = do(t, h, "POST", "/api/v1/auth/login", `{"email": 5, "password": "x"}`)
