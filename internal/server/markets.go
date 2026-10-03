@@ -64,17 +64,26 @@ func (s *Server) ListMarkets(ctx context.Context, req api.ListMarketsRequestObje
 }
 
 func (s *Server) GetMarket(ctx context.Context, req api.GetMarketRequestObject) (api.GetMarketResponseObject, error) {
-	q := s.DB.Reader()
-	ms, err := loadMarkets(ctx, q, `m.id::text = $1 AND m.status <> 'draft'`, req.Id)
+	d, err := s.marketDetail(ctx, s.DB.Reader(), req.Id)
 	if err != nil {
 		return nil, err
 	}
-	if len(ms) == 0 {
-		return nil, errMarketNotFound
-	}
+	return api.GetMarket200JSONResponse(d), nil
+}
+
+// marketDetail is the public MarketDetail of a published market (also embedded in the market maker's ops view, read
+// on the primary there).
+func (s *Server) marketDetail(ctx context.Context, q dbtx, id string) (api.MarketDetail, error) {
 	var d api.MarketDetail
+	ms, err := loadMarkets(ctx, q, `m.id::text = $1 AND m.status <> 'draft'`, id)
+	if err != nil {
+		return d, err
+	}
+	if len(ms) == 0 {
+		return d, errMarketNotFound
+	}
 	if err := widen(ms[0], &d); err != nil {
-		return nil, err
+		return d, err
 	}
 	var rules []byte
 	// Rules shown are the version governing the current round (latest started round; v1 before any round ran).
@@ -89,13 +98,13 @@ func (s *Server) GetMarket(ctx context.Context, req api.GetMarketRequestObject) 
 			LIMIT 1) v ON true
 		WHERE m.id = $1`, d.Id).Scan(&d.Description, &rules)
 	if err != nil {
-		return nil, err
+		return d, err
 	}
 	d.Rules = []api.LabeledValue{}
 	if rules != nil {
 		var r marketRules
 		if err := json.Unmarshal(rules, &r); err != nil {
-			return nil, fmt.Errorf("market %s rules: %w", d.Id, err)
+			return d, fmt.Errorf("market %s rules: %w", d.Id, err)
 		}
 		d.Rules = r.labeled(d.PriceRange.Unit)
 	}
@@ -103,10 +112,10 @@ func (s *Server) GetMarket(ctx context.Context, req api.GetMarketRequestObject) 
 	if d.Auctions, err = loadAuctions(ctx, q, `a.market_id = $1
 		ORDER BY CASE a.status WHEN 'live' THEN 0 WHEN 'extended' THEN 0 WHEN 'qualification' THEN 1 WHEN 'scheduled' THEN 2 ELSE 3 END,
 		         a.ends_at, a.id`, d.Id); err != nil {
-		return nil, err
+		return d, err
 	}
 	d.PriceHistory, d.Activity = s.marketAnalytics(ctx, d.Id)
-	return api.GetMarket200JSONResponse(d), nil
+	return d, nil
 }
 
 type pricePoint = struct {
