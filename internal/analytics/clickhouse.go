@@ -6,6 +6,7 @@ package analytics
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -48,6 +49,62 @@ func (c *Client) WeeklyMedians(ctx context.Context, marketIDs []string, weeks in
 			return nil, err
 		}
 		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// WeekPrice is one week of a market's deal prices (market_price_daily merged per ISO week).
+type WeekPrice struct {
+	Week      time.Time // Monday
+	Median    float64
+	Low, High uint64
+}
+
+// PriceHistory returns the weekly median/low/high of one market over the last `weeks` weeks (current one included),
+// oldest first. Weeks without deals are absent.
+func (c *Client) PriceHistory(ctx context.Context, marketID string, weeks int) ([]WeekPrice, error) {
+	rows, err := c.conn.Query(ctx, `
+		SELECT toMonday(day) AS week, quantileMerge(0.5)(median_state), min(low_idr), max(high_idr)
+		FROM market_price_daily
+		WHERE market_id = ? AND day >= toMonday(today()) - ?
+		GROUP BY week ORDER BY week`, marketID, (weeks-1)*7)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []WeekPrice
+	for rows.Next() {
+		var w WeekPrice
+		if err := rows.Scan(&w.Week, &w.Median, &w.Low, &w.High); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// Activity is one public activity feed row (ActivityEvent).
+type Activity struct {
+	ID, Type, Title string
+	AmountIdr       *uint64
+	At              time.Time
+}
+
+// MarketActivity returns the newest `limit` activity events of one market, newest first.
+func (c *Client) MarketActivity(ctx context.Context, marketID string, limit int) ([]Activity, error) {
+	rows, err := c.conn.Query(ctx, `
+		SELECT id, type, title, amount_idr, at FROM activity WHERE market_id = ? ORDER BY at DESC LIMIT ?`, marketID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Activity
+	for rows.Next() {
+		var a Activity
+		if err := rows.Scan(&a.ID, &a.Type, &a.Title, &a.AmountIdr, &a.At); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
 	}
 	return out, rows.Err()
 }

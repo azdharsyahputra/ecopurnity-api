@@ -344,7 +344,10 @@
   get:
     operationId: listMarkets
     summary: List markets
-    description: Sorted by `volume30dIdr` descending. `q` matches name, code and market maker name. Items are the summary `Market` (no description, rules, price history, activity or auctions).
+    description: |
+      Sorted by `volume30dIdr` descending (ties by id). `q` matches name, code and market maker name
+      (case-insensitive substring). `region` is an exact, case-insensitive match. Draft markets are never listed. Items
+      are the summary `Market` (no description, rules, price history, activity or auctions).
     tags: [Public]
     x-access: public
     security: []
@@ -369,6 +372,16 @@
   get:
     operationId: getMarket
     summary: Get a market
+    description: |
+      `rules` is the rule version governing the current round (the latest version whose `effectiveFromRound` is at most
+      the highest started round; version 1 before any round started), rendered as labelled values in a fixed order
+      (Eligibility, Visibilitas bid, Kenaikan/penurunan minimum, Kuantitas minimum, Kuantitas maksimum, Jendela mulai,
+      Jendela selesai, Wilayah, Radius, Penetapan pemenang); empty when the market has no rule version.
+      `priceHistory` is one point per week (`week` = Monday, YYYY-MM-DD) with deals over the last 12 weeks, oldest
+      first; weeks without deals are absent. `activity` is the market's 6 newest activity events, newest first. Both
+      come from analytics and are empty lists when it is unavailable. `auctions` are all rounds of the market, ordered
+      like `GET /auctions` (live/extended, qualification, scheduled, the rest; then `endsAt` ascending), masked the
+      same way. Draft markets answer 404.
     tags: [Public]
     x-access: public
     security: []
