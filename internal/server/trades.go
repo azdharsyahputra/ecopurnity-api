@@ -26,6 +26,9 @@ type newTrade struct {
 	Via                       string // analytics channel: auction | dutch | rfq | contract | direct | settlement
 	Category, Region          string
 	ActorUserID               *string
+	// Org sides and price references for org purchase analytics (ClickHouse org_purchase_monthly); optional.
+	BuyerOrgID, SupplierOrgID    *string
+	BudgetUnitIdr, MarketUnitIdr int64
 }
 
 type createdTrade struct{ ID, Code string }
@@ -61,6 +64,7 @@ func createTrade(ctx context.Context, q dbtx, t newTrade) (createdTrade, error) 
 		"code": out.Code, "status": "agreement", "via": t.Via, "item": t.Title, "categoryId": t.Category, "region": t.Region,
 		"marketId": t.MarketID, "auctionId": t.AuctionID, "buyerPartyId": t.BuyerParty, "supplierPartyId": t.SupplierParty,
 		"quantity": t.Quantity, "unit": t.Unit, "unitPriceIdr": t.UnitPriceIdr, "valueIdr": total,
+		"buyerOrgId": t.BuyerOrgID, "supplierOrgId": t.SupplierOrgID, "budgetUnitIdr": t.BudgetUnitIdr, "marketUnitIdr": t.MarketUnitIdr,
 	})
 	if err := emit(ctx, q, "trade.status", out.ID, payload); err != nil {
 		return out, err

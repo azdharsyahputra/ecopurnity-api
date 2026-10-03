@@ -1,14 +1,13 @@
 OrgProfileDocumentInput:
   type: object
   required:
-    - name
+    - uploadId
     - kind
-  description: Body of POST /orgs/{orgId}/profile/documents. The mock takes the file name only.
+  description: Body of POST /orgs/{orgId}/profile/documents.
   properties:
-    name:
+    uploadId:
       type: string
-      minLength: 1
-      description: File name.
+      description: "`uploadId` from `POST /uploads` with purpose `org_document`; the document takes the upload's file name."
     kind:
       type: string
       enum:
@@ -67,13 +66,14 @@ OrgInventoryItemInput:
   type: object
   required:
     - name
+    - categoryId
     - quantity
-  description: Omit<InventoryItem, "id">. The server rejects only a blank name and an invalid quantity; other fields are stored as sent.
+  description: Omit<InventoryItem, "id">. Optional fields default to blank / 0.
   properties:
     sku: *a1
     name:
       type: string
-      minLength: 1
+      description: Required (non-blank); checked by the handler so an import can report the row.
     categoryId:
       $ref: "#/components/schemas/CategoryId"
     warehouse: *a1
@@ -181,6 +181,9 @@ OrgPoolCreateInput:
   type: object
   required:
     - title
+    - categoryId
+    - unit
+    - deadline
     - quantity
     - baseUnitPriceIdr
   properties:

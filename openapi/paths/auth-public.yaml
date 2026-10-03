@@ -856,6 +856,8 @@
       endpoint that uses the file, which verifies it. The URL expires after 10 minutes. `sizeBytes` is part of the
       signature, so storage rejects a different size. Allowed types and size per purpose:
       - `kyc_ktp`, `kyc_selfie`: image/jpeg, image/png, image/webp; up to 8 MB.
+      - `org_document` (business verification documents, `POST /orgs/{orgId}/profile/documents`): application/pdf,
+        image/jpeg, image/png, image/webp; up to 10 MB.
       The bucket is private; files are read back through short-lived presigned GET URLs (admin review).
     tags: [Uploads]
     x-access: session
