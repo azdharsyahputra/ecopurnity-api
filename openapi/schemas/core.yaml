@@ -1090,8 +1090,8 @@ SupplyListing:
     attachments:
       type: array
       items:
-        type: string
-      description: File names; real uploads arrive with the BE.
+        $ref: "#/components/schemas/ListingAttachment"
+      description: Photos and documents in the owner's order.
     marketId:
       type: string
     createdAt:
@@ -1151,8 +1151,8 @@ DemandListing:
     attachments:
       type: array
       items:
-        type: string
-      description: File names; real uploads arrive with the BE.
+        $ref: "#/components/schemas/ListingAttachment"
+      description: Photos and documents in the owner's order.
     marketId:
       type: string
     createdAt:
@@ -1197,6 +1197,7 @@ PublicListing:
     - createdAt
     - unitPriceIdr
     - owner
+    - attachments
   properties:
     id:
       type: string
@@ -1241,7 +1242,42 @@ PublicListing:
           type: string
         verified:
           type: boolean
+    attachments:
+      type: array
+      items:
+        $ref: "#/components/schemas/ListingAttachment"
+      description: The listing's photos and documents in the owner's order (the card shows the first image).
   description: "A listing in the public catalog (PRD F6): who posted it, never their contact details."
+ListingAttachment:
+  type: object
+  required:
+    - id
+    - fileName
+    - contentType
+  properties:
+    id:
+      type: string
+    fileName:
+      type: string
+    contentType:
+      type: string
+      description: image/jpeg, image/png, image/webp or application/pdf (legacy rows may have another type).
+    sizeBytes:
+      type: integer
+    url:
+      type: string
+      description: Presigned GET URL, valid for 1 hour. Absent for legacy name-only attachments (no stored file).
+  description: A photo or document attached to a listing.
+ListingAttachmentInput:
+  type: object
+  properties:
+    uploadId:
+      type: string
+      description: A new file (POST /uploads, purpose listing_attachment); each upload can be used once.
+    id:
+      type: string
+      description: An attachment the listing already has, kept.
+  description: Exactly one of uploadId (add a file) or id (keep an existing attachment).
 SupplyListingInput:
   type: object
   required:
@@ -1271,8 +1307,8 @@ SupplyListingInput:
     attachments:
       type: array
       items:
-        type: string
-      description: File names; real uploads arrive with the BE.
+        $ref: "#/components/schemas/ListingAttachmentInput"
+      description: The complete ordered set (at most 8); see ListingAttachmentInput.
     kind:
       const: supply
     priceIdr:
@@ -1313,8 +1349,8 @@ DemandListingInput:
     attachments:
       type: array
       items:
-        type: string
-      description: File names; real uploads arrive with the BE.
+        $ref: "#/components/schemas/ListingAttachmentInput"
+      description: The complete ordered set (at most 8); see ListingAttachmentInput.
     kind:
       const: demand
     budgetIdr:

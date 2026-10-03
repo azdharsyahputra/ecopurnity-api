@@ -388,7 +388,7 @@ func (s *Server) CreateBuyerAuction(ctx context.Context, req api.CreateBuyerAuct
 	in := req.Body
 	var out api.AuctionDetail
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		d, err := myListing(ctx, tx, sess.UserID, in.DemandId, true)
+		d, err := s.myListing(ctx, tx, sess.UserID, in.DemandId, true)
 		if err != nil || d.Kind != "demand" {
 			return &Error{Status: http.StatusNotFound, Code: "not_found", Message: "Demand tidak ditemukan"}
 		}

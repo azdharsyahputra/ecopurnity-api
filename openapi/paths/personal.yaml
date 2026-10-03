@@ -92,7 +92,13 @@
 
       Validation (422, per field): item (non-blank, max 200), quantity (value > 0, unit non-blank), location
       (non-blank), priceIdr (supply, >= 0), budgetIdr (demand, >= 0), deadline (demand, not in the past),
-      expiresAt (supply, after availableFrom), attachments (at most 10 names).
+      expiresAt (supply, after availableFrom), attachments (see below).
+
+      `attachments` is the complete ordered set: `{uploadId}` adds a verified upload of purpose `listing_attachment`
+      (claimed: each upload is used once), `{id}` keeps one of the listing's attachments. At most 8. Errors are on
+      field `attachments`: more than 8, an entry without exactly one of uploadId/id, an unknown id, and the upload
+      errors (not found or someone else's, other purpose, already used, not uploaded, size or content mismatch).
+      Responses list `attachments` with a presigned GET `url` (1 hour) for each stored file.
     tags: [Personal]
     x-access: session
     requestBody:
@@ -138,6 +144,8 @@
       sets `updatedAt` and adds history entry `Diperbarui`. `kind`, `status`, `code` and ids cannot be changed here.
       Fields of the other kind (`priceIdr` on a demand, `budgetIdr` on a supply, ...) are rejected. A listing that is
       finished (sold, expired, fulfilled, cancelled) cannot be edited (`409 not_editable`).
+      `attachments`, when sent, replaces the set like on create: attachments not listed are removed and their files
+      deleted from storage after the change commits.
     tags: [Personal]
     x-access: session
     requestBody:

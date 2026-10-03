@@ -9,7 +9,7 @@ PersonalListingPatch:
     location: { type: string }
     spec: { type: string }
     delivery: { $ref: '#/components/schemas/DeliveryMode' }
-    attachments: { type: array, items: { type: string } }
+    attachments: { type: array, items: { $ref: '#/components/schemas/ListingAttachmentInput' }, description: The complete ordered set; attachments not listed are removed. }
     priceIdr: { type: integer, description: Supply only. }
     availableFrom: { type: string, description: Supply only. }
     expiresAt: { type: string, description: Supply only. }

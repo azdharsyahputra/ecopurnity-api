@@ -23,19 +23,20 @@ type listingRow struct {
 	Price, Budget                                                          *int64
 	AvailableFrom, ExpiresAt, Deadline                                     *time.Time
 	CreatedAt, UpdatedAt                                                   time.Time
-	Attachments                                                            []string
+	atts                                                                   []attachmentRow
+	Attachments                                                            []api.ListingAttachment // signed from atts
 }
 
 const listingSelect = `
 	SELECT l.id, l.code, l.kind, l.status, l.item, l.category_id, l.quantity, l.unit, l.location, l.spec, l.delivery,
 	       l.market_id, l.auction_id, l.price_idr, l.budget_idr, l.available_from, l.expires_at, l.deadline, l.created_at, l.updated_at,
-	       coalesce((SELECT array_agg(a.file_name ORDER BY a.created_at) FROM listing_attachments a WHERE a.listing_id = l.id), '{}')
+	       ` + attachmentsJSON + `
 	FROM listings l JOIN parties p ON p.id = l.owner_party_id`
 
 func scanListing(row pgx.Row) (listingRow, error) {
 	var r listingRow
 	err := row.Scan(&r.ID, &r.Code, &r.Kind, &r.Status, &r.Item, &r.Category, &r.Quantity, &r.Unit, &r.Location, &r.Spec, &r.Delivery,
-		&r.MarketID, &r.AuctionID, &r.Price, &r.Budget, &r.AvailableFrom, &r.ExpiresAt, &r.Deadline, &r.CreatedAt, &r.UpdatedAt, &r.Attachments)
+		&r.MarketID, &r.AuctionID, &r.Price, &r.Budget, &r.AvailableFrom, &r.ExpiresAt, &r.Deadline, &r.CreatedAt, &r.UpdatedAt, &r.atts)
 	return r, err
 }
 
@@ -73,7 +74,7 @@ func (r listingRow) final() bool {
 }
 
 // myListing loads one of the user's listings (optionally locked for update), or 404.
-func myListing(ctx context.Context, q dbtx, userID, id string, forUpdate bool) (listingRow, error) {
+func (s *Server) myListing(ctx context.Context, q dbtx, userID, id string, forUpdate bool) (listingRow, error) {
 	sql := listingSelect + ` WHERE l.id::text = $1 AND p.user_id = $2`
 	if forUpdate {
 		sql += ` FOR UPDATE OF l`
@@ -82,6 +83,10 @@ func myListing(ctx context.Context, q dbtx, userID, id string, forUpdate bool) (
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, &Error{Status: http.StatusNotFound, Code: "not_found", Message: "Listing tidak ditemukan"}
 	}
+	if err != nil {
+		return r, err
+	}
+	r.Attachments, err = s.signAttachments(ctx, r.atts)
 	return r, err
 }
 
@@ -110,6 +115,9 @@ func (s *Server) ListMyListings(ctx context.Context, req api.ListMyListingsReque
 		if err != nil {
 			return nil, err
 		}
+		if r.Attachments, err = s.signAttachments(ctx, r.atts); err != nil {
+			return nil, err
+		}
 		l, err := r.api()
 		if err != nil {
 			return nil, err
@@ -125,7 +133,7 @@ type listingDraft struct {
 	Quantity                                             float64
 	Price, Budget                                        *int64
 	AvailableFrom, ExpiresAt, Deadline                   *time.Time
-	Attachments                                          []string
+	Attachments                                          []api.ListingAttachmentInput // nil on update = unchanged
 }
 
 func (d *listingDraft) validate(now time.Time, isNew bool) map[string]string {
@@ -143,8 +151,8 @@ func (d *listingDraft) validate(now time.Time, isNew bool) map[string]string {
 	if d.Location == "" {
 		f["location"] = "Lokasi wajib diisi"
 	}
-	if len(d.Attachments) > 10 {
-		f["attachments"] = "Maksimal 10 lampiran"
+	if len(d.Attachments) > maxListingAttachments {
+		f["attachments"] = fmt.Sprintf("Maksimal %d lampiran", maxListingAttachments)
 	}
 	if d.Kind == "supply" {
 		if d.Price == nil || *d.Price < 0 {
@@ -213,6 +221,7 @@ func (s *Server) CreateMyListing(ctx context.Context, req api.CreateMyListingReq
 	}
 
 	var out api.Listing
+	var removed []string
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		party, err := userParty(ctx, tx, sess.UserID)
 		if err != nil {
@@ -231,7 +240,7 @@ func (s *Server) CreateMyListing(ctx context.Context, req api.CreateMyListingReq
 			d.Price, d.AvailableFrom, d.ExpiresAt, d.Budget, d.Deadline).Scan(&id); err != nil {
 			return err
 		}
-		if err := replaceAttachments(ctx, tx, id, d.Attachments); err != nil {
+		if removed, err = s.setAttachments(ctx, tx, sess.UserID, id, d.Attachments); err != nil {
 			return err
 		}
 		if err := listingEvent(ctx, tx, id, status, "Dibuat"); err != nil {
@@ -250,7 +259,7 @@ func (s *Server) CreateMyListing(ctx context.Context, req api.CreateMyListingReq
 		if err := emit(ctx, tx, "listing.created", id, fact); err != nil {
 			return err
 		}
-		r, err := myListing(ctx, tx, sess.UserID, id, false)
+		r, err := s.myListing(ctx, tx, sess.UserID, id, false)
 		if err != nil {
 			return err
 		}
@@ -260,21 +269,8 @@ func (s *Server) CreateMyListing(ctx context.Context, req api.CreateMyListingReq
 	if err != nil {
 		return nil, err
 	}
+	s.deleteObjects(ctx, removed)
 	return api.CreateMyListing201JSONResponse(out), nil
-}
-
-func replaceAttachments(ctx context.Context, tx pgx.Tx, listingID string, names []string) error {
-	if _, err := tx.Exec(ctx, `DELETE FROM listing_attachments WHERE listing_id = $1`, listingID); err != nil {
-		return err
-	}
-	for _, n := range names {
-		if n = strings.TrimSpace(n); n != "" {
-			if _, err := tx.Exec(ctx, `INSERT INTO listing_attachments (listing_id, file_name) VALUES ($1, $2)`, listingID, n); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 func listingEvent(ctx context.Context, q dbtx, listingID, status, note string) error {
@@ -288,7 +284,7 @@ func (s *Server) GetMyListing(ctx context.Context, req api.GetMyListingRequestOb
 		return nil, err
 	}
 	q := s.DB.Reader()
-	r, err := myListing(ctx, q, sess.UserID, req.Id, false)
+	r, err := s.myListing(ctx, q, sess.UserID, req.Id, false)
 	if err != nil {
 		return nil, err
 	}
@@ -365,8 +361,9 @@ func (s *Server) UpdateMyListing(ctx context.Context, req api.UpdateMyListingReq
 	}
 	in := req.Body
 	var out api.Listing
+	var removed []string
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		r, err := myListing(ctx, tx, sess.UserID, req.Id, true)
+		r, err := s.myListing(ctx, tx, sess.UserID, req.Id, true)
 		if err != nil {
 			return err
 		}
@@ -380,7 +377,7 @@ func (s *Server) UpdateMyListing(ctx context.Context, req api.UpdateMyListingReq
 		}
 		d := listingDraft{Kind: r.Kind, Item: r.Item, Category: r.Category, Quantity: r.Quantity, Unit: r.Unit, Location: r.Location,
 			Spec: r.Spec, Delivery: r.Delivery, Price: r.Price, Budget: r.Budget, AvailableFrom: r.AvailableFrom, ExpiresAt: r.ExpiresAt,
-			Deadline: r.Deadline, Attachments: r.Attachments}
+			Deadline: r.Deadline}
 		if in.Item != nil {
 			d.Item = *in.Item
 		}
@@ -447,14 +444,14 @@ func (s *Server) UpdateMyListing(ctx context.Context, req api.UpdateMyListingReq
 			return err
 		}
 		if in.Attachments != nil {
-			if err := replaceAttachments(ctx, tx, r.ID, d.Attachments); err != nil {
+			if removed, err = s.setAttachments(ctx, tx, sess.UserID, r.ID, d.Attachments); err != nil {
 				return err
 			}
 		}
 		if err := listingEvent(ctx, tx, r.ID, r.Status, "Diperbarui"); err != nil {
 			return err
 		}
-		updated, err := myListing(ctx, tx, sess.UserID, r.ID, false)
+		updated, err := s.myListing(ctx, tx, sess.UserID, r.ID, false)
 		if err != nil {
 			return err
 		}
@@ -464,6 +461,7 @@ func (s *Server) UpdateMyListing(ctx context.Context, req api.UpdateMyListingReq
 	if err != nil {
 		return nil, err
 	}
+	s.deleteObjects(ctx, removed)
 	return api.UpdateMyListing200JSONResponse(out), nil
 }
 
@@ -474,7 +472,7 @@ func (s *Server) ArchiveMyListing(ctx context.Context, req api.ArchiveMyListingR
 	}
 	var out api.Listing
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		r, err := myListing(ctx, tx, sess.UserID, req.Id, true)
+		r, err := s.myListing(ctx, tx, sess.UserID, req.Id, true)
 		if err != nil {
 			return err
 		}
@@ -488,7 +486,7 @@ func (s *Server) ArchiveMyListing(ctx context.Context, req api.ArchiveMyListingR
 		if err := listingEvent(ctx, tx, r.ID, status, "Diarsipkan"); err != nil {
 			return err
 		}
-		updated, err := myListing(ctx, tx, sess.UserID, r.ID, false)
+		updated, err := s.myListing(ctx, tx, sess.UserID, r.ID, false)
 		if err != nil {
 			return err
 		}
@@ -509,7 +507,7 @@ func (s *Server) SubmitMyListingToMarket(ctx context.Context, req api.SubmitMyLi
 	}
 	var out api.Listing
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		r, err := myListing(ctx, tx, sess.UserID, req.Id, true)
+		r, err := s.myListing(ctx, tx, sess.UserID, req.Id, true)
 		if err != nil {
 			return err
 		}
@@ -560,7 +558,7 @@ func (s *Server) SubmitMyListingToMarket(ctx context.Context, req api.SubmitMyLi
 		if err := listingEvent(ctx, tx, r.ID, "in_market", "Dimasukkan ke "+name); err != nil {
 			return err
 		}
-		updated, err := myListing(ctx, tx, sess.UserID, r.ID, false)
+		updated, err := s.myListing(ctx, tx, sess.UserID, r.ID, false)
 		if err != nil {
 			return err
 		}
@@ -585,4 +583,119 @@ func derefTime(p *time.Time) time.Time {
 		return time.Time{}
 	}
 	return *p
+}
+
+// ── Attachments ──────────────────────────────────────────────────
+
+const (
+	maxListingAttachments = 8
+	attachmentURLTTL      = time.Hour
+)
+
+// attachmentRow is one listing_attachments row as attachmentsJSON aggregates it.
+type attachmentRow struct {
+	ID          string  `json:"id"`
+	Key         *string `json:"key"` // null: legacy name-only attachment
+	FileName    string  `json:"fileName"`
+	ContentType string  `json:"contentType"`
+	Size        *int64  `json:"size"`
+}
+
+// attachmentsJSON selects the attachments of listing `l` in order, as a JSON array of attachmentRow.
+const attachmentsJSON = `coalesce((SELECT json_agg(json_build_object('id', a.id, 'key', a.object_key, 'fileName', a.file_name,
+	'contentType', a.content_type, 'size', a.size_bytes) ORDER BY a.position) FROM listing_attachments a WHERE a.listing_id = l.id), '[]')`
+
+// signAttachments returns the API shape with a presigned GET URL for every stored file. Only call it for a viewer who
+// may see the listing (the owner, or anyone for a public listing).
+func (s *Server) signAttachments(ctx context.Context, rows []attachmentRow) ([]api.ListingAttachment, error) {
+	out := make([]api.ListingAttachment, len(rows))
+	for i, a := range rows {
+		out[i] = api.ListingAttachment{Id: a.ID, FileName: a.FileName, ContentType: a.ContentType}
+		if a.Size != nil {
+			n := int(*a.Size)
+			out[i].SizeBytes = &n
+		}
+		if a.Key != nil && s.Storage != nil {
+			url, err := s.Storage.PresignGet(ctx, *a.Key, attachmentURLTTL)
+			if err != nil {
+				return nil, err
+			}
+			out[i].Url = &url
+		}
+	}
+	return out, nil
+}
+
+// setAttachments makes refs the listing's complete attachment set in that order: `id` keeps one of its attachments,
+// `uploadId` claims a new upload, anything not listed is deleted. Returns the object keys of the deleted rows, for
+// deleteObjects after the transaction commits. The count limit is checked by listingDraft.validate.
+func (s *Server) setAttachments(ctx context.Context, tx pgx.Tx, userID, listingID string, refs []api.ListingAttachmentInput) ([]string, error) {
+	bad := func(msg string) error {
+		return &Error{Status: http.StatusUnprocessableEntity, Code: "validation", Message: "Periksa kembali file yang diunggah", Fields: map[string]string{"attachments": msg}}
+	}
+	rows, _ := tx.Query(ctx, `SELECT id::text FROM listing_attachments WHERE listing_id = $1`, listingID)
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	existing := map[string]bool{}
+	for _, id := range ids {
+		existing[id] = true
+	}
+	kept := []string{} // not nil: ANY(NULL) would keep everything
+	for _, ref := range refs {
+		switch {
+		case ref.UploadId != nil && ref.Id == nil:
+		case ref.Id != nil && ref.UploadId == nil:
+			if !existing[*ref.Id] { // also catches the same id twice
+				return nil, bad("Lampiran tidak ditemukan. Muat ulang halaman.")
+			}
+			delete(existing, *ref.Id)
+			kept = append(kept, *ref.Id)
+		default:
+			return nil, bad("Setiap lampiran berisi uploadId atau id.")
+		}
+	}
+	rows, _ = tx.Query(ctx, `DELETE FROM listing_attachments WHERE listing_id = $1 AND NOT (id::text = ANY($2)) RETURNING object_key`, listingID, kept)
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[*string])
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	for _, k := range keys {
+		if k != nil {
+			removed = append(removed, *k)
+		}
+	}
+	for i, ref := range refs {
+		if ref.Id != nil {
+			if _, err := tx.Exec(ctx, `UPDATE listing_attachments SET position = $2 WHERE id::text = $1`, *ref.Id, i); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		u, err := s.claimUpload(ctx, tx, userID, *ref.UploadId, api.UploadPurposeListingAttachment, "attachments")
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO listing_attachments (listing_id, object_key, file_name, content_type, size_bytes, position) VALUES ($1, $2, $3, $4, $5, $6)`,
+			listingID, u.ObjectKey, u.FileName, u.ContentType, u.SizeBytes, i); err != nil {
+			return nil, err
+		}
+	}
+	return removed, nil
+}
+
+// deleteObjects removes files whose rows are gone. Best effort: a failure leaves an orphan object, logged.
+func (s *Server) deleteObjects(ctx context.Context, keys []string) {
+	if s.Storage == nil {
+		return
+	}
+	ctx = context.WithoutCancel(ctx)
+	for _, k := range keys {
+		if err := s.Storage.Delete(ctx, k); err != nil && s.Log != nil {
+			s.Log.Warn("delete object", "key", k, "err", err)
+		}
+	}
 }

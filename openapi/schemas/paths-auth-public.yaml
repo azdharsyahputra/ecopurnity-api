@@ -111,7 +111,7 @@ AuthPublicDirectOrderResponse:
     transactionId: { type: string, description: The buyer's side of the created transaction. }
 UploadPurpose:
   type: string
-  enum: [kyc_ktp, kyc_selfie, org_document]
+  enum: [kyc_ktp, kyc_selfie, org_document, listing_attachment]
   description: What the file is for; decides the allowed types, the size limit and who may read it. More purposes are added with the features that need them.
 UploadRequest:
   type: object
