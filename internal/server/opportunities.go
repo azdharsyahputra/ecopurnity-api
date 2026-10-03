@@ -97,17 +97,16 @@ type previewParty = struct {
 	Verified bool                                         `json:"verified"`
 }
 
-// participantsPreview: up to 6 parties, joined participants first, then the owners of the open listings the engine
-// counts in this opportunity (same category, unit and region). Visitors see initials only (PRD §6.3).
+// participantsPreview: up to 6 parties, joined participants first, then the owners of the listings the engine counted
+// in this opportunity (opportunity_listings). Visitors see initials only (PRD §6.3).
 func participantsPreview(ctx context.Context, q dbtx, d api.OpportunityDetail, signedIn bool) ([]previewParty, error) {
 	rows, err := q.Query(ctx, `
-		SELECT p.id::text, p.name, p.display_kind, p.verified, op.role, ''
-		FROM opportunity_participants op JOIN parties p ON p.id = op.party_id WHERE op.opportunity_id = $1
-		UNION ALL
-		(SELECT p.id::text, p.name, p.display_kind, p.verified, CASE l.kind WHEN 'demand' THEN 'buyer' ELSE 'supplier' END, l.location
-		 FROM listings l JOIN parties p ON p.id = l.owner_party_id
-		 WHERE l.category_id = $2 AND lower(l.unit) = lower($3) AND l.status IN ('open','matched','available','in_market')
-		 ORDER BY l.created_at DESC LIMIT 500)`, d.Id, string(d.CategoryId), d.Demand.Unit)
+		SELECT p.id::text, p.name, p.display_kind, p.verified, x.role FROM (
+		  SELECT party_id, role, 0 AS src, created_at FROM opportunity_participants WHERE opportunity_id = $1
+		  UNION ALL
+		  SELECT party_id, role, 1, created_at FROM opportunity_listings WHERE opportunity_id = $1
+		) x JOIN parties p ON p.id = x.party_id
+		ORDER BY x.src, x.created_at DESC, p.id`, d.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -115,12 +114,12 @@ func participantsPreview(ctx context.Context, q dbtx, d api.OpportunityDetail, s
 	out := []previewParty{}
 	seen := map[string]bool{}
 	for rows.Next() {
-		var id, location string
+		var id string
 		var pp previewParty
-		if err := rows.Scan(&id, &pp.Name, &pp.Kind, &pp.Verified, &pp.Role, &location); err != nil {
+		if err := rows.Scan(&id, &pp.Name, &pp.Kind, &pp.Verified, &pp.Role); err != nil {
 			return nil, err
 		}
-		if seen[id] || len(out) == 6 || (location != "" && !strings.EqualFold(regionOf(location), d.Region)) {
+		if seen[id] || len(out) == 6 {
 			continue
 		}
 		seen[id] = true

@@ -115,3 +115,15 @@ func TestMaskName(t *testing.T) {
 		}
 	}
 }
+
+func TestItemWordsForClustering(t *testing.T) {
+	if w := significantWords("Cabai merah keriting"); len(w) != 2 || w[0] != "cabai" || w[1] != "keriting" {
+		t.Fatalf("words: %v", w) // "merah" is generic: Cabai merah and Bawang merah stay apart
+	}
+	if item, ok := engineItem("Capacity match: Cabai merah keriting di Jawa Barat", "Jawa Barat"); !ok || item != "Cabai merah keriting" {
+		t.Fatal(item, ok)
+	}
+	if _, ok := engineItem("Kopi Arabika Garut untuk Kafe Jabodetabek", "Jawa Barat"); ok {
+		t.Fatal("seeded title taken as engine-made")
+	}
+}

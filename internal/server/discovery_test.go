@@ -547,3 +547,102 @@ func TestNotificationEmails(t *testing.T) {
 		t.Fatalf("attempts: %v, sends %d", v, fail.n)
 	}
 }
+
+// Regression (E2E OPP-100E): unrelated items in one category/region/unit must not merge, a wrongly merged engine
+// opportunity is corrected on the next pass, and a market formed from it invites the cluster's listing owners and
+// moves their listings in.
+func TestDetectionClustersByItem(t *testing.T) {
+	e := newEnv(t)
+	unit := uniq("kg")
+	list := func(name, kind, item string, qty float64, price int) (string, string) {
+		c, uid := e.bidder(name)
+		var b map[string]any
+		if kind == "demand" {
+			b = demandBody(item, int(qty)*price)
+		} else {
+			b = supplyBody(item, price, qty, unit)
+		}
+		b["location"], b["categoryId"] = "Bandung, Jawa Barat", "agri"
+		b["quantity"] = map[string]any{"value": qty, "unit": unit}
+		r := e.call(c, "POST", "/me/listings", b)
+		if r.Status != 201 {
+			t.Fatalf("listing: %d %v", r.Status, r.Body)
+		}
+		return r.Body["id"].(string), uid
+	}
+	d1, u1 := list("Petani Satu", "demand", "Cabai merah keriting", 300, 38000)
+	d2, u2 := list("Petani Dua", "demand", "Cabai merah keriting", 300, 38000)
+	s1, u3 := list("Pemasok Cabai", "supply", "Cabai merah keriting", 200, 35000)
+	k1, _ := list("Kopi Satu", "supply", "Biji kopi arabika Garut", 700, 90000)
+	k2, _ := list("Kopi Dua", "supply", "Biji kopi arabika Preanger", 700, 95000)
+	// What the old grouping produced, plus an engine opportunity whose listings are gone.
+	stale := e.scalar(`INSERT INTO opportunities (title, kind, category_id, region, unit, demand_value, supply_value, participant_count,
+		potential_value_idr, suggested_mechanism, confidence, mechanism_reason, description, required_contribution)
+		VALUES ('Capacity match: Cabai merah keriting di Jawa Barat', 'capacity_match', 'agri', 'Jawa Barat', $1, 600, 1600, 5, 122750000,
+		        'forward_auction', 0.75, 'r', 'd', 'c') RETURNING id::text`, unit).(string)
+	gone := e.scalar(`INSERT INTO opportunities (title, kind, category_id, region, unit, demand_value, supply_value, participant_count,
+		potential_value_idr, suggested_mechanism, confidence, mechanism_reason, description, required_contribution)
+		VALUES ('Supply gap: Durian montong di Jawa Barat', 'supply_gap', 'agri', 'Jawa Barat', $1, 100, 10, 2, 1000000,
+		        'reverse_auction', 0.6, 'r', 'd', 'c') RETURNING id::text`, unit).(string)
+	if err := e.server.OpportunityTick(t0()); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.scalar(`SELECT count(*) FROM opportunities WHERE unit = $1 AND status <> 'closed'`, unit); n != int64(1) {
+		t.Fatalf("open opportunities: %v (coffee must not become one, no duplicate for cabai)", n)
+	}
+	var title, kind string
+	var demand, supply float64
+	var participants int
+	var potential int64
+	if err := e.db.Primary().QueryRow(t0(), `SELECT title, kind, demand_value::float8, supply_value::float8, participant_count, potential_value_idr
+		FROM opportunities WHERE id = $1`, stale).Scan(&title, &kind, &demand, &supply, &participants, &potential); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(title, "Cabai merah keriting") || kind == "capacity_match" || demand != 600 || supply != 200 || participants != 3 ||
+		potential != 600*35000 {
+		t.Fatalf("corrected: %q %s %v/%v %d %d", title, kind, demand, supply, participants, potential)
+	}
+	if st := e.scalar(`SELECT status FROM opportunities WHERE id = $1`, gone); st != "closed" {
+		t.Fatalf("retired: %v", st)
+	}
+	got := map[string]bool{}
+	rows, _ := e.db.Primary().Query(t0(), `SELECT listing_id::text FROM opportunity_listings WHERE opportunity_id = $1`, stale)
+	for rows.Next() {
+		var id string
+		_ = rows.Scan(&id)
+		got[id] = true
+	}
+	rows.Close()
+	if len(got) != 3 || !got[d1] || !got[d2] || !got[s1] {
+		t.Fatalf("opportunity_listings: %v", got)
+	}
+	r := e.call(e.client(), "GET", "/opportunities/"+stale, nil)
+	if p := r.Body["participantsPreview"].([]any); len(p) != 3 {
+		t.Fatalf("preview: %v", p)
+	}
+
+	// Form a market from it with auto-invite under manual approval.
+	mm, _ := e.maker("Dimas Cabai")
+	in := marketInput("Cabai Jabar " + unit)
+	in["opportunityId"], in["unit"], in["approval"] = stale, unit, "manual"
+	market := e.createMarket(mm, in)
+	for _, u := range []string{u1, u2, u3} {
+		if st := e.scalar(`SELECT mp.status FROM market_participants mp JOIN parties p ON p.id = mp.party_id WHERE mp.market_id = $1 AND p.user_id = $2`,
+			market, u); st != "pending" {
+			t.Fatalf("participant %s: %v", u, st)
+		}
+	}
+	if n := e.scalar(`SELECT count(*) FROM market_participants WHERE market_id = $1`, market); n != int64(3) {
+		t.Fatalf("participants: %v", n)
+	}
+	for _, l := range []string{d1, d2, s1} {
+		if st := e.scalar(`SELECT status || ' ' || (market_id = $2) FROM listings WHERE id = $1`, l, market); st != "in_market true" {
+			t.Fatalf("listing %s: %v", l, st)
+		}
+	}
+	for _, l := range []string{k1, k2} {
+		if st := e.scalar(`SELECT status FROM listings WHERE id = $1`, l); st != "available" {
+			t.Fatalf("coffee listing moved: %v", st)
+		}
+	}
+}
