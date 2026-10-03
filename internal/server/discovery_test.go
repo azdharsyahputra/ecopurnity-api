@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -8,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
 )
 
 // Integration tests for notifications, opportunities (engine + personal), matches, reputation, profiles, dashboard,
@@ -462,5 +466,84 @@ func TestSearchAndPublicWithoutAnalytics(t *testing.T) {
 	}
 	if r := e.call(e.client(), "GET", "/explorer/overview?range=1y", nil); r.Status != 422 {
 		t.Fatalf("range 422: %d", r.Status)
+	}
+}
+
+type failingMailer struct{ n int }
+
+func (f *failingMailer) Send(context.Context, mail.Message) error {
+	f.n++
+	return errors.New("smtp down")
+}
+
+func TestNotificationEmails(t *testing.T) {
+	e := newEnv(t)
+	if err := e.server.NotificationMailTick(t0()); err != nil { // drain other tests' notifications
+		t.Fatal(err)
+	}
+	c, me := e.bidder("Rina Surel")
+	email := e.scalar(`SELECT email::text FROM users WHERE id = $1`, me).(string)
+	_, unverifiedEmail := e.signedIn("Tanpa Verifikasi")
+	unverified := e.scalar(`SELECT id::text FROM users WHERE email = $1`, unverifiedEmail).(string)
+
+	e.notifyDirect(me, "outbid", "Kamu tersalip di Kopi")          // email on by default
+	e.notifyDirect(me, "opportunity_detected", "Opportunity baru") // email off by default
+	e.notifyDirect(unverified, "outbid", "Tidak terkirim")         // unverified email
+	e.exec(`INSERT INTO notifications (user_id, type, title, body, href, created_at) VALUES ($1, 'payment', 'Lama', 'b', '/x', now() - interval '2 days')`, me)
+	if err := e.server.NotificationMailTick(t0()); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := e.mail.Last(email)
+	if !ok || !strings.Contains(m.Subject+m.HTML, "Kamu tersalip di Kopi") || !strings.Contains(m.HTML, "http://app.test/x") {
+		t.Fatalf("mail: %v %+v", ok, m)
+	}
+	n := 0
+	for _, s := range e.mail.Sent {
+		if (s.To == email || s.To == unverifiedEmail) && strings.Contains(s.HTML, "http://app.test/x") { // notification mails only
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("sent %d, want 1 (default-off type, old and unverified skipped)", n)
+	}
+	if v := e.scalar(`SELECT count(*) FROM notifications WHERE user_id = $1 AND emailed_at IS NOT NULL`, me); v != int64(1) {
+		t.Fatalf("emailed_at: %v", v)
+	}
+	if v := e.scalar(`SELECT count(*) FROM notifications WHERE user_id = $1 AND emailed_at IS NULL`, unverified); v != int64(1) {
+		t.Fatal("unverified marked")
+	}
+
+	// Turning a type on mails new ones; a second tick sends nothing twice.
+	prefs := e.call(c, "GET", "/me/notification-prefs", nil).Body
+	prefs["opportunity_detected"] = map[string]any{"inApp": true, "email": true}
+	if r := e.call(c, "PUT", "/me/notification-prefs", prefs); r.Status != 200 {
+		t.Fatal(r.Status)
+	}
+	e.notifyDirect(me, "opportunity_detected", "Opportunity kedua")
+	e.server.WaitMail() // registration mails are sent asynchronously
+	before := len(e.mail.Sent)
+	if err := e.server.NotificationMailTick(t0()); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.server.NotificationMailTick(t0()); err != nil {
+		t.Fatal(err)
+	}
+	// The first opportunity notification (created while email was off) is still within the day, so it goes too.
+	if got := len(e.mail.Sent) - before; got != 2 {
+		t.Fatalf("after enabling: %d mails", got)
+	}
+
+	// Failures: counted, retried on later ticks, given up after 3.
+	fail := &failingMailer{}
+	e.server.WaitMail()
+	e.server.Mail = fail
+	e.notifyDirect(me, "payment", "Gagal kirim")
+	for range 5 {
+		if err := e.server.NotificationMailTick(t0()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if v := e.scalar(`SELECT email_attempts FROM notifications WHERE user_id = $1 AND title = 'Gagal kirim'`, me); v != int16(3) || fail.n != 3 {
+		t.Fatalf("attempts: %v, sends %d", v, fail.n)
 	}
 }
