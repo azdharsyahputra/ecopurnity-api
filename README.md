@@ -32,6 +32,7 @@ cp .env.example .env
 make up            # postgres :5432 (replica :5433), clickhouse :9000/:8123, mailpit :1025 (UI :8025), seaweedfs S3 :8333
 make run           # API on :8080  ->  GET /healthz, GET /readyz
 make reset         # stop and wipe volumes
+make seed-admin EMAIL=you@example.id   # grant the admin capability to an account you registered
 ```
 
 ## OpenAPI workflow

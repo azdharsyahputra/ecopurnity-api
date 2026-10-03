@@ -85,15 +85,18 @@
       - `suspend` / `restrict` / `restore`: sets status `suspended` / `restricted` / `active`. 409 `no_change` when the
         account already has that status. `restore` on an account with a pending appeal also marks the appeal `granted`
         (note = reason), before the no_change check.
+      `suspend` sets `suspended_at` (a new suspension episode, appealable once) and signs the user out everywhere (all
+      sessions deleted; open WebSockets close at their next session check). Leaving `suspended` clears it.
+      `restore` grants the pending appeal of the current suspension (decision note = reason).
       Side effects: audit entry (verify: "Verifikasi identitas"; status: "Suspend akun" / "Batasi akun" / "Pulihkan akun" with
       a status before/after diff; deny_appeal: "Tolak banding suspend"). No notification is sent to the user.
     tags: [Admin]
     x-access: capability:admin
     x-audit: true
     x-note: >-
-      Mock does not validate `action`: an unknown value falls through to the status branch and behaves like `restore`.
-      Real backend should reject it with 422 `validation` (fields.action). Also, `restore` marks a pending appeal granted
-      even when the call then fails with `no_change`.
+      The mock does not validate `action` (an unknown value behaves like `restore`); the API answers 422 `validation`
+      (fields.action). A pending appeal only exists while the account is suspended, so `restore` never grants an appeal
+      and then fails with `no_change` (the mock could).
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
     requestBody:
@@ -143,7 +146,9 @@
       - { name: id, in: path, required: true, schema: { type: string } }
     responses:
       '200':
-        description: Verification request with the applicant's form and the documents' extracted fields.
+        description: >-
+          Verification request with the applicant's form and the documents' extracted fields, plus a short-lived presigned
+          `url` per document and, for personal requests, the decrypted `nik` (detail only; lists never carry them).
         content:
           application/json:
             schema: { $ref: '#/components/schemas/VerificationRequest' }
@@ -164,14 +169,18 @@
       - audit entry ("Setujui verifikasi bisnis" / "Tolak verifikasi bisnis" / "Minta unggah ulang dokumen") with a status diff;
       - when `owner` matches a platform user name: a `transaction_update` notification "Verifikasi {business}: disetujui | ditolak |
         perlu unggah ulang" (body = decision note, href `/app/settings`);
-      - when additionally `kind` is `personal`: approve sets the admin-verified flag on the user and the user's identity
-        verification to `verified`; reject/reupload sets identity verification back to `none`.
+      - `personal`: approve marks the user's identity verified (KYC level 2) and stores the NIK hash (one verified account per
+        NIK: 409 `nik_in_use` when another account was verified with the same NIK); reject/reupload leaves the identity
+        `none` so the user can submit again.
+      - `business`: the organization's verification becomes `verified` (approve), `rejected` (reject) or `unverified`
+        (reupload); the notification goes to the member who submitted it.
     tags: [Admin]
     x-access: capability:admin
     x-audit: true
     x-note: >-
-      Mock does not validate `action`: an unknown value makes the handler throw (500). Real backend should return 422
-      `validation` (fields.action).
+      The mock throws (500) on an unknown `action`; the API answers 422 `validation` (fields.action). Personal requests are
+      audited on the user entity ("Setujui verifikasi KTP" / "Tolak verifikasi KTP" / "Minta unggah ulang dokumen"), business
+      ones on the request.
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
     requestBody:
@@ -188,7 +197,7 @@
       '401': { $ref: '#/components/responses/Unauthenticated' }
       '403': { $ref: '#/components/responses/Forbidden' }
       '404': { $ref: '#/components/responses/NotFound', description: 'not_found: request does not exist.' }
-      '409': { $ref: '#/components/responses/Conflict', description: 'decided: the request is no longer pending.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'decided: the request is no longer pending. nik_in_use: (personal approve) the NIK is already verified on another account.' }
       '422': { $ref: '#/components/responses/Validation', description: 'reason_required: fields.reason (required for reject and reupload, min 10 chars after trim).' }
 
 /admin/markets:
@@ -249,8 +258,8 @@
     x-access: capability:admin
     x-audit: true
     x-note: >-
-      Mock does not validate `action`: an unknown value behaves like `restore`. Suspend/restore set the market's status
-      to exactly `suspended`/`active`, even if the market had another status (e.g. `closed`) before.
+      The mock treats an unknown `action` as `restore`; the API answers 422 `validation` (fields.action). Suspend/restore
+      set the market's status to exactly `suspended`/`active`, even if the market had another status (e.g. `closed`) before.
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
     requestBody:
@@ -318,20 +327,22 @@
     description: |
       Reason is required for every action (422 `reason_required`, checked before the 409s).
       - `freeze`: only auctions in scheduled/qualification/live/extended. Remembers the previous status, sets status
-        `frozen` (bids and winner selection are held), publishes an `auction.closed` event with status `frozen` on channel
-        `auction:{id}`, notifies the auction owner (`auction_ending` "{title} dibekukan Admin"), audit "Freeze auction".
-        409 `not_active` otherwise.
-      - `unfreeze`: only when `frozen` (409 `not_frozen` otherwise). Restores the remembered status (default `closed`);
-        a remembered `live`/`extended` auction whose `endsAt` has passed reopens as `closed`. Audit "Cabut freeze auction".
-      - `open_case`: creates a manual FraudAlert (code `FRD-{1040+n}`, status `investigating`, score 0, confidence 0,
-        evidence = current findings, first note = reason) with this auction as subject, audit "Buka kasus {code}".
-        Returns `{ caseId }`.
+        `frozen` (bids, the auction clock and winner selection are held), publishes an `auction.state` frame (status
+        `frozen`) on channel `auction:{id}`, notifies the owner of a personal buyer auction (`auction_ending` "{title}
+        dibekukan Admin"), audit "Freeze auction". 409 `not_active` otherwise.
+      - `unfreeze`: only when `frozen` (409 `not_frozen` otherwise). Restores the remembered status and publishes
+        `auction.state`; an auction whose `endsAt` passed while frozen is closed by the auction clock on its next tick
+        (with the normal close: results, bidder statuses, `auction.closed`). Audit "Cabut freeze auction".
+      - `open_case`: creates a manual FraudAlert (code `FRD-…` from the public code sequence, status `investigating`,
+        score 0, confidence 0, evidence = current findings, first note = reason) with this auction as subject, audit
+        "Buka kasus {code}". Returns `{ caseId }`.
     tags: [Admin]
     x-access: capability:admin
     x-audit: true
     x-note: >-
-      `open_case` responds 200 (not 201) with `{ caseId }`, unlike the `{ ok: true }` of the other actions. Mock does not
-      validate `action` or `type`: an unknown action behaves like `open_case`, an unknown `type` is stored as given.
+      `open_case` responds 200 (not 201) with `{ caseId }`, unlike the `{ ok: true }` of the other actions. The mock does not
+      validate `action` or `type`; the API answers 422 `validation` for unknown values. The mock reopens an expired
+      live auction as `closed` directly, skipping the close bookkeeping; the API leaves it to the auction clock.
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
     requestBody:
@@ -400,8 +411,8 @@
     summary: Request evidence, start review or resolve a dispute
     description: |
       Workflow (status -> action): `open|evidence` -> `request_evidence` (-> `evidence`) or `start_review` (-> `review`);
-      `review` -> `resolve` (-> `resolved`). Any other combination is 409 `invalid_transition`; this check runs before
-      body validation.
+      `review` -> `resolve` (-> `resolved`). Any other combination is 409 `invalid_transition` (after schema validation of the
+      body, before the reason check).
       - `request_evidence`: `from` (buyer | supplier | both) and `reason` (min 10 chars) required. Adds a timeline entry
         "Bukti diminta dari {pembeli|supplier|kedua pihak}: {reason}" and sends a `transaction_update` notification
         "{code}: Admin meminta bukti" (body = reason) to the selected platform-user parties.
@@ -415,13 +426,15 @@
         timeline "Diputuskan: ...", notification "{code} diputuskan" to both parties, audit "Putuskan dispute (refund penuh |
         lepas dana | refund sebagian)" with status diffs.
       Audit is written for every action ("Minta bukti dispute", "Mulai review dispute", resolve).
+      Money: the resolution row is stored on the case and the trade side (trade status, invoice payment state, escrow
+      ledger journal) is settled in the same transaction by the transactions area.
     tags: [Admin]
     x-access: capability:admin
     x-audit: true
     x-note: >-
-      Mock does not validate `from` on request_evidence (a missing value makes the handler throw) nor the shape of
-      `resolution` on resolve beyond the partial amount. Real backend should return 422 `validation` for those.
-      `request_evidence` while already in `evidence` is allowed and repeats the request.
+      The mock does not validate `from` on request_evidence nor the shape of `resolution`; the API answers 422 `validation`
+      (schema). `request_evidence` while already in `evidence` is allowed and repeats the request. `partial` amounts are
+      against the trade total before tax (`totalIdr`), like the mock.
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
     requestBody:
@@ -466,7 +479,9 @@
     description: The alert plus `audit`, the audit entries whose action text contains the alert code (opening, notes, escalation, close).
     tags: [Admin]
     x-access: capability:admin
-    x-note: The audit filter is a substring match on the action text (`FRD-1041` would also match `FRD-10410`); the real backend should filter by entity id.
+    x-note: >-
+      The mock matches the alert code as a substring of the action text (`FRD-1041` would also match `FRD-10410`); the API
+      returns entries on this alert entity plus the escalated actions tagged "(eskalasi {code})".
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
     responses:
@@ -504,8 +519,8 @@
     x-access: capability:admin
     x-audit: true
     x-note: >-
-      Mock does not validate `action`: an unknown value is treated as `close` (reason required). `escalate` with an
-      auction subject that no longer exists in the economy would throw (500); `suspend_market` does not check the market
+      The mock treats an unknown `action` as `close`; the API answers 422 `validation`. An escalation subject (user, auction
+      or market) that no longer exists is 404 `not_found` (the mock throws for auctions); `suspend_market` does not check the market
       is already suspended (no 409 no_change, unlike the market action endpoint). A user escalation that would not change
       the status (already suspended) still succeeds here, the 409 no_change of the user endpoint is not applied.
     parameters:
@@ -532,10 +547,33 @@
     operationId: listAdminAudit
     summary: List the audit trail
     description: |
-      Platform-wide audit entries, newest first. Not paginated and not filterable; the mock keeps the latest 500 entries.
-      Includes entries written by admin, market maker and organization actions.
+      Platform-wide audit entries, newest first, at most `limit` (default 500). Includes entries written by admin, market
+      maker and organization actions. Optional filters combine with AND.
     tags: [Admin]
     x-access: capability:admin
+    x-note: The mock is not filterable and returns its latest 500 entries; with no query parameters the API does the same.
+    parameters:
+      - name: q
+        in: query
+        description: Case-insensitive substring over actor, action, entity label and reason.
+        schema: { type: string }
+      - name: entityType
+        in: query
+        schema: { type: string, enum: [user, business, opportunity, market, auction, alert, transaction, dispute, rule, procurement, supplier] }
+      - name: entityId
+        in: query
+        schema: { type: string }
+      - name: from
+        in: query
+        description: Entries at or after this time.
+        schema: { type: string, format: date-time }
+      - name: to
+        in: query
+        description: Entries before this time.
+        schema: { type: string, format: date-time }
+      - name: limit
+        in: query
+        schema: { type: integer, minimum: 1, maximum: 500, default: 500 }
     responses:
       '200':
         description: Audit entries.

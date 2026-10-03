@@ -1,4 +1,4 @@
-.PHONY: mail-preview gen check-gen up down reset run build test openapi lint-openapi migrate migrate-down migrate-status migrate-clickhouse db-doc
+.PHONY: seed-admin mail-preview gen check-gen up down reset run build test openapi lint-openapi migrate migrate-down migrate-status migrate-clickhouse db-doc
 
 up:
 	docker compose up -d --wait
@@ -50,3 +50,8 @@ check-gen: gen
 # Sends a sample of every email template through SMTP (Mailpit locally: http://localhost:8025).
 mail-preview:
 	set -a; . ./.env; set +a; go run ./cmd/mailpreview
+
+# Grants the admin capability to an existing account: make seed-admin EMAIL=sari@example.id
+seed-admin:
+	@test -n "$(EMAIL)" || (echo "usage: make seed-admin EMAIL=..." && exit 1)
+	set -a; . ./.env; set +a; go run ./cmd/seed-admin "$(EMAIL)"
