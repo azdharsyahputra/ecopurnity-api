@@ -86,6 +86,7 @@ func run(log *slog.Logger) error {
 	}
 	defer api.WaitMail() // let queued emails go out on shutdown
 	go api.RunAuctionClock(ctx, time.Second)
+	go api.RunOpportunityEngine(ctx, time.Minute)
 	h, err := api.Handler()
 	if err != nil {
 		return err

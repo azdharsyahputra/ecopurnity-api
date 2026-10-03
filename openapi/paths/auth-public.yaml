@@ -263,7 +263,9 @@
   get:
     operationId: getPublicStats
     summary: Get headline network statistics
-    description: Also pushed live on the `public:stats` channel.
+    description: |
+      Parties and markets active in the last 30 days (bid, listed or struck a deal), opportunities detected and completed
+      transaction volume since launch. Zeros when analytics is unavailable. Also pushed live on the `public:stats` channel.
     tags: [Public]
     x-access: public
     security: []
@@ -278,7 +280,7 @@
   get:
     operationId: listPublicActivity
     summary: List recent public activity
-    description: Newest first. Also pushed live on the `public:activity` channel.
+    description: Newest first, at most 100. Also pushed live on the `public:activity` channel. Empty when analytics is unavailable.
     tags: [Public]
     x-access: public
     security: []
@@ -326,7 +328,10 @@
   get:
     operationId: getOpportunity
     summary: Get an opportunity
-    description: Visitors (no session) see participant names masked to initials (`A•••`); signed-in users see full names.
+    description: |
+      `history` is the demand and supply listed per month over the last 6 months in the opportunity's category, unit and
+      region. `participantsPreview` holds up to 6 parties: joined participants, then owners of the open listings the engine
+      counts in it. Visitors (no session) see participant names masked to initials (`A•••`); signed-in users see full names.
     tags: [Public]
     x-access: public
     security: []
@@ -496,7 +501,7 @@
         content:
           application/json:
             schema: { $ref: '#/components/schemas/ExplorerOverview' }
-    x-note: The mock does not validate `range` or `category`.
+    x-note: The mock does not validate `range` or `category`; the API answers 422 for values outside the enums. When analytics (ClickHouse) is unavailable the overview answers zeros instead of failing.
 
 /explorer/{side}:
   get:
@@ -510,7 +515,8 @@
       - name: side
         in: path
         required: true
-        schema: { type: string, enum: [demand, supply] }
+        description: '`demand` or `supply` (anything else answers 404).'
+        schema: { type: string }
       - { $ref: '#/components/parameters/Category' }
     responses:
       '200':
@@ -527,9 +533,10 @@
     operationId: search
     summary: Search the public economy
     description: |
-      Case-insensitive substring match over title and subtitle of opportunities, markets, auctions, market makers
-      (`business`) and auction lots (`product`, or `service` for the `it` and `logistics` categories). An empty `q`
-      returns an empty list.
+      Case-insensitive substring match over title and subtitle of opportunities, markets, auctions, businesses
+      (organizations and market makers, href `/b/{slug}`), auction lots and offered supply listings (`product`, or
+      `service` for the `it` and `logistics` categories; listings link to `/listings?q=<code>`). Hits come in that order,
+      at most `limit` (capped at 100). An empty `q` returns an empty list. People are not searchable (no person hit type).
     tags: [Public]
     x-access: public
     security: []
@@ -618,7 +625,7 @@
       '401': { $ref: '#/components/responses/Unauthenticated' }
       '404': { $ref: '#/components/responses/NotFound', description: 'not_found: the match is not among the user''s current matches.' }
       '422': { $ref: '#/components/responses/Validation', description: 'validation: unknown action.' }
-    x-note: The returned `state` can be `connected`, `saved`, `dismissed` or `new`; the `Match.state` enum covers this. The match lookup (404) runs before the action check (422).
+    x-note: The returned `state` can be `connected`, `saved`, `dismissed` or `new`; the `Match.state` enum covers this. In the mock the match lookup (404) runs before the action check (422); in the API request validation rejects an unknown action first.
 
 /profiles/u/{username}:
   get:

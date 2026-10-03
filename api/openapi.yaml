@@ -9327,11 +9327,9 @@ paths:
         - name: side
           in: path
           required: true
+          description: "`demand` or `supply` (anything else answers 404)."
           schema:
             type: string
-            enum:
-              - demand
-              - supply
         - $ref: "#/components/parameters/Category"
       responses:
         "200":
@@ -9372,7 +9370,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ExplorerOverview"
-      x-note: The mock does not validate `range` or `category`.
+      x-note: The mock does not validate `range` or `category`; the API answers 422 for values outside the enums. When analytics (ClickHouse) is unavailable the overview answers zeros instead of failing.
   /listings:
     get:
       operationId: listPublicListings
@@ -9876,7 +9874,9 @@ paths:
         `actions` is built from: own live bids that are `outbid` (tone red), live bids ending in under 1 hour (orange),
         transactions where the caller still has an available action other than cancel/dispute/review (blue), and at most
         one undiscovered match with 2+ match reasons (lime). `topMatches` = top 3 opportunities with relation `none`.
-        `connections` is a fixed demo sample (0 for brand-new accounts).
+        `earnings30dIdr` = completed supplier trades of the last 30 days; `savings30dIdr` = opening minus awarded unit price
+        x quantity on the caller's reverse/sealed auction purchases of the last 30 days. `connections` = distinct
+        counterparties the caller has traded with (count, 3 most recent).
       tags:
         - Personal
       x-access: session
@@ -10567,7 +10567,7 @@ paths:
         "422":
           $ref: "#/components/responses/Validation"
           description: "validation: unknown action."
-      x-note: The returned `state` can be `connected`, `saved`, `dismissed` or `new`; the `Match.state` enum covers this. The match lookup (404) runs before the action check (422).
+      x-note: The returned `state` can be `connected`, `saved`, `dismissed` or `new`; the `Match.state` enum covers this. In the mock the match lookup (404) runs before the action check (422); in the API request validation rejects an unknown action first.
   /me/mm-application:
     get:
       operationId: getMyMmApplication
@@ -10621,6 +10621,7 @@ paths:
     get:
       operationId: getMyNotificationPrefs
       summary: Get notification preferences
+      description: Defaults for a type never saved are in-app on, email on only for outbid, winning_bid, payment and transaction_update.
       tags:
         - Personal
       x-access: session
@@ -10654,7 +10655,8 @@ paths:
                 $ref: "#/components/schemas/NotificationPrefs"
         "401":
           $ref: "#/components/responses/Unauthenticated"
-      x-note: The mock stores the body as-is with no validation (the BE should require every NotificationType key).
+      description: Replaces the flags of every type. A type switched off in-app is no longer stored or pushed.
+      x-note: The mock stores the body as-is with no validation; the API requires every NotificationType key (422).
   /me/notifications:
     get:
       operationId: listMyNotifications
@@ -10733,7 +10735,9 @@ paths:
         descending (reasons*10 - distanceKm/100 + confidence). Not paginated.
         Tab filters: `for_you` = has at least one match reason; `nearby` = distanceKm <= 75; `market_gap`, `collective`
         (collective_demand), `supply_gap` = by opportunity kind; `joined` / `following` = by relation.
-        Distance and per-user value are derived in the mock (deterministic hash), the BE computes them from real locations.
+        `distanceKm` is the great-circle distance from the caller's location (or first preferred location) to the opportunity's
+        region (known Indonesian cities/provinces; unknown locations count as 500 km). `Dekat` = the region is the caller's
+        or one of their preferred locations. Dismissed/closed opportunities are only listed when the caller is related to them.
       tags:
         - Personal
       x-access: session
@@ -10751,7 +10755,7 @@ paths:
               - joined
               - following
             default: for_you
-          description: An unknown value returns the unfiltered list.
+          description: Defaults to `for_you`. An unknown value is rejected (422).
       responses:
         "200":
           description: Opportunities.
@@ -10767,7 +10771,8 @@ paths:
     delete:
       operationId: leaveOpportunity
       summary: Stop following or leave an opportunity
-      description: Clears the caller's relation. If the caller had joined, the opportunity's `participants` is decremented (the contributed quantity is not subtracted). Idempotent.
+      description: Clears the caller's relation. If the caller had joined, the opportunity's `participants` is decremented and the contributed quantity is taken back out of its demand or supply. Idempotent (also for an unknown id).
+      x-note: The mock leaves the contributed quantity in the totals; the API subtracts it.
       tags:
         - Personal
       x-access: session
@@ -10801,14 +10806,18 @@ paths:
           description: Followed.
         "401":
           $ref: "#/components/responses/Unauthenticated"
-      x-note: The mock does not check that the opportunity exists (no 404).
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "not_found: opportunity."
+      x-note: The mock does not check that the opportunity exists (no 404); the API answers 404.
   /me/opportunities/{id}/join:
     post:
       operationId: joinOpportunity
       summary: Join an opportunity with a contribution
       description: |
         Sets relation `joined` with the contribution and increases the opportunity's `participants` (once) and its
-        `demand` or `supply` quantity by the contributed amount (also when re-joining: the quantity is added again).
+        `demand` (kind demand) or `supply` (kind supply) quantity by the contributed amount. Re-joining replaces the previous
+        contribution. `listingId` must be one of the caller's listings of the contributed kind (422 `fields.listingId`).
       tags:
         - Personal
       x-access: session
@@ -10838,8 +10847,8 @@ paths:
           description: "not_found: opportunity."
         "422":
           $ref: "#/components/responses/Validation"
-          description: "fields: quantity (quantity.value must be > 0)."
-      x-note: The mock does not verify that `listingId` is one of the caller's listings, and re-joining double counts the contribution in the opportunity totals.
+          description: "fields: quantity (quantity.value must be > 0), listingId (not the caller's listing of that kind)."
+      x-note: The mock does not verify that `listingId` is one of the caller's listings, and re-joining double counts the contribution in the opportunity totals; the API checks the listing and replaces the contribution.
   /me/reputation:
     get:
       operationId: getMyReputation
@@ -11769,7 +11778,10 @@ paths:
     get:
       operationId: getOpportunity
       summary: Get an opportunity
-      description: Visitors (no session) see participant names masked to initials (`A•••`); signed-in users see full names.
+      description: |
+        `history` is the demand and supply listed per month over the last 6 months in the opportunity's category, unit and
+        region. `participantsPreview` holds up to 6 parties: joined participants, then owners of the open listings the engine
+        counts in it. Visitors (no session) see participant names masked to initials (`A•••`); signed-in users see full names.
       tags:
         - Public
       x-access: public
@@ -13113,7 +13125,7 @@ paths:
     get:
       operationId: listPublicActivity
       summary: List recent public activity
-      description: Newest first. Also pushed live on the `public:activity` channel.
+      description: Newest first, at most 100. Also pushed live on the `public:activity` channel. Empty when analytics is unavailable.
       tags:
         - Public
       x-access: public
@@ -13139,7 +13151,9 @@ paths:
     get:
       operationId: getPublicStats
       summary: Get headline network statistics
-      description: Also pushed live on the `public:stats` channel.
+      description: |
+        Parties and markets active in the last 30 days (bid, listed or struck a deal), opportunities detected and completed
+        transaction volume since launch. Zeros when analytics is unavailable. Also pushed live on the `public:stats` channel.
       tags:
         - Public
       x-access: public
@@ -13156,9 +13170,10 @@ paths:
       operationId: search
       summary: Search the public economy
       description: |
-        Case-insensitive substring match over title and subtitle of opportunities, markets, auctions, market makers
-        (`business`) and auction lots (`product`, or `service` for the `it` and `logistics` categories). An empty `q`
-        returns an empty list.
+        Case-insensitive substring match over title and subtitle of opportunities, markets, auctions, businesses
+        (organizations and market makers, href `/b/{slug}`), auction lots and offered supply listings (`product`, or
+        `service` for the `it` and `logistics` categories; listings link to `/listings?q=<code>`). Hits come in that order,
+        at most `limit` (capped at 100). An empty `q` returns an empty list. People are not searchable (no person hit type).
       tags:
         - Public
       x-access: public

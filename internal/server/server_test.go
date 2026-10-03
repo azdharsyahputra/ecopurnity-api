@@ -38,9 +38,10 @@ func TestRoutingValidationAndErrors(t *testing.T) {
 	}
 
 	// A routed, valid request to an operation nobody implemented yet: 501 in the error contract.
-	status, body := do(t, h, "GET", "/api/v1/opportunities?page=1", "")
+	// (Any operation still without a handler works here; update the path when this one is implemented.)
+	status, body := do(t, h, "GET", "/api/v1/admin/audit", "")
 	if status != http.StatusNotImplemented || code(body) != "not_implemented" {
-		t.Fatalf("opportunities: %d %v", status, body)
+		t.Fatalf("unimplemented: %d %v", status, body)
 	}
 
 	// Request validation against the spec: wrong type in the body is a 422 with fields.
