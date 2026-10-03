@@ -1,0 +1,275 @@
+OrgProfileDocumentInput:
+  type: object
+  required:
+    - name
+    - kind
+  description: Body of POST /orgs/{orgId}/profile/documents. The mock takes the file name only.
+  properties:
+    name:
+      type: string
+      minLength: 1
+      description: File name.
+    kind:
+      type: string
+      enum:
+        - nib
+        - npwp
+        - akta
+        - other
+OrgInviteInput:
+  type: object
+  required:
+    - email
+    - role
+  properties:
+    email:
+      type: string
+      format: email
+      description: Trimmed and lower-cased by the server.
+    role:
+      type: string
+      description: Role id from `OrgSettings.roles`.
+    department:
+      type: string
+      description: Free text; not validated.
+OrgMemberPatch:
+  type: object
+  description: Partial member update.
+  properties:
+    role:
+      type: string
+      description: Role id.
+    department: &a1
+      type: string
+OrgTeamSettingsInput:
+  type: object
+  required:
+    - roles
+    - permissions
+    - departments
+    - approvalRules
+  description: Pick<OrgSettings, roles | permissions | departments | approvalRules>.
+  properties:
+    roles:
+      type: array
+      items:
+        $ref: "#/components/schemas/OrgRoleDef"
+    permissions:
+      $ref: "#/components/schemas/Permissions"
+    departments:
+      type: array
+      items: *a1
+    approvalRules:
+      type: array
+      items:
+        $ref: "#/components/schemas/ApprovalRule"
+OrgInventoryItemInput:
+  type: object
+  required:
+    - name
+    - quantity
+  description: Omit<InventoryItem, "id">. The server rejects only a blank name and an invalid quantity; other fields are stored as sent.
+  properties:
+    sku: *a1
+    name:
+      type: string
+      minLength: 1
+    categoryId:
+      $ref: "#/components/schemas/CategoryId"
+    warehouse: *a1
+    quantity:
+      $ref: "#/components/schemas/Quantity"
+    moq:
+      type: number
+    leadTimeDays:
+      type: number
+    qualitySpec: *a1
+OrgInventoryImportInput:
+  type: object
+  required:
+    - items
+    - fileName
+  properties:
+    items:
+      type: array
+      items:
+        $ref: "#/components/schemas/OrgInventoryItemInput"
+    fileName:
+      type: string
+      description: Source file name, recorded in the audit entry.
+OrgInventoryImportResult:
+  type: object
+  required:
+    - imported
+  properties:
+    imported:
+      type: integer
+OrgInventoryScheduleInput:
+  type: object
+  required:
+    - item
+    - quantity
+  description: Inventory schedule without id.
+  properties:
+    item:
+      type: string
+      minLength: 1
+    quantity:
+      $ref: "#/components/schemas/Quantity"
+    every:
+      type: string
+      enum:
+        - weekly
+        - monthly
+    counterparty: *a1
+    direction:
+      type: string
+      enum:
+        - in
+        - out
+    nextAt:
+      type: string
+      format: date-time
+OrgProcurementCreateInput:
+  description: "ProcurementInput plus `submit`: true submits for approval at once, false saves a draft."
+  allOf:
+    - $ref: "#/components/schemas/ProcurementInput"
+    - type: object
+      required:
+        - submit
+      properties:
+        submit:
+          type: boolean
+OrgProcurementActionInput:
+  type: object
+  required:
+    - action
+  properties:
+    action:
+      $ref: "#/components/schemas/ProcurementAction"
+    note:
+      type: string
+      description: Required for `reject`; stored on the approval and as audit reason.
+    quantity:
+      type: number
+      exclusiveMinimum: 0
+      description: "`collective` only: quantity put into the pool (defaults to the request quantity)."
+    optIn:
+      type: boolean
+      default: false
+      description: "`collective` only: show the business name to other pool members."
+OrgProcurementDetail:
+  type: object
+  required:
+    - request
+    - activity
+    - pool
+  properties:
+    request:
+      $ref: "#/components/schemas/ProcurementRequest"
+    activity:
+      type: array
+      items:
+        $ref: "#/components/schemas/AuditEntry"
+      description: Audit entries whose entity is the request or its auction.
+    pool:
+      description: The pool the request joined; null when none.
+      oneOf:
+        - $ref: "#/components/schemas/CollectivePool"
+        - type: "null"
+OrgPoolCreateInput:
+  type: object
+  required:
+    - title
+    - quantity
+    - baseUnitPriceIdr
+  properties:
+    title:
+      type: string
+      minLength: 1
+    categoryId:
+      $ref: "#/components/schemas/CategoryId"
+    spec: *a1
+    region: *a1
+    deadline:
+      type: string
+      format: date-time
+    unit: *a1
+    quantity:
+      type: number
+      exclusiveMinimum: 0
+      description: The caller's own demand; also the pool reference lot (`refQty`).
+    baseUnitPriceIdr:
+      type: integer
+      exclusiveMinimum: 0
+      description: Current unit price.
+    optIn:
+      type: boolean
+      description: Show the business name to other pool members.
+OrgPoolJoinInput:
+  type: object
+  required:
+    - quantity
+  properties:
+    quantity:
+      type: number
+      exclusiveMinimum: 0
+    optIn:
+      type: boolean
+      description: Show the business name to other members.
+OrgAuctionDecisionInput:
+  type: object
+  required:
+    - action
+  properties:
+    action:
+      type: string
+      enum:
+        - approve
+        - reject
+    note:
+      type: string
+      description: Required when rejecting.
+OrgAwardInput:
+  type: object
+  required:
+    - lines
+    - reason
+  properties:
+    lines:
+      type: array
+      description: One array of allocations per lot, same order as the auction lots; each needs at least one line with quantity > 0.
+      items:
+        type: array
+        items:
+          $ref: "#/components/schemas/AllocationLine"
+    reason:
+      type: string
+      minLength: 1
+      description: Why these winners; stored in the audit trail.
+OrgPoIssued:
+  type: object
+  required:
+    - poNumber
+    - transactionIds
+  properties:
+    poNumber: *a1
+    transactionIds:
+      type: array
+      items: *a1
+      description: Org transactions created, one per award line.
+OrgSupplierActionInput:
+  type: object
+  required:
+    - action
+  properties:
+    action:
+      $ref: "#/components/schemas/SupplierAction"
+    rating:
+      type: integer
+      minimum: 1
+      maximum: 5
+      description: Required for `rate`.
+    reason:
+      type: string
+      description: Required for `block`; stored as audit reason.

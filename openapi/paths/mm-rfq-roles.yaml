@@ -1,0 +1,716 @@
+# Market maker (/mm), RFQs + conversations (/me/rfqs, /me/conversations), roles (/me/mm-application, /me/invitations,
+# /orgs, /admin/mm-applications). Sources: mmHandlers.ts, settle.ts, rfq.ts, roles.ts.
+
+# ───────────────────────── Market maker: overview, pipeline, pools ─────────────────────────
+/mm/overview:
+  get:
+    operationId: getMmOverview
+    summary: Market maker operations overview
+    description: >-
+      Stats, one row per market the caller operates (own org's markets plus ones they created) with live-round counts
+      and alerts, a merged event feed (newest 15) and the auctions to subscribe to. Side effect: persists bot-driven round state.
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    responses:
+      '200':
+        description: Overview.
+        content: { application/json: { schema: { $ref: '#/components/schemas/MmOverview' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the market_maker capability.' }
+
+/mm/opportunities:
+  get:
+    operationId: listMmPipeline
+    summary: Opportunity pipeline cards
+    description: >-
+      Every detected opportunity as a pipeline card. `stage` is the maker's pipeline stage if one was set, else derived
+      from the opportunity status (`closed` becomes `dismissed`). Not paginated, not scoped per maker.
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    responses:
+      '200':
+        description: Pipeline cards.
+        content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/PipelineCard' } } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the market_maker capability.' }
+
+/mm/opportunities/{id}/stage:
+  parameters:
+    - { name: id, in: path, required: true, description: Opportunity id., schema: { type: string } }
+  post:
+    operationId: moveMmPipelineStage
+    summary: Move an opportunity to another pipeline stage
+    description: >-
+      Allowed moves: detected -> evaluating|forming|dismissed; evaluating -> detected|forming|dismissed;
+      forming -> evaluating|dismissed; dismissed -> detected; market_live -> none (only reached by publishing a market).
+      The transition is checked before the reason. `evaluating` is stored on the opportunity as status `detected`.
+      Writes an audit entry and a feed event; no notifications.
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    x-audit: true
+    x-note: Any market maker can move any opportunity (no ownership check). `evaluating` has no opportunity status of its own, so the opportunity itself reads back as `detected`; only the pipeline entry keeps `evaluating`.
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/MmStageInput' } } }
+    responses:
+      '204': { description: Moved. }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the market_maker capability.' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown opportunity.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'invalid_transition: the move is not in the allowed list for the current stage.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: reason (required when stage is dismissed).' }
+
+/mm/pools:
+  get:
+    operationId: listMmPools
+    summary: Collective pools asking for a market
+    description: >-
+      Collective procurement pools with status `market_requested` (any maker may pick one up) plus the pools this maker
+      already took. Members are masked (`Bisnis lain #n`) unless they opted in; the round's status and end time are attached.
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    responses:
+      '200':
+        description: Pools.
+        content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/CollectivePool' } } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the market_maker capability.' }
+
+/mm/pools/{id}/market:
+  parameters:
+    - { name: id, in: path, required: true, description: Pool id., schema: { type: string } }
+  post:
+    operationId: formMmPoolMarket
+    summary: Form a market from a collective pool and open its first round
+    description: >-
+      Creates a `collective_procurement` market (objective procurement, auto approval, verification `documents`,
+      reference price = the pool's base unit price, region and category from the pool, buyers = the pool members) and opens
+      round 1 for the whole pool lot (sum of member quantities) as a live reverse auction. The pool moves to
+      `market_live` and is bound to the maker, market and auction. Side effects: market audit entries, org audit
+      entry and a `new_market` notification for every user of each member organization.
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    x-audit: true
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/MmPoolMarketInput' } } }
+    responses:
+      '201':
+        description: Market formed and round opened.
+        content: { application/json: { schema: { $ref: '#/components/schemas/MmPoolMarketResult' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the market_maker capability.' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown pool.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'invalid_transition: pool is not in `market_requested` (either already has a market, or has not requested one).' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: durationMinutes (must be > 0).' }
+
+# ───────────────────────── Market maker: markets ─────────────────────────
+/mm/markets:
+  post:
+    operationId: createMmMarket
+    summary: Publish a market (creation wizard)
+    description: >-
+      Creates and publishes a market owned by the caller; it starts `active`. Participants: when `autoInvite` is true and
+      `opportunityId` resolves, the opportunity's participants preview are added (status `active` when approval is
+      `auto`, else `pending`). Price range is the reference price +/- 5%. When an opportunity is linked it becomes
+      `market_live`, its pipeline entry moves to `market_live`, and contributors' listings move into the market
+      (listing status `in_market`) with a `new_market` notification to every user holding a relation to the opportunity.
+      Writes an audit entry ("Publish market") and a feed event.
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    x-audit: true
+    x-note: Only the listed fields are validated (rule limits, name, unit, referencePriceIdr, demand). `objective`, `mechanism`, `categoryId` are not checked, an unknown `opportunityId` is silently ignored, and `supply` below 0 is clamped to 0. `opportunityId` is not checked for ownership or for already being live.
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/CreateMarketInput' } } }
+    responses:
+      '201':
+        description: Market published.
+        content: { application/json: { schema: { $ref: '#/components/schemas/MmCreatedResource' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the market_maker capability.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: name (required), unit (required), referencePriceIdr (> 0), demand (> 0) and the rule fields minQuantity (> 0), maxQuantity (>= minQuantity), minStepPct (0 to 20), windowStart (required), windowEnd (required, not before windowStart), region (required), radiusKm (> 0).' }
+
+/mm/markets/{id}:
+  parameters:
+    - { name: id, in: path, required: true, description: Market id (must be one the caller operates)., schema: { type: string } }
+  get:
+    operationId: getMmMarket
+    summary: Market operations detail
+    description: >-
+      Public market detail with its auctions, plus participants, disputes (status follows the admin case once escalated),
+      rule versions, current round number, rounds, recorded price results, settings and alerts.
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    responses:
+      '200':
+        description: Operations detail.
+        content: { application/json: { schema: { $ref: '#/components/schemas/MmMarketOps' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the market_maker capability.' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown market, or one the caller does not operate.' }
+
+/mm/markets/{id}/audit:
+  parameters:
+    - { name: id, in: path, required: true, description: Market id (must be one the caller operates)., schema: { type: string } }
+  get:
+    operationId: listMmMarketAudit
+    summary: Audit log of a market
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    responses:
+      '200':
+        description: Audit entries for entity type `market` and this id.
+        content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AuditEntry' } } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the market_maker capability.' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown market, or one the caller does not operate.' }
+
+/mm/markets/{id}/participants/{pid}:
+  parameters:
+    - { name: id, in: path, required: true, description: Market id (must be one the caller operates)., schema: { type: string } }
+    - { name: pid, in: path, required: true, description: Participant id within the market., schema: { type: string } }
+  post:
+    operationId: actOnMmParticipant
+    summary: Approve, reject, verify or suspend a market participant
+    description: >-
+      Allowed when: `approve` and `reject` need status `pending`; `verify` needs a supplier that is not verified and not
+      rejected; `suspend` needs status `active`. `approve` makes the participant active and increments the market's buyer/supplier
+      count, `suspend` decrements it. `reject` and `suspend` need a non-blank reason. The reason is stored as the participant's
+      `note`. Writes an audit entry and a feed event; when the participant is a platform account (`userId`) a
+      `new_market` notification is sent to them.
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    x-audit: true
+    x-note: An unknown `action` value finds no rule and is answered with 409 invalid_transition, not 422.
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/MmParticipantActionInput' } } }
+    responses:
+      '200':
+        description: The updated participant.
+        content: { application/json: { schema: { $ref: '#/components/schemas/MmParticipant' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the market_maker capability.' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown market (or not operated by the caller) or participant.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'invalid_transition: the action is not available for the participant''s current status.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: reason (required for reject and suspend).' }
+
+/mm/markets/{id}/rounds:
+  parameters:
+    - { name: id, in: path, required: true, description: Market id (must be one the caller operates)., schema: { type: string } }
+  post:
+    operationId: openMmRound
+    summary: Open the next round of a market
+    description: >-
+      Opens round `currentRound + 1` as a live auction of the market's mechanism type (forward, reverse, sealed or
+      dutch; direct and collective markets run as reverse). The governing rule version for that round decides visibility
+      (sealed mechanism is always sealed), minimum step (`minStepPct` of the opening price, min 1) and the public rule
+      list. A market in `formation` becomes `active`. Writes an audit entry and a feed event and sends an
+      `auction_invitation` notification to the market's participants. Market status is checked before input validation.
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    x-audit: true
+    x-note: Round quantity is not checked against the market rules' min/max quantity.
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/CreateRoundInput' } } }
+    responses:
+      '201':
+        description: Round opened; `id` is the new auction id.
+        content: { application/json: { schema: { $ref: '#/components/schemas/MmCreatedResource' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the market_maker capability.' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown market, or one the caller does not operate.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'market_inactive: market status is not active or formation.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: title (required), quantity (> 0), openingPriceIdr (> 0), durationMinutes (> 0).' }
+
+/mm/markets/{id}/rules:
+  parameters:
+    - { name: id, in: path, required: true, description: Market id (must be one the caller operates)., schema: { type: string } }
+  put:
+    operationId: updateMmMarketRules
+    summary: Publish a new version of the market rules
+    description: >-
+      Appends a rule version that takes effect from the next round (running rounds keep their rules). Rejected when the
+      market is closed, when the rules are invalid, or when nothing differs from the latest version. Writes an audit
+      entry with the field diff and notifies the market's participants (`new_market`).
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    x-audit: true
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/MmRulesInput' } } }
+    responses:
+      '200':
+        description: All rule versions, oldest first.
+        content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/RuleVersion' } } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the market_maker capability.' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown market, or one the caller does not operate.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'market_closed: the market is closed.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'validation with fields minQuantity, maxQuantity, minStepPct, windowStart, windowEnd, region, radiusKm (same limits as market creation); or no_change (no field differs from the latest version; no fields).' }
+
+/mm/markets/{id}/status:
+  parameters:
+    - { name: id, in: path, required: true, description: Market id (must be one the caller operates)., schema: { type: string } }
+  post:
+    operationId: setMmMarketStatus
+    summary: Pause, resume or close a market
+    description: >-
+      `pause` is allowed from active or formation (to paused), `resume` from paused (to active), `close` from active,
+      formation or paused (to closed, which also decrements the platform's active-market count). The transition is
+      checked before the reason. Writes an audit entry and notifies the market's participants with the reason.
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    x-audit: true
+    x-note: An `action` outside pause/resume/close is not validated and makes the mock throw (500) instead of answering 422.
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/MmMarketStatusInput' } } }
+    responses:
+      '200':
+        description: The market summary after the change.
+        content: { application/json: { schema: { $ref: '#/components/schemas/Market' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the market_maker capability.' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown market, or one the caller does not operate.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'invalid_transition: the action is not available in the market''s current status.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: reason (required).' }
+
+/mm/markets/{id}/disputes/{did}:
+  parameters:
+    - { name: id, in: path, required: true, description: Market id (must be one the caller operates)., schema: { type: string } }
+    - { name: did, in: path, required: true, description: Dispute id within the market., schema: { type: string } }
+  post:
+    operationId: actOnMmDispute
+    summary: Review, resolve or escalate a market dispute
+    description: >-
+      `review` moves the dispute to review, `resolve` closes it with the note as the decision, `escalate` hands it to
+      admin governance: an admin dispute case `dsp-mm-<hash>` (transaction disputed, evidence "Catatan market maker: ...")
+      is created, the market dispute keeps `escalatedTo` and its status then mirrors the admin case, and every admin
+      gets a `transaction_update` notification. Once escalated it can no longer be handled here. All branches write an
+      audit entry.
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    x-audit: true
+    x-note: An `action` other than review/resolve/escalate is treated like `resolve` without requiring a note (status becomes resolved).
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/MmDisputeActionInput' } } }
+    responses:
+      '200':
+        description: The dispute (for `escalate`, with its status taken from the admin case).
+        content: { application/json: { schema: { $ref: '#/components/schemas/MmDispute' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the market_maker capability.' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown market (or not operated by the caller) or dispute.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'escalated: already handled by admin; invalid_transition: dispute already resolved, or already in review for a `review` action.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: note (required for escalate and resolve).' }
+
+/mm/analytics:
+  get:
+    operationId: getMmAnalytics
+    summary: Market maker analytics
+    description: Liquidity, per-market buyers/suppliers, 8 weeks of efficiency and growth, and price discovery per market.
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    parameters:
+      - { name: market, in: query, description: Scope the analytics to one operated market., schema: { type: string } }
+    responses:
+      '200':
+        description: Analytics.
+        content: { application/json: { schema: { $ref: '#/components/schemas/MmAnalytics' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the market_maker capability.' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: `market` given but not operated by the caller.' }
+
+# ───────────────────────── Collective settlement (settle.ts) ─────────────────────────
+/mm/markets/{id}/rounds/{aid}/settlement:
+  parameters:
+    - { name: id, in: path, required: true, description: Market id., schema: { type: string } }
+    - { name: aid, in: path, required: true, description: Round (auction) id within the market., schema: { type: string } }
+  get:
+    operationId: getMmRoundSettlement
+    summary: Preview the collective settlement of a round
+    description: >-
+      Splits the round's lot pro-rata across contributors: platform accounts with in-market listings on the demand side
+      (procurement rounds, i.e. lower price wins) or supply side (selling rounds), and up to four active non-account
+      participants filling the remaining quantity. Priced at the best price. For a collective pool round the split follows
+      the pool's members (names masked unless opted in) and the winner is mapped to a directory supplier.
+      `settled` is null until settled. Read-only.
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    x-note: >-
+      The handler does not use the shared maker guard: signed-out callers, non-makers, markets the caller does not operate and
+      unknown rounds all get 404 not_found (never 401/403). For pool rounds the lines carry `orgId`, which the other pool views mask.
+    responses:
+      '200':
+        description: Settlement preview.
+        content: { application/json: { schema: { $ref: '#/components/schemas/MmSettlementResult' } } }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: not signed in, not a market maker, market not operated by the caller, or round not in that market.' }
+  post:
+    operationId: settleMmRound
+    summary: Settle a closed round across its contributors
+    description: >-
+      Creates one escrow trade (maker fee rate 0.005, trade group `Kolektif <code>`) per contributor line with the winner,
+      buyer side for procurement rounds and supplier side for selling rounds; the winner is the platform account when the winning
+      bid belongs to one, else a verified business party. Contributing platform accounts get a `transaction_update`
+      notification. For a collective pool round each member business instead gets its own sub-PO (buyer-role transaction,
+      drop point from its procurement request, else main warehouse, else profile location), its procurement request moves to
+      `po_issued`, the org gets an audit entry and its users a notification; the pool becomes `settled` and the response `trades` counts
+      only member lines that got a sub-PO. The round becomes `awarded` and the settlement is recorded. Writes an audit entry.
+    tags: [MarketMaker]
+    x-access: capability:market_maker
+    x-audit: true
+    x-note: Same 404-for-everything guard as the GET (no 401/403). Round must be `closed` or `awarded`; an `awarded` round without a recorded settlement can still be settled.
+    responses:
+      '200':
+        description: Settlement with `settled` filled in (`at`, `trades`, `by`).
+        content: { application/json: { schema: { $ref: '#/components/schemas/MmSettlementResult' } } }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: not signed in, not a market maker, market not operated by the caller, or round not in that market.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'not_closed: round status is not closed/awarded; already_settled: the round was already settled.' }
+
+# ───────────────────────── RFQs ─────────────────────────
+/me/rfqs:
+  get:
+    operationId: listRfqs
+    summary: List my RFQs
+    description: >-
+      `side=buyer` (default) returns RFQs the caller created. Any other `side` value is treated as supplier: RFQs the
+      caller is relevant to (invited, already quoted, or holding supply listings in the RFQ's category, and not the buyer)
+      that are open or already carry a quote of theirs. Not paginated. Each item carries `side`.
+    tags: [RFQ]
+    x-access: session
+    x-note: The supplier list returns each RFQ with all quotes (competitors' included); only the detail endpoint filters quotes to the caller's own.
+    parameters:
+      - { name: side, in: query, schema: { type: string, enum: [buyer, supplier], default: buyer } }
+    responses:
+      '200':
+        description: RFQs.
+        content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/RfqView' } } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+  post:
+    operationId: createRfq
+    summary: Create an RFQ
+    description: >-
+      Creates the RFQ (`open`, code `RFQ-XXXX`) and a linked conversation with the buyer and invitees. Invitees:
+      `inviteUserIds` (existing users other than the caller) and `inviteNames` (fictional business suppliers).
+      Fictional suppliers (invited ones first, then the category's defaults, max 3) auto-quote after about 6, 11 and 16 seconds, each
+      notifying the buyer. Every platform user relevant to the RFQ gets an `auction_invitation` notification. Writes an audit entry.
+    tags: [RFQ]
+    x-access: session
+    x-audit: true
+    x-note: '`categoryId` is not validated; an unknown category makes the mock throw (500) when picking auto-quoting suppliers. `source`, `location`, `spec` are not validated.'
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/NewRfq' } } }
+    responses:
+      '201':
+        description: The created RFQ.
+        content: { application/json: { schema: { $ref: '#/components/schemas/RfqView' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: item (required), quantity (value > 0), deadline (required).' }
+
+/me/rfqs/{id}:
+  parameters:
+    - { name: id, in: path, required: true, description: RFQ id., schema: { type: string } }
+  get:
+    operationId: getRfq
+    summary: Get an RFQ
+    description: Visible to the buyer and to relevant suppliers. Suppliers only see their own quotes, never competitors'.
+    tags: [RFQ]
+    x-access: session
+    responses:
+      '200':
+        description: The RFQ with the caller's `side`.
+        content: { application/json: { schema: { $ref: '#/components/schemas/RfqView' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown RFQ, or the caller is neither the buyer nor a relevant supplier.' }
+
+/me/rfqs/{id}/quotes:
+  parameters:
+    - { name: id, in: path, required: true, description: RFQ id., schema: { type: string } }
+  post:
+    operationId: submitQuote
+    summary: Submit a quote on an RFQ
+    description: >-
+      Supplier side. The caller must be a relevant supplier (not the buyer). Adds the caller to the RFQ's
+      conversation and notifies the buyer. One active (`submitted` or `countered`) quote per supplier. Not audited.
+    tags: [RFQ]
+    x-access: session
+    x-note: The 201 body is the RFQ with only the new quote in `quotes` (supplier view). `leadTimeDays`, `terms` and `note` are not validated.
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/RfqQuoteInput' } } }
+    responses:
+      '201':
+        description: The RFQ containing only the submitted quote.
+        content: { application/json: { schema: { $ref: '#/components/schemas/RfqView' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown RFQ, or the caller is not a relevant supplier (the buyer included).' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'closed: RFQ is not open; duplicate: the caller already has an active quote (revise it instead).' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: priceIdr (> 0), quantity (> 0); the first failing field is reported alone.' }
+
+/me/rfqs/{id}/quotes/{qid}/actions:
+  parameters:
+    - { name: id, in: path, required: true, description: RFQ id., schema: { type: string } }
+    - { name: qid, in: path, required: true, description: Quote id., schema: { type: string } }
+  post:
+    operationId: actOnQuote
+    summary: Accept, counter, decline, revise, accept counter or withdraw a quote
+    description: >-
+      Negotiation rules, only while the RFQ is open. Buyer: `accept` (from submitted), `counter` (from submitted),
+      `decline` (from submitted or countered). Supplier (owner of the quote): `revise` (from submitted or countered, back to
+      submitted), `accept_counter` (from countered), `withdraw` (from submitted or countered). A caller who is neither the
+      buyer nor the quote's supplier gets 403.
+      `accept` / `accept_counter` create the trade at the quoted price (the counter price for `accept_counter`) with the quote's
+      terms and quantity, mark the quote accepted, decline the other open quotes, set the RFQ `awarded` with its
+      `transactionId`, write an audit entry and notify the other party (supplier: `winning_bid`). They are checked against the
+      acting user's KYC commitment limit. The other actions update the quote history and notify the other party. A
+      fictional supplier answers a counter after about 6 seconds: accepts when the counter is at least 95% of its price, else revises to the midpoint.
+    tags: [RFQ]
+    x-access: session
+    x-audit: true
+    x-note: The transition (409) is checked before the price (422). Audit is only written when the quote is accepted. The response is the full RFQ for the caller's side, including other suppliers' quotes when a supplier acts.
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/RfqQuoteActionInput' } } }
+    responses:
+      '200':
+        description: The updated RFQ.
+        content: { application/json: { schema: { $ref: '#/components/schemas/RfqView' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: the caller is neither the RFQ buyer nor the quote supplier; kyc_limit: the deal value exceeds the acting user''s verification limit (accept, accept_counter).' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown RFQ or quote.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'invalid_transition: action not available for this side, quote status or RFQ status.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: priceIdr (> 0, required for counter and revise).' }
+
+/me/rfqs/{id}/close:
+  parameters:
+    - { name: id, in: path, required: true, description: RFQ id., schema: { type: string } }
+  post:
+    operationId: closeRfq
+    summary: Close an RFQ without awarding
+    description: Buyer only. Sets the RFQ `closed` and declines every open (`submitted` or `countered`) quote. No notifications, not audited.
+    tags: [RFQ]
+    x-access: session
+    x-note: A non-buyer gets 404 (not 403).
+    responses:
+      '200':
+        description: The closed RFQ.
+        content: { application/json: { schema: { $ref: '#/components/schemas/RfqView' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown RFQ or the caller is not its buyer.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'closed: the RFQ is not open (already closed or awarded).' }
+
+# ───────────────────────── Conversations ─────────────────────────
+/me/conversations:
+  get:
+    operationId: listConversations
+    summary: List my conversations
+    description: Conversations the caller participates in, newest `updatedAt` first. Not paginated.
+    tags: [RFQ]
+    x-access: session
+    responses:
+      '200':
+        description: Conversations.
+        content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Conversation' } } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+  post:
+    operationId: startConversation
+    summary: Start (or reopen) a conversation
+    description: >-
+      Creates a conversation between the caller and `with`, optionally linked to an RFQ, match or transaction, with an optional
+      opening message. When the caller already has a conversation with the same `link` (type and id) that one is returned
+      with 200 instead. A fictional counterpart (no `userId`) answers the latest human message once, after about 5 seconds.
+    tags: [RFQ]
+    x-access: session
+    x-note: Reuse is only detected when `link` is given. A reused conversation is returned with 200, a new one with 201. The 422 has no `fields`.
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/RfqConversationInput' } } }
+    responses:
+      '200':
+        description: An existing conversation for the same link.
+        content: { application/json: { schema: { $ref: '#/components/schemas/Conversation' } } }
+      '201':
+        description: Conversation created.
+        content: { application/json: { schema: { $ref: '#/components/schemas/Conversation' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '422': { $ref: '#/components/responses/Validation', description: 'validation: subject is blank or `with.name` is missing (no `fields` in the body).' }
+
+/me/conversations/{id}:
+  parameters:
+    - { name: id, in: path, required: true, description: Conversation id., schema: { type: string } }
+  get:
+    operationId: getConversation
+    summary: Get a conversation with its messages
+    tags: [RFQ]
+    x-access: session
+    responses:
+      '200':
+        description: The conversation.
+        content: { application/json: { schema: { $ref: '#/components/schemas/Conversation' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown conversation, or the caller is not a participant.' }
+
+/me/conversations/{id}/messages:
+  parameters:
+    - { name: id, in: path, required: true, description: Conversation id., schema: { type: string } }
+  post:
+    operationId: sendMessage
+    summary: Post a message to a conversation
+    description: >-
+      Appends the (trimmed) message as the caller and bumps `updatedAt`. Every other participant that is a platform
+      user gets a `transaction_update` notification; a fictional participant replies once after about 5 seconds.
+    tags: [RFQ]
+    x-access: session
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/RfqMessageInput' } } }
+    responses:
+      '201':
+        description: The whole conversation including the new message.
+        content: { application/json: { schema: { $ref: '#/components/schemas/Conversation' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown conversation, or the caller is not a participant.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: text (required, non-blank).' }
+
+# ───────────────────────── Roles ─────────────────────────
+/me/mm-application:
+  get:
+    operationId: getMyMmApplication
+    summary: My latest market maker application
+    description: The caller's newest application, or a JSON `null` body (200) when they never applied.
+    tags: [Roles]
+    x-access: session
+    responses:
+      '200':
+        description: Latest application or null.
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - $ref: '#/components/schemas/MmApplication'
+                - { type: 'null' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+  post:
+    operationId: applyMarketMaker
+    summary: Apply to become a market maker
+    description: >-
+      Creates a `pending` application (stored newest first), writes an audit entry and notifies every admin
+      (`transaction_update`, link `/admin/mm-applications`). A rejected applicant may apply again.
+    tags: [Roles]
+    x-access: session
+    x-audit: true
+    x-note: Blocked with 409 `conflict` (not a more specific code), distinguished only by the message.
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/MmApplicationInput' } } }
+    responses:
+      '201':
+        description: The new application.
+        content: { application/json: { schema: { $ref: '#/components/schemas/MmApplication' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'conflict: the caller is already a market maker, or their latest application is still pending.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: organization (min 3 chars), categories (at least one, all known category ids), experience (min 30 chars).' }
+
+/admin/mm-applications:
+  get:
+    operationId: listMmApplications
+    summary: Review queue of market maker applications
+    description: All applications, pending first, then newest submitted first. Not paginated.
+    tags: [Roles]
+    x-access: capability:admin
+    responses:
+      '200':
+        description: Applications.
+        content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/MmApplication' } } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the admin capability.' }
+
+/admin/mm-applications/{id}/actions:
+  parameters:
+    - { name: id, in: path, required: true, description: Application id., schema: { type: string } }
+  post:
+    operationId: decideMmApplication
+    summary: Approve or reject a market maker application
+    description: >-
+      Pending applications only. `approve` grants the applicant the `market_maker` capability; `reject` needs a reason of at least
+      10 characters. Records the decision (`by`, `at`, `reason`), writes an audit entry and notifies the applicant
+      (workspace activated, or rejection with the reason).
+    tags: [Roles]
+    x-access: capability:admin
+    x-audit: true
+    x-note: The reason error code is `reason_required` (not `validation`), same shape as other admin punitive actions. Any `action` other than `approve` is treated as a rejection, but without the reason check unless it is exactly `reject`.
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/RolesMmDecisionInput' } } }
+    responses:
+      '200':
+        description: The decided application.
+        content: { application/json: { schema: { $ref: '#/components/schemas/MmApplication' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'forbidden: caller lacks the admin capability.' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown application, or the applicant account no longer exists.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'conflict: the application was already decided.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'reason_required with fields: reason (min 10 chars, required for reject).' }
+
+/me/invitations:
+  get:
+    operationId: listMyInvitations
+    summary: My pending organization invitations
+    description: Org members still `invited` under the caller's email, across all organizations. Not paginated.
+    tags: [Roles]
+    x-access: session
+    responses:
+      '200':
+        description: Invitations.
+        content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/OrgInvitation' } } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+
+/me/invitations/{id}:
+  parameters:
+    - { name: id, in: path, required: true, description: Invitation id (the org member id)., schema: { type: string } }
+  post:
+    operationId: answerInvitation
+    summary: Accept or decline an organization invitation
+    description: >-
+      `accept` activates the member (name and user id filled in) and adds the organization to the caller's account with the invited
+      role. Any other action removes the invitation. Writes an org audit entry and notifies the organization's owners
+      (`transaction_update`, link `/org/{orgId}/team`).
+    tags: [Roles]
+    x-access: session
+    x-audit: true
+    x-note: Any `action` other than `accept` behaves as decline (no 422 for unknown values). The role is stored in the OrgRole slot even when it is a custom org role id.
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/RolesInvitationAnswerInput' } } }
+    responses:
+      '200':
+        description: The caller's refreshed user.
+        content: { application/json: { schema: { $ref: '#/components/schemas/User' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: unknown invitation, not addressed to the caller''s email, or no longer pending.' }
+
+/orgs:
+  post:
+    operationId: createOrganization
+    summary: Create an organization
+    description: >-
+      Any signed-in user. Seeds a blank organization with the caller as its only member (role owner, unverified), sets the
+      industry to `<type> · <category label>` and the NPWP when given, writes an org audit entry and adds the
+      organization to the caller's account.
+    tags: [Roles]
+    x-access: session
+    x-audit: true
+    requestBody:
+      required: true
+      content: { application/json: { schema: { $ref: '#/components/schemas/NewOrgInput' } } }
+    responses:
+      '201':
+        description: Organization created.
+        content: { application/json: { schema: { $ref: '#/components/schemas/RolesCreateOrgResult' } } }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: name (min 3 chars, and not the name of an org the caller already belongs to, case-insensitive), type (one of PT, CV, Koperasi, UMKM, Asosiasi, Kelompok tani, Yayasan), npwp (when given: 15 or 16 digits after stripping non-digits), categoryId (known category).' }

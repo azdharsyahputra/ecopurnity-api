@@ -1,0 +1,548 @@
+# Governance under /admin. Every operation requires a session whose user has the `admin` capability:
+# 401 `unauthenticated` when signed out, 403 `forbidden` ("Butuh capability admin") otherwise.
+# Punitive actions need `reason` (trimmed >= 10 chars) -> 422 `reason_required` with fields.reason.
+/admin/overview:
+  get:
+    operationId: getAdminOverview
+    summary: Get the admin dashboard overview
+    description: |
+      Queue counters, the 4 highest-scored `new` fraud alerts, up to 5 open disputes and review-SLA stats.
+      - `queues.users`: users with reportCount > 0 and status `active`, or a pending appeal.
+      - `queues.verification`: pending verification requests.
+      - `queues.markets`: non-suspended markets with a flag newer than `reviewedAt` (or never reviewed).
+      - `queues.auctions`: scheduled/qualification/live/extended auctions that have at least one finding.
+      - `queues.disputes`: disputes not `resolved`. `queues.fraud`: alerts `new` or `investigating`.
+      - `sla`: always two rows, verification (48h) and disputes (72h); `breached` counts items older than the SLA.
+    tags: [Admin]
+    x-access: capability:admin
+    responses:
+      '200':
+        description: Overview.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminOverview' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+
+/admin/users:
+  get:
+    operationId: listAdminUsers
+    summary: List user accounts
+    description: Not paginated. Includes platform users and seeded person/business accounts. Result is an array, not a page envelope.
+    tags: [Admin]
+    x-access: capability:admin
+    parameters:
+      - name: q
+        in: query
+        description: Case-insensitive substring over `name username email`.
+        schema: { type: string }
+      - name: status
+        in: query
+        description: Exact match on account status.
+        schema: { $ref: '#/components/schemas/AccountStatus' }
+    responses:
+      '200':
+        description: Matching users.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/AdminUser' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+
+/admin/users/{id}:
+  get:
+    operationId: getAdminUser
+    summary: Get a user with reports, history, appeal and audit trail
+    description: |
+      `history` is the user's transactions without timeline/documents/payment/delivery/dispute (empty for non-platform seeded
+      accounts). `orgs` is the names of organizations the user belongs to. `audit` is the audit entries for this user.
+    tags: [Admin]
+    x-access: capability:admin
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    responses:
+      '200':
+        description: User detail.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminUserDetail' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: user does not exist.' }
+
+/admin/users/{id}/actions:
+  post:
+    operationId: actOnAdminUser
+    summary: Verify, suspend, restrict or restore a user, or deny a suspension appeal
+    description: |
+      Order of checks: 404, then `reason` (422 `reason_required`, required for every action including `verify`), then the
+      action-specific 409s.
+      - `verify`: marks identity verified. 409 `already_verified` when already verified.
+      - `deny_appeal`: needs a `pending` appeal, which becomes `denied` with decision note = reason. 409 `no_appeal` otherwise.
+        The account status is not changed.
+      - `suspend` / `restrict` / `restore`: sets status `suspended` / `restricted` / `active`. 409 `no_change` when the
+        account already has that status. `restore` on an account with a pending appeal also marks the appeal `granted`
+        (note = reason), before the no_change check.
+      Side effects: audit entry (verify: "Verifikasi identitas"; status: "Suspend akun" / "Batasi akun" / "Pulihkan akun" with
+      a status before/after diff; deny_appeal: "Tolak banding suspend"). No notification is sent to the user.
+    tags: [Admin]
+    x-access: capability:admin
+    x-audit: true
+    x-note: >-
+      Mock does not validate `action`: an unknown value falls through to the status branch and behaves like `restore`.
+      Real backend should reject it with 422 `validation` (fields.action). Also, `restore` marks a pending appeal granted
+      even when the call then fails with `no_change`.
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AdminUserActionRequest' }
+    responses:
+      '200':
+        description: The updated user.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminUser' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: user does not exist.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'already_verified (verify); no_appeal (deny_appeal without a pending appeal); no_change (status already the target).' }
+      '422': { $ref: '#/components/responses/Validation', description: 'reason_required: fields.reason (required, min 10 chars after trim).' }
+
+/admin/verifications:
+  get:
+    operationId: listAdminVerifications
+    summary: List verification requests
+    description: |
+      All business and personal (KTP + selfie) verification requests, in all statuses, in stored order. Not paginated.
+      Pending ones form the review queue.
+    tags: [Admin]
+    x-access: capability:admin
+    responses:
+      '200':
+        description: Verification requests.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/VerificationRequest' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+
+/admin/verifications/{id}:
+  get:
+    operationId: getAdminVerification
+    summary: Get a verification request
+    tags: [Admin]
+    x-access: capability:admin
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    responses:
+      '200':
+        description: Verification request with the applicant's form and the documents' extracted fields.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerificationRequest' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: request does not exist.' }
+
+/admin/verifications/{id}/actions:
+  post:
+    operationId: decideAdminVerification
+    summary: Approve, reject or request re-upload on a pending verification
+    description: |
+      Only `pending` requests can be decided. Order of checks: 404, 409 `decided`, then reason (422 `reason_required`,
+      required for `reject` and `reupload`, optional for `approve`).
+      Sets status to `approved` / `rejected` / `reupload` and `decision = { at, by, note }` (note = trimmed reason, or
+      "Dokumen sesuai" when no reason was given).
+      Side effects:
+      - audit entry ("Setujui verifikasi bisnis" / "Tolak verifikasi bisnis" / "Minta unggah ulang dokumen") with a status diff;
+      - when `owner` matches a platform user name: a `transaction_update` notification "Verifikasi {business}: disetujui | ditolak |
+        perlu unggah ulang" (body = decision note, href `/app/settings`);
+      - when additionally `kind` is `personal`: approve sets the admin-verified flag on the user and the user's identity
+        verification to `verified`; reject/reupload sets identity verification back to `none`.
+    tags: [Admin]
+    x-access: capability:admin
+    x-audit: true
+    x-note: >-
+      Mock does not validate `action`: an unknown value makes the handler throw (500). Real backend should return 422
+      `validation` (fields.action).
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AdminVerificationActionRequest' }
+    responses:
+      '200':
+        description: The decided request.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerificationRequest' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: request does not exist.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'decided: the request is no longer pending.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'reason_required: fields.reason (required for reject and reupload, min 10 chars after trim).' }
+
+/admin/markets:
+  get:
+    operationId: listAdminMarkets
+    summary: List markets for moderation
+    description: |
+      Every market (public Market fields, without description, rules, price history, activity and auctions) plus `flags`,
+      `reports`, `reviewedAt` and `disputes` (count of non-resolved dispute cases in the market). Not paginated.
+    tags: [Admin]
+    x-access: capability:admin
+    x-note: >-
+      The TS type AdminMarket extends Market, whose fields are all kept, but the mock strips `description`, `rules`,
+      `priceHistory`, `activity`, `auctions` from the list items (those belong to MarketDetail, not Market).
+    responses:
+      '200':
+        description: Markets.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/AdminMarket' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+
+/admin/markets/{id}:
+  get:
+    operationId: getAdminMarket
+    summary: Get a market with its auctions and audit trail
+    tags: [Admin]
+    x-access: capability:admin
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    responses:
+      '200':
+        description: Market moderation detail; `auctions` are the market's auctions with findings.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminMarketDetail' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: market does not exist.' }
+
+/admin/markets/{id}/actions:
+  post:
+    operationId: actOnAdminMarket
+    summary: Review, flag, suspend or restore a market
+    description: |
+      - `review`: stamps `reviewedAt` (clears it from the moderation queue until a newer flag arrives). Reason optional.
+        No status change.
+      - `flag`: needs reason; prepends a MarketFlag (label = trimmed reason, by = actor).
+      - `suspend`: needs reason; market status becomes `suspended`. 409 `no_change` if already suspended.
+      - `restore`: needs reason; status becomes `active`. 409 `no_change` if the market is not suspended.
+      Reason check (422 `reason_required`) runs before the 409s. Audit entry for each action ("Review market", "Flag market",
+      "Suspend market", "Pulihkan market"); suspend/restore include a status diff. Existing auctions in the market are not
+      touched and no notification is created.
+    tags: [Admin]
+    x-access: capability:admin
+    x-audit: true
+    x-note: >-
+      Mock does not validate `action`: an unknown value behaves like `restore`. Suspend/restore set the market's status
+      to exactly `suspended`/`active`, even if the market had another status (e.g. `closed`) before.
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AdminMarketActionRequest' }
+    responses:
+      '200':
+        description: Action applied.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminOk' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: market does not exist.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'no_change: already suspended (suspend) or not suspended (restore).' }
+      '422': { $ref: '#/components/responses/Validation', description: 'reason_required: fields.reason (required for flag, suspend, restore; min 10 chars after trim).' }
+
+/admin/auctions:
+  get:
+    operationId: listAdminAuctions
+    summary: List auctions with moderation findings
+    description: Every auction (public Auction shape) plus `findings`. Not paginated.
+    tags: [Admin]
+    x-access: capability:admin
+    responses:
+      '200':
+        description: Auctions.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/AdminAuction' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+
+/admin/auctions/{id}:
+  get:
+    operationId: getAdminAuction
+    summary: Get an auction with the unmasked bid ledger and findings
+    description: |
+      `bids` carries real bidder identities and is `null` while a sealed auction is still scheduled/qualification/live/extended
+      (bids unseal only after close). `findings` combines open fraud alerts on this auction (non-dismissed) with rule-based
+      detections: "Bid beruntun" (3+ consecutive bids by one bidder) and "Lonjakan harga" (price jump over 20x the minimum
+      step). `caseId` is the id of an `investigating` fraud alert on this auction, if any.
+    tags: [Admin]
+    x-access: capability:admin
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    responses:
+      '200':
+        description: Auction governance detail.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminAuctionDetail' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: auction does not exist.' }
+
+/admin/auctions/{id}/actions:
+  post:
+    operationId: actOnAdminAuction
+    summary: Freeze or unfreeze an auction, or open a fraud case on it
+    description: |
+      Reason is required for every action (422 `reason_required`, checked before the 409s).
+      - `freeze`: only auctions in scheduled/qualification/live/extended. Remembers the previous status, sets status
+        `frozen` (bids and winner selection are held), publishes an `auction.closed` event with status `frozen` on channel
+        `auction:{id}`, notifies the auction owner (`auction_ending` "{title} dibekukan Admin"), audit "Freeze auction".
+        409 `not_active` otherwise.
+      - `unfreeze`: only when `frozen` (409 `not_frozen` otherwise). Restores the remembered status (default `closed`);
+        a remembered `live`/`extended` auction whose `endsAt` has passed reopens as `closed`. Audit "Cabut freeze auction".
+      - `open_case`: creates a manual FraudAlert (code `FRD-{1040+n}`, status `investigating`, score 0, confidence 0,
+        evidence = current findings, first note = reason) with this auction as subject, audit "Buka kasus {code}".
+        Returns `{ caseId }`.
+    tags: [Admin]
+    x-access: capability:admin
+    x-audit: true
+    x-note: >-
+      `open_case` responds 200 (not 201) with `{ caseId }`, unlike the `{ ok: true }` of the other actions. Mock does not
+      validate `action` or `type`: an unknown action behaves like `open_case`, an unknown `type` is stored as given.
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AdminAuctionActionRequest' }
+    responses:
+      '200':
+        description: '`{ ok: true }` for freeze/unfreeze, `{ caseId }` for open_case.'
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - { $ref: '#/components/schemas/AdminOk' }
+                - { $ref: '#/components/schemas/AdminCaseOpened' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: auction does not exist.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'not_active (freeze on closed/settled/etc. auction); not_frozen (unfreeze on a non-frozen auction).' }
+      '422': { $ref: '#/components/responses/Validation', description: 'reason_required: fields.reason (required, min 10 chars after trim).' }
+
+/admin/disputes:
+  get:
+    operationId: listAdminDisputes
+    summary: List dispute cases
+    description: |
+      All cases, newest `openedAt` first, as summaries (no evidence, timeline or transaction; adds `totalIdr` and `title`).
+      Cases come from real user transactions that have a dispute (a linked trade is represented once, by the buyer's copy;
+      id `dsp-{transactionId}`) plus seeded cases. Not paginated.
+    tags: [Admin]
+    x-access: capability:admin
+    responses:
+      '200':
+        description: Dispute summaries.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/DisputeSummary' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+
+/admin/disputes/{id}:
+  get:
+    operationId: getAdminDispute
+    summary: Get a dispute case
+    description: Full case with parties, the transaction, evidence from both sides plus admin entries, timeline and the resolution once decided.
+    tags: [Admin]
+    x-access: capability:admin
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    responses:
+      '200':
+        description: Dispute case.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DisputeCase' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: case does not exist.' }
+
+/admin/disputes/{id}/actions:
+  post:
+    operationId: actOnAdminDispute
+    summary: Request evidence, start review or resolve a dispute
+    description: |
+      Workflow (status -> action): `open|evidence` -> `request_evidence` (-> `evidence`) or `start_review` (-> `review`);
+      `review` -> `resolve` (-> `resolved`). Any other combination is 409 `invalid_transition`; this check runs before
+      body validation.
+      - `request_evidence`: `from` (buyer | supplier | both) and `reason` (min 10 chars) required. Adds a timeline entry
+        "Bukti diminta dari {pembeli|supplier|kedua pihak}: {reason}" and sends a `transaction_update` notification
+        "{code}: Admin meminta bukti" (body = reason) to the selected platform-user parties.
+      - `start_review`: reason optional. Timeline entry "Review dimulai".
+      - `resolve`: `resolution` and `reason` (min 10 chars) required. Resolution kinds: `refund` (buyer gets the full total
+        back; transaction -> `cancelled`, payment `refunded`), `release` (supplier gets the full total; transaction ->
+        `completed`, payment `released`), `partial` (`refundIdr` must be an integer > 0 and < transaction total; buyer gets
+        refundIdr back, supplier the rest; transaction -> `completed`, payment `released`). Invalid partial amounts return
+        422 `validation` with fields.refundIdr. Effects: transaction status/payment/updatedAt updated (the completed timeline
+        step gets "Putusan dispute: ..." note), stored resolution `{ ...resolution, refundIdr, releaseIdr, reason, at, by }`,
+        timeline "Diputuskan: ...", notification "{code} diputuskan" to both parties, audit "Putuskan dispute (refund penuh |
+        lepas dana | refund sebagian)" with status diffs.
+      Audit is written for every action ("Minta bukti dispute", "Mulai review dispute", resolve).
+    tags: [Admin]
+    x-access: capability:admin
+    x-audit: true
+    x-note: >-
+      Mock does not validate `from` on request_evidence (a missing value makes the handler throw) nor the shape of
+      `resolution` on resolve beyond the partial amount. Real backend should return 422 `validation` for those.
+      `request_evidence` while already in `evidence` is allowed and repeats the request.
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/DisputeActionInput' }
+    responses:
+      '200':
+        description: The updated case.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DisputeCase' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: case does not exist.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'invalid_transition: the action is not available for the case status.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'reason_required: fields.reason (request_evidence and resolve; min 10 chars after trim). validation: fields.refundIdr (partial resolution amount must be an integer > 0 and < transaction total).' }
+
+/admin/alerts:
+  get:
+    operationId: listAdminAlerts
+    summary: List fraud alerts
+    description: All alerts (system-detected and manual cases), newest `detectedAt` first. Not paginated.
+    tags: [Admin]
+    x-access: capability:admin
+    responses:
+      '200':
+        description: Fraud alerts.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/FraudAlert' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+
+/admin/alerts/{id}:
+  get:
+    operationId: getAdminAlert
+    summary: Get a fraud alert with its case history
+    description: The alert plus `audit`, the audit entries whose action text contains the alert code (opening, notes, escalation, close).
+    tags: [Admin]
+    x-access: capability:admin
+    x-note: The audit filter is a substring match on the action text (`FRD-1041` would also match `FRD-10410`); the real backend should filter by entity id.
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    responses:
+      '200':
+        description: Alert detail.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminAlertDetail' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: alert does not exist.' }
+
+/admin/alerts/{id}/actions:
+  post:
+    operationId: actOnAdminAlert
+    summary: Investigate, annotate, dismiss, close or escalate a fraud alert
+    description: |
+      Lifecycle: `new` -> `investigating` -> `escalated` | `dismissed` | `closed`.
+      - `investigate`: only from `new` (409 `invalid_state` otherwise). Sets `investigating` and creates the investigation
+        `{ openedAt, by, notes: [] }`. No reason needed. Audit "Buka investigasi {code} ({type label})".
+      - Every other action requires an open case (status `investigating`), else 409 `no_case`.
+      - `note`: `text` required (trimmed non-empty; 422 `validation` fields.text). Appends an investigation note, audit
+        "Catatan {code}: {text}". No reason needed.
+      - `dismiss` / `close`: `reason` required (min 10 chars). Status -> `dismissed` / `closed` and a resolution
+        ("Ditolak: bukan pelanggaran" / "Ditutup tanpa tindakan"). Audit "Dismiss {code}" / "Tutup {code}".
+      - `escalate`: `reason`, `subjectId` and `escalation` required. The subject must be one of the alert's subjects and the
+        escalation must fit its type: user -> `suspend_user` | `restrict_user`; auction -> `freeze_auction`; market ->
+        `suspend_market`; otherwise 422 `validation` with fields.subjectId. Performs the action exactly as the direct admin
+        endpoints do (user status change, auction freeze with realtime event and owner notification, market suspension), with the
+        audit text suffixed "(eskalasi {code})". Then sets alert status `escalated` with a resolution outcome
+        ("Suspend|Batasi|Freeze {subject label}"), audit "Eskalasi {code}: {outcome}". 404 `not_found` if a user subject no
+        longer exists; 409 `not_active` if an auction subject is no longer scheduled/qualification/live/extended.
+      The reason check (422 `reason_required`) runs after the `no_case` check and before escalation validation.
+    tags: [Admin]
+    x-access: capability:admin
+    x-audit: true
+    x-note: >-
+      Mock does not validate `action`: an unknown value is treated as `close` (reason required). `escalate` with an
+      auction subject that no longer exists in the economy would throw (500); `suspend_market` does not check the market
+      is already suspended (no 409 no_change, unlike the market action endpoint). A user escalation that would not change
+      the status (already suspended) still succeeds here, the 409 no_change of the user endpoint is not applied.
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AlertActionInput' }
+    responses:
+      '200':
+        description: The updated alert.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FraudAlert' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: alert does not exist, or (escalate) the user subject does not exist.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'invalid_state: investigate on an alert that is not new. no_case: any other action while the alert is not investigating. not_active: escalation target auction is no longer active.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'reason_required: fields.reason (dismiss, close, escalate; min 10 chars after trim). validation: fields.text (note is empty) or fields.subjectId (subject/escalation mismatch).' }
+
+/admin/audit:
+  get:
+    operationId: listAdminAudit
+    summary: List the audit trail
+    description: |
+      Platform-wide audit entries, newest first. Not paginated and not filterable; the mock keeps the latest 500 entries.
+      Includes entries written by admin, market maker and organization actions.
+    tags: [Admin]
+    x-access: capability:admin
+    responses:
+      '200':
+        description: Audit entries.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/AuditEntry' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden' }

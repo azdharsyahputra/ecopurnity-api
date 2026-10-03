@@ -1,0 +1,931 @@
+# Personal workspace (/me/*) and the participant side of /auctions/{id}/* — mocks/personalHandlers.ts + mocks/contracts.ts.
+# Every operation requires a session (cookie ecp_session): 401 `unauthenticated` when missing/unknown user.
+
+/me/dashboard:
+  get:
+    operationId: getMyDashboard
+    summary: Get the personal dashboard summary
+    description: |
+      Aggregates the caller's workspace. `stats.reputation` is the computed reputation score.
+      `actions` is built from: own live bids that are `outbid` (tone red), live bids ending in under 1 hour (orange),
+      transactions where the caller still has an available action other than cancel/dispute/review (blue), and at most
+      one undiscovered match with 2+ match reasons (lime). `topMatches` = top 3 opportunities with relation `none`.
+      `connections` is a fixed demo sample (0 for brand-new accounts).
+    tags: [Personal]
+    x-access: session
+    responses:
+      '200':
+        description: Dashboard summary.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DashboardSummary' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+
+/me/identity:
+  get:
+    operationId: getMyIdentity
+    summary: Get my identity profile
+    tags: [Personal]
+    x-access: session
+    responses:
+      '200':
+        description: The caller's identity (profile, capacities, preferences, completeness).
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Identity' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+  put:
+    operationId: saveMyIdentity
+    summary: Replace my identity profile
+    description: |
+      Replaces the whole identity document. `completeness` is recomputed server-side (the value sent is ignored).
+      Also copies `profile.name` and `profile.location` onto the user account (visible in `GET /auth/me`).
+    tags: [Personal]
+    x-access: session
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Identity' }
+    responses:
+      '200':
+        description: The saved identity with recomputed completeness.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Identity' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: name (required, non-blank profile.name).' }
+    x-note: The mock performs no other validation (phone/KTP verification state in the body is trusted; the BE should not accept `profile.verification` changes from this endpoint, those go through /me/kyc).
+
+/me/listings:
+  get:
+    operationId: listMyListings
+    summary: List my supply and demand listings
+    description: Not paginated. Newest first.
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: kind
+        in: query
+        schema: { type: string, enum: [supply, demand] }
+      - name: status
+        in: query
+        description: A single listing status (supply or demand status value). Exact match.
+        schema: { type: string }
+    responses:
+      '200':
+        description: Listings.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/Listing' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+  post:
+    operationId: createMyListing
+    summary: Create a supply or demand listing
+    description: |
+      `code` is `SUP-xxx` / `DEM-xxx`. A new supply starts `available`, a new demand starts `open`. A history entry
+      `Dibuat` is recorded.
+    tags: [Personal]
+    x-access: session
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ListingInput' }
+    responses:
+      '201':
+        description: The created listing.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Listing' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: item (required, non-blank), quantity (quantity.value must be > 0).' }
+
+/me/listings/{id}:
+  parameters:
+    - name: id
+      in: path
+      required: true
+      schema: { type: string }
+  get:
+    operationId: getMyListing
+    summary: Get one of my listings with history, matches and markets
+    description: '`matches` = up to 3 opportunities in the same category; `markets` = active or forming markets in the same category.'
+    tags: [Personal]
+    x-access: session
+    responses:
+      '200':
+        description: Listing detail.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ListingDetail' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: listing is not the caller''s.' }
+  patch:
+    operationId: updateMyListing
+    summary: Update one of my listings
+    description: Merges the sent fields into the listing, sets `updatedAt` and adds history entry `Diperbarui`.
+    tags: [Personal]
+    x-access: session
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PersonalListingPatch' }
+    responses:
+      '200':
+        description: The updated listing.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Listing' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found.' }
+    x-note: The mock merges ANY body field without validation (even status, id, kind). The BE should restrict the patch to the editable ListingInput fields and validate like create.
+
+/me/listings/{id}/archive:
+  post:
+    operationId: archiveMyListing
+    summary: Archive a listing
+    description: Supply listings become `expired`, demand listings become `cancelled`. Adds history entry `Diarsipkan`. No state check (archiving twice is allowed).
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    responses:
+      '200':
+        description: The archived listing.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Listing' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found.' }
+
+/me/listings/{id}/market:
+  post:
+    operationId: submitMyListingToMarket
+    summary: Put a listing into a market
+    description: |
+      Sets the listing `in_market` with `marketId`, adds history `Dimasukkan ke <market name>` and marks the caller as
+      having joined that market (`/me/markets`).
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PersonalListingMarketInput' }
+    responses:
+      '200':
+        description: The updated listing.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Listing' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: listing or market does not exist.' }
+    x-note: The mock does not create a market-maker participant entry here (unlike POST /me/markets/{id}/join) and does not check listing/market category or status.
+
+/me/opportunities:
+  get:
+    operationId: listMyOpportunities
+    summary: List personalised opportunities
+    description: |
+      Opportunities scored for the caller (`reasons`, `distanceKm`, `relation`, `personalValueIdr`), sorted by score
+      descending (reasons*10 - distanceKm/100 + confidence). Not paginated.
+      Tab filters: `for_you` = has at least one match reason; `nearby` = distanceKm <= 75; `market_gap`, `collective`
+      (collective_demand), `supply_gap` = by opportunity kind; `joined` / `following` = by relation.
+      Distance and per-user value are derived in the mock (deterministic hash), the BE computes them from real locations.
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: tab
+        in: query
+        schema: { type: string, enum: [for_you, nearby, market_gap, collective, supply_gap, joined, following], default: for_you }
+        description: An unknown value returns the unfiltered list.
+    responses:
+      '200':
+        description: Opportunities.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/PersonalOpportunity' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+
+/me/opportunities/{id}/join:
+  post:
+    operationId: joinOpportunity
+    summary: Join an opportunity with a contribution
+    description: |
+      Sets relation `joined` with the contribution and increases the opportunity's `participants` (once) and its
+      `demand` or `supply` quantity by the contributed amount (also when re-joining: the quantity is added again).
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PersonalOpportunityJoinInput' }
+    responses:
+      '200':
+        description: The opportunity as seen by the caller (relation `joined`).
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PersonalOpportunity' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: opportunity.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: quantity (quantity.value must be > 0).' }
+    x-note: The mock does not verify that `listingId` is one of the caller's listings, and re-joining double counts the contribution in the opportunity totals.
+
+/me/opportunities/{id}/follow:
+  post:
+    operationId: followOpportunity
+    summary: Follow an opportunity
+    description: Sets relation `following`, unless the caller already joined it (then it stays `joined`). Idempotent.
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    responses:
+      '204': { description: Followed. }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+    x-note: The mock does not check that the opportunity exists (no 404).
+
+/me/opportunities/{id}:
+  delete:
+    operationId: leaveOpportunity
+    summary: Stop following or leave an opportunity
+    description: Clears the caller's relation. If the caller had joined, the opportunity's `participants` is decremented (the contributed quantity is not subtracted). Idempotent.
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    responses:
+      '204': { description: Relation cleared. }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+
+/me/markets:
+  get:
+    operationId: listMyMarkets
+    summary: List all markets with my membership state
+    description: |
+      Every market (without description/rules/priceHistory/activity/auctions) plus `joined`, `watchPriceIdr`,
+      `approval` (membership state in the market maker's participant list, only when joined) and `myListings`
+      (count of the caller's listings in that market). Not paginated.
+    tags: [Personal]
+    x-access: session
+    responses:
+      '200':
+        description: Markets.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/MyMarket' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+
+/me/markets/{id}/join:
+  post:
+    operationId: joinMarket
+    summary: Join a market
+    description: |
+      Marks the market joined. Also adds the caller to the market maker's participant queue (role `buyer`,
+      kind `person`, reputation 80 for brand-new accounts else 94) with status `pending` when the market's approval
+      setting is `manual`, otherwise `active`. Not duplicated if already a participant.
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    responses:
+      '204': { description: Joined. }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: market.' }
+
+/me/markets/{id}/leave:
+  post:
+    operationId: leaveMarket
+    summary: Leave a market
+    description: Resets the caller's membership (also clears the price watch).
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    responses:
+      '204': { description: Left. }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+    x-note: The mock does not check the market exists and does not remove or suspend the participant row created by join.
+
+/me/markets/{id}/watch:
+  put:
+    operationId: setMarketWatchPrice
+    summary: Set or clear the market price alert
+    description: Sets the median price alert threshold. A missing or `0` price clears it. Keeps the current joined flag.
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PersonalMarketWatchInput' }
+    responses:
+      '204': { description: Saved. }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+
+/me/auctions:
+  get:
+    operationId: listMyAuctions
+    summary: List my auctions as participant and owner
+    description: |
+      `eligible` = auctions the caller may still bid on (no bid yet, not the owner, status live/extended/qualification/scheduled,
+      type not `forward`) with the caller's `qualification` status; `bids` = auctions the caller bid on, as `MyBid`;
+      `owned` = auctions the caller created as a buyer, excluding those evaluated in an organization workspace.
+    tags: [Personal]
+    x-access: session
+    responses:
+      '200':
+        description: The three groups.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PersonalMyAuctions' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+  post:
+    operationId: createBuyerAuction
+    summary: Open a buyer (reverse or sealed) auction from a demand listing
+    description: |
+      Creates a live auction for one of the caller's demand listings. Duration starts now; `extension` is fixed at
+      2 min window / 5 min extend; visibility is forced to `sealed` for type `sealed`. Value check
+      `openingPriceIdr * quantity` against the KYC commitment limit. Side effects: the demand gets `auctionId`
+      and status `in_market` (history `Auction <code> dibuat`); audit entry `Buka auction`.
+    tags: [Personal]
+    x-access: session
+    x-audit: true
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/CreateAuctionInput' }
+    responses:
+      '201':
+        description: The created auction.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuctionDetail' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'account_restricted: caller is restricted or suspended by governance. kyc_limit: commitment above the verification level limit.' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: demandId is not one of the caller''s demand listings.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: openingPriceIdr (must be > 0).' }
+    x-note: The mock does not validate durationMinutes, minStepIdr, type or that the demand is still open; and does not reject a demand that already has an auction.
+
+/auctions/{id}/me:
+  get:
+    operationId: getMyAuctionState
+    summary: Get my qualification, bid and ownership for an auction
+    description: '`evaluateHref` is only present for the owner: the organization evaluate URL when the auction belongs to an org workspace, otherwise `/app/auctions/{id}/evaluate`.'
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    responses:
+      '200':
+        description: Participant state.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PersonalAuctionMe' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: auction.' }
+
+/auctions/{id}/qualification:
+  post:
+    operationId: qualifyForAuction
+    summary: Complete the qualification for an auction
+    description: |
+      All of document, rules and a verified email are required; on success the caller is `qualified` and the
+      returned checklist shows every check done. The reputation check is always passing in the mock.
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PersonalQualificationInput' }
+    responses:
+      '200':
+        description: Updated qualification.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Qualification' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: auction.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: document (documentName required), rules (acceptRules must be true), email (account email not verified). Note the field keys are document/rules, not documentName/acceptRules.' }
+
+/auctions/{id}/bids:
+  post:
+    operationId: placeBid
+    summary: Place or raise a bid
+    description: |
+      Checks in order: caller not restricted, auction exists, auction `live` or `extended`, caller `qualified`,
+      caller is not the owner, KYC commitment limit (`priceIdr * lot quantity`), then bid rules (reverse/sealed: price must be
+      <= limit, forward: >= limit, where limit follows the current best price minus the minimum step; sealed ignores the best price).
+      The bid status is `submitted` for sealed auctions, `leading` otherwise. Increments `participants` on the first bid and
+      `bidCount` always; with `visibility: full` the public bid list and `currentPriceIdr` update.
+      Publishes a realtime `auction.bid` event on `auction:{id}` (price masked as 0 unless visibility is full).
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PersonalBidInput' }
+    responses:
+      '200':
+        description: The caller's bid on this auction.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MyBid' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'account_restricted | not_qualified: finish qualification first | owner: auction creator cannot bid | kyc_limit.' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: auction.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'auction_closed: auction is not live/extended.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'invalid_bid: price not a positive number or violates the limit; fields: price.' }
+
+/auctions/{id}/bids/mine:
+  delete:
+    operationId: withdrawMyBid
+    summary: Withdraw my bid
+    description: |
+      Allowed only when the auction is live/extended, the bid is not `leading` and not already withdrawn, and more than
+      30 minutes remain (`MyBid.canWithdraw`). Sets the bid status `withdrawn`.
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    responses:
+      '200':
+        description: The withdrawn bid.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MyBid' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: auction does not exist or the caller has no bid.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'cannot_withdraw: leading bid, last 30 minutes, not live, or already withdrawn.' }
+
+/auctions/{id}/accept:
+  post:
+    operationId: acceptDutchPrice
+    summary: Accept the current price of a Dutch auction
+    description: |
+      Buys at the current ask (`currentPriceIdr`, else the opening price). Marks the auction `awarded`, the caller's bid
+      `won`, creates a buyer transaction against the market maker with 0.5% maker fee, due in 14 days, and notifies the caller
+      (`winning_bid`). KYC limit is checked on `price * lot quantity`.
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    responses:
+      '200':
+        description: The created transaction id.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PersonalAcceptResult' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'account_restricted | not_qualified | kyc_limit.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'auction_closed: auction missing, not a Dutch auction, or not live/extended.' }
+    x-note: A missing auction answers 409 auction_closed, not 404.
+
+/auctions/{id}/evaluation:
+  get:
+    operationId: getAuctionEvaluation
+    summary: Get the bid comparison and suggested allocation (buyer)
+    description: |
+      Owner only. One offer per bidder (the bidder's lowest price; capacity and reputation are synthesized in the mock,
+      the BE should use real supplier data). `suggestion` is Smart Allocation: cheapest offers first (reputation breaks ties),
+      each up to its capacity, until the lot is covered. `savingsIdr` = opening price * covered quantity - total.
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    responses:
+      '200':
+        description: Evaluation.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuctionEvaluation' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: auction missing or the caller is not its owner.' }
+
+/auctions/{id}/award:
+  post:
+    operationId: awardAuction
+    summary: Award a closed auction to one or more suppliers (buyer)
+    description: |
+      Owner only, auction must be `closed`. Marks it `awarded`, writes an audit entry `Tetapkan pemenang` with one change
+      per line, and creates one buyer transaction per line (maker fee 0.5%). A line whose offer was placed by a platform
+      account becomes a linked two-sided trade (the supplier gets a record and an agreement notification); otherwise the
+      counterparty is a fictional party played by a bot. Other participants' bids become `won` (selected suppliers) or
+      `lost`, each notified (`winning_bid` / `auction_ending`). The owner's demand listing becomes `matched` (history
+      `Award ke N supplier`).
+    tags: [Personal]
+    x-access: session
+    x-audit: true
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PersonalAwardInput' }
+    responses:
+      '200':
+        description: Created transactions (owner's records, same order as `lines`).
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PersonalAwardResult' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: auction missing or the caller is not its owner.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'not_closed: award is only possible after the auction closed.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'validation: lines must contain at least one entry.' }
+    x-note: The mock does not validate that lines reference real offers, do not exceed offer capacity or the lot quantity, and does not apply the KYC limit or the account_restricted check on award. The BE should validate these.
+
+/me/transactions:
+  get:
+    operationId: listMyTransactions
+    summary: List my transactions
+    description: |
+      The caller's own record of each trade (buyer or supplier side). Returns the summary shape, i.e. without
+      `timeline`, `documents`, `payment`, `delivery`, `dispute`, `shipments` and `reviews`, but the F6 fields
+      `agreement`, `invoice`, `qc`, `makerFeeRate` and `group` are still present. Not paginated. Pre-F6 records are normalised (terms `escrow`, invoice, shipments).
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: role
+        in: query
+        schema: { type: string, enum: [buyer, supplier] }
+      - name: status
+        in: query
+        description: Comma-separated transaction statuses (`invoiced,paid`).
+        schema: { type: string }
+    responses:
+      '200':
+        description: Transactions.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/Transaction' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+
+/me/transactions/{id}:
+  get:
+    operationId: getMyTransaction
+    summary: Get a transaction
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    responses:
+      '200':
+        description: Full transaction detail.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransactionDetail' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: not the caller''s transaction.' }
+
+/me/transactions/{id}/actions:
+  post:
+    operationId: applyMyTransactionAction
+    summary: Apply a trade action to a transaction
+    description: |
+      One endpoint for the whole settlement flow (PRD F6). The body is a `TradeActionInput`: `action` plus the
+      action-specific fields. The action must be allowed for the caller's role and the current trade state, else
+      `409 invalid_transition`. Order terms are `escrow` or `net14`/`net30`.
+
+      Available actions (role / state):
+      - `accept_agreement`: status `agreement` and the caller's side has not accepted yet. Records the side's acceptance and an agreement document.
+      - `issue_invoice`: supplier, status `agreement`, both sides accepted. Status becomes `invoiced`; due date = +3 days (escrow) or terms days + 5.
+      - `pay`: buyer. Escrow terms: status `invoiced` (payment becomes `escrow`, status `paid`). Net terms: status `accepted` (payment `released`, status `completed`).
+      - `ship`: supplier, with unscheduled quantity left, status `paid`/`fulfilling` (escrow) or `invoiced`/`fulfilling` (net). Needs `shipment` {quantity (>0, <= unscheduled quantity), dropPoint (required), carrier (default `Armada supplier`), scheduledAt (default now)}. Status `fulfilling`.
+      - `upload_proof`: supplier, status `fulfilling` with at least one open shipment. Needs `file`; delivers `shipmentId` (or the first open shipment). Status becomes `delivered` once every unit is on a delivered shipment, else stays `fulfilling`.
+      - `confirm_receipt`: buyer, status `delivered`. Optional `qc` {outcome `accepted` (default) | `partial` (acceptedQty between 1 and quantity-1, note required) | `rejected` (note required)}. accepted: escrow releases payment and the status is `completed`, net terms go to `accepted` and set a payment due date; partial: quantity and total shrink to the accepted amount (escrow refund of the shortfall incl. PPN is computed), same status flow as accepted; rejected: opens a dispute with the note as evidence, status `disputed`, no release.
+      - `cancel`: either side, status `agreement` or `invoiced`. An escrowed payment becomes `refunded`. Status `cancelled`.
+      - `dispute`: either side, status `paid`/`fulfilling`/`delivered` (escrow) or `fulfilling`/`delivered`/`accepted` (net). Needs `note` (reason); optional `file`. Status `disputed`.
+      - `add_evidence`: either side, status `disputed`. Needs `note`; optional `file`. Moves the dispute from `open` to `evidence`.
+      - `review`: either side, status `completed` and the caller's side has not reviewed yet. Needs `review` {rating 1-5, quality, timeliness, communication, text}.
+
+      Side effects: the new state is mirrored to the counterparty's record when they are a platform account (`peer`) and
+      they are notified (`payment` for pay, `delivery` for ship/upload_proof, else `transaction_update`). For fictional counterparties
+      a bot plays the other side on a timer. A timeline step timestamp is set when the status changes; an audit entry
+      is written (reason = `note`).
+    tags: [Personal]
+    x-access: session
+    x-audit: true
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/TradeActionInput' }
+    responses:
+      '200':
+        description: The caller's updated transaction.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransactionDetail' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'invalid_transition: action not available for the caller''s role in the current status (also upload_proof with no open shipment).' }
+      '422':
+        $ref: '#/components/responses/Validation'
+        description: |
+          validation, with fields: ship -> quantity (required, max unscheduled), dropPoint (required); upload_proof -> file; confirm_receipt -> acceptedQty (partial only), note (partial/rejected); dispute -> note; add_evidence -> note; review -> rating (1-5).
+    x-note: Same engine is reused by the organization transaction actions endpoint. The KYC commitment limit is not re-checked on actions.
+
+/me/finance:
+  get:
+    operationId: getMyFinance
+    summary: Get my escrow, receivable, balance and ledger
+    description: |
+      Derived from the caller's transactions. Buyer: `escrowHeldIdr` sums what the buyer paid into escrow (subtotal + 11% PPN).
+      Supplier: `receivableIdr` = amount receivable (escrow held or net terms delivered/accepted) after 1% platform fee and
+      the market maker commission; `availableIdr` = released earnings minus withdrawals. `entries` is a ledger sorted newest first
+      (kinds `escrow`, `payment`, `refund`, `payout`, `fee`, `withdrawal`).
+    tags: [Personal]
+    x-access: session
+    responses:
+      '200':
+        description: Finance overview.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Finance' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+
+/me/finance/bank:
+  put:
+    operationId: saveMyBankAccount
+    summary: Set the payout bank account
+    tags: [Personal]
+    x-access: session
+    x-audit: true
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PersonalFinanceBank' }
+    responses:
+      '200':
+        description: Updated finance overview.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Finance' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: bank (required), accountNo (8-16 digits), holder (required).' }
+
+/me/finance/withdrawals:
+  post:
+    operationId: createMyWithdrawal
+    summary: Withdraw available funds to the payout account
+    description: Creates a withdrawal with status `processing`. Requires a saved bank account and `0 < amountIdr <= availableIdr`.
+    tags: [Personal]
+    x-access: session
+    x-audit: true
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PersonalWithdrawalInput' }
+    responses:
+      '201':
+        description: Updated finance overview including the new withdrawal.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Finance' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: amountIdr (no bank account yet, amount not positive, or above the available balance; message states the maximum).' }
+    x-note: Withdrawal stays `processing` forever in the mock (never becomes `paid`). The 422 field is always amountIdr, even when the problem is the missing bank account. The `no bank` and `over balance` failures share code `validation`.
+
+/me/notifications:
+  get:
+    operationId: listMyNotifications
+    summary: List my notifications
+    description: Newest first as stored. Not paginated. New notifications are also pushed on the realtime channel `user:{id}:notifications`.
+    tags: [Personal]
+    x-access: session
+    responses:
+      '200':
+        description: Notifications.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/AppNotification' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+
+/me/notifications/read:
+  post:
+    operationId: markNotificationsRead
+    summary: Mark notifications as read
+    description: Marks the listed notification ids read; omitting `ids` marks all notifications read. Unknown ids are ignored.
+    tags: [Personal]
+    x-access: session
+    requestBody:
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PersonalNotificationsReadInput' }
+    responses:
+      '204': { description: Marked. }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+
+/me/notification-prefs:
+  get:
+    operationId: getMyNotificationPrefs
+    summary: Get notification preferences
+    tags: [Personal]
+    x-access: session
+    responses:
+      '200':
+        description: Per notification type in-app and email flags.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotificationPrefs' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+  put:
+    operationId: saveMyNotificationPrefs
+    summary: Replace notification preferences
+    tags: [Personal]
+    x-access: session
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/NotificationPrefs' }
+    responses:
+      '200':
+        description: Saved preferences.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotificationPrefs' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+    x-note: The mock stores the body as-is with no validation (the BE should require every NotificationType key).
+
+/me/contracts:
+  get:
+    operationId: listMyContracts
+    summary: List my standing supply contracts
+    description: Contracts where the caller is buyer or supplier, newest first, with the caller's `side` and the actions open to that side. Not paginated.
+    tags: [Personal]
+    x-access: session
+    responses:
+      '200':
+        description: Contracts.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/ContractView' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+  post:
+    operationId: createContract
+    summary: Propose a standing supply contract from a completed transaction
+    description: |
+      Copies item (title before ` · `), quantity, unit price and payment terms (default `escrow`) from one of the caller's
+      completed transactions; the caller proposes in their own role (`proposedBy`) and the other side must accept. The
+      first run is at 08:00 on `startAt`. Status starts `proposed`, code `CTR-xxxx`. Writes an audit entry
+      and notifies the counterparty when they are a platform account. With a fictional counterparty the mock auto-accepts
+      after ~8 seconds (status `active`) and notifies the proposer; when due, an order (a normal two-sided trade titled
+      `<item> · order n/runs (<code>)`) is placed automatically, `nextAt` advances by the frequency, and the contract `ended`s after the last run.
+    tags: [Personal]
+    x-access: session
+    x-audit: true
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PersonalContractCreateInput' }
+    responses:
+      '201':
+        description: The proposed contract.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContractView' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: fromTx is not one of the caller''s transactions.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'not_completed: the source transaction is not `completed`.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: every (weekly|biweekly|monthly required), runs (integer 2-52), startAt (YYYY-MM-DD, today or later).' }
+    x-note: The `409 not_completed` check runs before field validation. `startAt` is compared as a plain date string against today's UTC date.
+
+/me/contracts/{id}:
+  get:
+    operationId: getContract
+    summary: Get one of my contracts
+    tags: [Personal]
+    x-access: session
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    responses:
+      '200':
+        description: The contract as seen by the caller.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContractView' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: contract missing or the caller is not a party.' }
+
+/me/contracts/{id}/actions:
+  post:
+    operationId: applyContractAction
+    summary: Act on a standing contract
+    description: |
+      Actions by status and side (`ContractView.actions` lists what is currently allowed):
+      - `proposed`: the proposer can `end`; the other side can `accept` (-> `active`) or `decline` (-> `declined`).
+      - `active`: buyer can `run_now` (places the next order immediately, status stays `active`), `pause` (-> `paused`) or `end`; supplier can `pause` or `end`.
+      - `paused`: either side can `resume` (-> `active`, next run moves to now if it is overdue) or `end`.
+      - `ended` / `declined`: no actions.
+      Writes an audit entry and notifies the counterparty (except for `run_now`, which notifies both sides about the created order instead).
+    tags: [Personal]
+    x-access: session
+    x-audit: true
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PersonalContractActionInput' }
+    responses:
+      '200':
+        description: The updated contract.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContractView' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: contract missing or the caller is not a party.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'invalid_transition: action not available now for this side/status.' }

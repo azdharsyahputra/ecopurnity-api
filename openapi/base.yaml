@@ -1,0 +1,132 @@
+openapi: 3.1.0
+info:
+  title: Ecopurnity API
+  version: 1.0.0
+  summary: Economic network platform API, derived from the frontend's reference mock (MSW).
+  description: |
+    Backend contract for the Ecopurnity frontend. Every endpoint here is implemented by a handler in the
+    frontend repo (`src/mocks/*`); those handlers are the reference behaviour and this document is their
+    formal description. Where the two disagree, fix the document or the mock together.
+
+    ## Conventions
+    - Base path `/api/v1`. JSON only. camelCase. Times are ISO 8601 UTC strings. Money is an integer number of
+      Rupiah in fields named `…Idr`. Quantities are `{ value, unit }`.
+    - **Session**: httpOnly cookie `ecp_session`, set by `POST /auth/login` and `/auth/register`. The frontend
+      treats `GET /auth/me` as the source of truth (`401` = signed out, `403 account_suspended` = suspended).
+    - **Errors** always have the body `{ "error": { "code", "message", "fields"? } }`. `fields` maps input names to
+      messages and is rendered under the matching inputs. Punitive admin / market maker actions require a `reason`
+      (`422` with `fields.reason` otherwise).
+    - **Lists** that are paginated take `?page=&pageSize=` (default pageSize 12, max 50) and return
+      `{ data: [...], meta: { page, pageSize, total } }`. Filters are plain query params (`q`, `category`,
+      `region`, `status`).
+    - **Audit**: every mutating governance, market maker and organization action writes an `AuditEntry` (marked
+      `x-audit: true` on the operation).
+    - **Access** is stated per operation in `x-access`: `public`, `session` (any signed-in user), `capability:<name>`
+      (`market_maker`, `admin`, ...), or `org:<resource>.<action>` (organization role permission).
+    - **Realtime** is a WebSocket outside this document: messages are `{ channel, type, payload, ts }` on channels
+      `public:stats`, `public:activity`, `auction:{id}` (`AuctionEvent`) and `user:{id}:notifications`
+      (`AppNotification`).
+
+    ## Error codes shared by many endpoints
+    `unauthenticated` (401), `forbidden` (403), `not_found` (404), `validation` (422), `invalid_transition` (409).
+    Endpoint-specific codes are listed on the operation's response.
+  contact:
+    name: Ecopurnity engineering
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local
+tags:
+  - { name: Auth, description: 'Sign-up, sign-in, session, password reset, suspension appeal' }
+  - { name: Public, description: 'Public economy reads (explorer, opportunities, markets, auctions, search, profiles)' }
+  - { name: Personal, description: 'Participant workspace under /me (identity, listings, bids, transactions, finance, contracts, notifications)' }
+  - { name: Matching, description: 'Smart matching and reputation' }
+  - { name: RFQ, description: 'Requests for quotation, quotes, counter-offers, conversations' }
+  - { name: Verification, description: 'Phone OTP and KTP verification, commitment limits' }
+  - { name: Roles, description: 'Market maker applications, organization invitations, creating organizations' }
+  - { name: Organization, description: 'Business workspace under /orgs/{orgId}' }
+  - { name: MarketMaker, description: 'Market operations under /mm' }
+  - { name: Admin, description: 'Governance under /admin' }
+security:
+  - cookieAuth: []
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: ecp_session
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 50, default: 12 }
+    Q:
+      name: q
+      in: query
+      description: Free-text search over the list's name/code fields.
+      schema: { type: string }
+    Category:
+      name: category
+      in: query
+      schema: { $ref: '#/components/schemas/CategoryId' }
+    Region:
+      name: region
+      in: query
+      schema: { type: string }
+    OrgId:
+      name: orgId
+      in: path
+      required: true
+      description: Organization id. The caller must be a member (403 otherwise).
+      schema: { type: string }
+  responses:
+    Unauthenticated:
+      description: Not signed in (`unauthenticated`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Forbidden:
+      description: Signed in but not allowed (`forbidden`, `account_restricted`, `kyc_limit`, org role denied, ...).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    NotFound:
+      description: Resource does not exist or is not visible to the caller (`not_found`).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Conflict:
+      description: The resource is in a state that does not allow this (`invalid_transition`, `already_*`, ...).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Validation:
+      description: Input rejected (`validation`). `error.fields` names the offending inputs.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+  schemas:
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, examples: [validation] }
+            message: { type: string, description: 'Human-readable, Indonesian.' }
+            fields:
+              type: object
+              additionalProperties: { type: string }
+              description: Input name to message.
+    PageMeta:
+      type: object
+      required: [page, pageSize, total]
+      properties:
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer }

@@ -1,0 +1,1242 @@
+# Schemas for trade settlement, RFQ, reputation, contracts, KYC, pricing, pool settlement, role activation,
+# admin governance, matching/profile payloads and the API shapes declared in feature hooks.
+# Types owned by other schema agents are referenced by name only: Quantity, PartyRef, TradeParty, LabeledValue,
+# TransactionStatus, DisputeStatus, Transaction, TransactionDetail, Review, Shipment, Quote, Rfq, Conversation,
+# AuditEntry, Capability, CategoryId, Identity, Market, Auction, Resolution, MatchParts, CollectivePool,
+# PoolSettlement, SupplierDetail, OrgAnalytics.
+
+# ───────────────────────── domain/trade.ts ─────────────────────────
+
+Role:
+  type: string
+  enum: [buyer, supplier]
+  description: Side of a two-sided trade.
+
+TradeAction:
+  type: string
+  enum: [accept_agreement, issue_invoice, pay, ship, upload_proof, confirm_receipt, cancel, dispute, add_evidence, review]
+
+TradeState:
+  type: object
+  required: [status, terms, agreement, unscheduledQty, openShipments, reviewed]
+  properties:
+    status: { $ref: '#/components/schemas/TransactionStatus' }
+    terms: { $ref: '#/components/schemas/PaymentTerms' }
+    agreement:
+      type: object
+      description: Whether each side accepted the agreement (Record<Role, boolean>).
+      required: [buyer, supplier]
+      properties:
+        buyer: { type: boolean }
+        supplier: { type: boolean }
+    unscheduledQty:
+      type: number
+      description: Quantity not yet put on a shipment.
+    openShipments:
+      type: integer
+      description: Shipments scheduled or in transit (not delivered yet).
+    reviewed:
+      type: object
+      description: Whether each side already reviewed (Record<Role, boolean>).
+      required: [buyer, supplier]
+      properties:
+        buyer: { type: boolean }
+        supplier: { type: boolean }
+
+QcOutcome:
+  type: string
+  enum: [accepted, partial, rejected]
+
+TradeActionInput:
+  type: object
+  description: Body of POST /me/transactions/{id}/actions (and the organization equivalent).
+  required: [action]
+  properties:
+    action: { $ref: '#/components/schemas/TradeAction' }
+    note: { type: string }
+    file: { type: string, description: File name of an attached document or proof. }
+    shipment:
+      type: object
+      description: For `ship` and `upload_proof`.
+      required: [quantity, dropPoint, carrier, scheduledAt]
+      properties:
+        quantity: { type: number, exclusiveMinimum: 0 }
+        dropPoint: { type: string, minLength: 1 }
+        carrier: { type: string }
+        scheduledAt: { type: string, format: date-time }
+    shipmentId:
+      type: string
+      description: For `upload_proof`; the shipment being confirmed delivered.
+    qc:
+      type: object
+      description: For `confirm_receipt`.
+      required: [outcome]
+      properties:
+        outcome: { $ref: '#/components/schemas/QcOutcome' }
+        acceptedQty:
+          type: number
+          description: Required when outcome is `partial`; between 1 and quantity - 1.
+        note: { type: string }
+    review:
+      type: object
+      description: For `review`. Same as Review without `by` and `at`.
+      required: [rating, quality, timeliness, communication, text]
+      properties:
+        rating: { type: integer, minimum: 1, maximum: 5 }
+        quality: { type: number }
+        timeliness: { type: number }
+        communication: { type: number }
+        text: { type: string }
+
+# ───────────────────────── domain/rfq.ts ─────────────────────────
+
+QuoteAction:
+  type: string
+  enum: [accept, counter, decline, revise, accept_counter, withdraw]
+  description: |
+    Buyer: accept, counter, decline. Supplier: revise, accept_counter, withdraw.
+    Accepting creates the trade at the agreed price (the counter price when the supplier accepts a counter).
+
+# ───────────────────────── domain/reputation.ts ─────────────────────────
+
+ReputationTx:
+  type: object
+  description: |
+    Transaction fields reputation is computed from: Pick<TransactionDetail, id | title | status | counterparty |
+    totalIdr | createdAt | updatedAt | dueAt | timeline | dispute> plus optional role and reviews.
+  required: [id, title, status, counterparty, totalIdr, createdAt, updatedAt, dueAt, timeline]
+  properties:
+    id: { type: string }
+    title: { type: string }
+    status: { $ref: '#/components/schemas/TransactionStatus' }
+    counterparty: { $ref: '#/components/schemas/PartyRef' }
+    totalIdr: { type: integer }
+    createdAt: { type: string, format: date-time }
+    updatedAt: { type: string, format: date-time }
+    dueAt: { type: string, format: date-time }
+    timeline:
+      type: array
+      items:
+        type: object
+        required: [status]
+        properties:
+          status: { $ref: '#/components/schemas/TransactionStatus' }
+          at: { type: string, format: date-time }
+          note: { type: string }
+    dispute:
+      type: object
+      required: [status, reason, openedAt]
+      properties:
+        status: { $ref: '#/components/schemas/DisputeStatus' }
+        reason: { type: string }
+        openedAt: { type: string, format: date-time }
+        evidence:
+          type: array
+          description: Evidence from either party; the opening reason is the first entry.
+          items:
+            type: object
+            required: [id, by, name, text, at]
+            properties:
+              id: { type: string }
+              by: { $ref: '#/components/schemas/Role' }
+              name: { type: string }
+              text: { type: string }
+              file: { type: string }
+              at: { type: string, format: date-time }
+    role: { $ref: '#/components/schemas/Role' }
+    reviews:
+      type: object
+      properties:
+        buyer: { $ref: '#/components/schemas/Review' }
+        supplier: { $ref: '#/components/schemas/Review' }
+
+ReputationBreakdown:
+  type: object
+  required: [fulfillmentRate, onTimeRate, cancellationRate, disputeRate, volumeIdr, repeatRate, responseHours, ratingAvg, ratingCount]
+  properties:
+    fulfillmentRate:
+      type: [number, 'null']
+      description: Completed / finished (completed, cancelled, disputed). Null without finished transactions.
+    onTimeRate:
+      type: [number, 'null']
+      description: Completed on or before the due date / completed.
+    cancellationRate: { type: [number, 'null'] }
+    disputeRate: { type: [number, 'null'] }
+    volumeIdr:
+      type: integer
+      description: Rupiah of completed transactions.
+    repeatRate:
+      type: [number, 'null']
+      description: Completed transactions with a counterparty seen more than once / completed.
+    responseHours:
+      type: [number, 'null']
+      description: Average hours from agreement to the next step.
+    ratingAvg:
+      type: [number, 'null']
+      description: Average 1-5 rating counterparties gave this account.
+    ratingCount: { type: integer }
+
+ReputationCounts:
+  type: object
+  required: [transactions, successful, disputes, cancelled]
+  properties:
+    transactions: { type: integer }
+    successful: { type: integer }
+    disputes: { type: integer }
+    cancelled: { type: integer }
+
+ReputationEvent:
+  type: object
+  required: [id, at, title, delta, score]
+  properties:
+    id: { type: string }
+    at: { type: string, format: date-time }
+    title: { type: string }
+    delta: { type: number, description: Score change this event caused. }
+    score: { type: number, description: Score right after the event. }
+
+ReputationReport:
+  type: object
+  required: [score, breakdown, counts, trend, events]
+  properties:
+    score: { type: integer, minimum: 0, maximum: 100 }
+    breakdown: { $ref: '#/components/schemas/ReputationBreakdown' }
+    counts: { $ref: '#/components/schemas/ReputationCounts' }
+    trend:
+      type: array
+      description: One point per month, oldest first, 12 months ending with the current month.
+      items:
+        type: object
+        required: [month, score]
+        properties:
+          month: { type: string, description: 'YYYY-MM.', examples: ['2026-10'] }
+          score: { type: integer }
+    events:
+      type: array
+      description: Newest first.
+      items: { $ref: '#/components/schemas/ReputationEvent' }
+
+# ───────────────────────── domain/contract.ts ─────────────────────────
+
+ContractEvery:
+  type: string
+  enum: [weekly, biweekly, monthly]
+
+ContractStatus:
+  type: string
+  enum: [proposed, active, paused, ended, declined]
+
+ContractAction:
+  type: string
+  enum: [accept, decline, pause, resume, end, run_now]
+  description: '`run_now` places the next order early.'
+
+Contract:
+  type: object
+  description: |
+    Standing supply contract: the same item, quantity, price and terms re-ordered every period.
+    Each run becomes an ordinary two-sided trade.
+  required: [id, code, item, buyer, supplier, quantity, unitPriceIdr, terms, every, runs, nextAt, status, proposedBy, orders, createdAt]
+  properties:
+    id: { type: string }
+    code: { type: string }
+    item: { type: string }
+    buyer: { $ref: '#/components/schemas/TradeParty' }
+    supplier: { $ref: '#/components/schemas/TradeParty' }
+    quantity:
+      type: object
+      required: [value, unit]
+      properties:
+        value: { type: number }
+        unit: { type: string }
+    unitPriceIdr: { type: integer }
+    terms: { $ref: '#/components/schemas/PaymentTerms' }
+    every: { $ref: '#/components/schemas/ContractEvery' }
+    runs:
+      type: integer
+      description: Orders to place in total; the contract ends after the last one.
+    nextAt: { type: string, format: date-time }
+    status: { $ref: '#/components/schemas/ContractStatus' }
+    proposedBy:
+      $ref: '#/components/schemas/Role'
+      description: Who proposed it; the other side accepts.
+    sourceTxId: { type: string }
+    orders:
+      type: array
+      description: Trade ids, oldest first (the proposer's copy).
+      items:
+        type: object
+        required: [at]
+        properties:
+          at: { type: string, format: date-time }
+          buyerTxId: { type: string }
+          supplierTxId: { type: string }
+    createdAt: { type: string, format: date-time }
+
+# ───────────────────────── domain/kyc.ts ─────────────────────────
+
+KycLevel:
+  type: integer
+  enum: [0, 1, 2]
+  description: 0 email (limit Rp 10 jt), 1 email + phone (Rp 100 jt), 2 KTP verified (Rp 2 M), per commitment.
+
+# ───────────────────────── domain/pricing.ts ─────────────────────────
+
+PriceSuggestion:
+  type: object
+  description: Quartiles of recent market medians and comparable listings, rounded to Rp 50. Absent below 3 data points.
+  required: [medianIdr, lowIdr, highIdr, sample]
+  properties:
+    medianIdr: { type: integer }
+    lowIdr: { type: integer }
+    highIdr: { type: integer }
+    sample: { type: integer, minimum: 3 }
+
+# ───────────────────────── domain/settlement.ts ─────────────────────────
+
+Member:
+  type: object
+  required: [id, quantity]
+  properties:
+    id: { type: string }
+    quantity: { type: number, description: 'What the member contributed (demand or supply), in lot units.' }
+
+Settlement:
+  type: object
+  description: Aggregated settlement; a collective lot split back to the members who contributed to it.
+  required: [auctionId, title, side, unit, lotQty, priceIdr, winner, lines, settled]
+  properties:
+    auctionId: { type: string }
+    title: { type: string }
+    side: { type: string, enum: [procurement, selling] }
+    unit: { type: string }
+    lotQty: { type: number }
+    priceIdr: { type: integer }
+    winner: { type: string }
+    lines:
+      type: array
+      items:
+        type: object
+        required: [memberId, member, quantity, share, amountIdr]
+        properties:
+          memberId: { type: string }
+          member: { type: string }
+          userId: { type: string }
+          orgId: { type: string, description: Marks a business pool member (collective procurement); it gets its own sub-PO. }
+          quantity: { type: number }
+          share: { type: number, minimum: 0, maximum: 1 }
+          amountIdr: { type: integer }
+    settled:
+      oneOf:
+        - type: 'null'
+        - type: object
+          required: [at, trades, by]
+          properties:
+            at: { type: string, format: date-time }
+            trades: { type: integer }
+            by: { type: string }
+
+# ───────────────────────── domain/roles.ts ─────────────────────────
+
+MmApplicationStatus:
+  type: string
+  enum: [pending, approved, rejected]
+
+MmApplicationInput:
+  type: object
+  required: [organization, categories, experience, documents]
+  properties:
+    organization: { type: string, minLength: 3 }
+    categories:
+      type: array
+      minItems: 1
+      items: { $ref: '#/components/schemas/CategoryId' }
+    experience:
+      type: string
+      minLength: 30
+      description: Experience aggregating supply/demand and why they want to run markets.
+    documents:
+      type: string
+      description: Supporting documents, as a note (links, what will be sent on request).
+
+MmApplication:
+  allOf:
+    - $ref: '#/components/schemas/MmApplicationInput'
+    - type: object
+      required: [id, userId, applicant, email, status, submittedAt]
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        applicant: { type: string }
+        email: { type: string }
+        status: { $ref: '#/components/schemas/MmApplicationStatus' }
+        submittedAt: { type: string, format: date-time }
+        decision:
+          type: object
+          required: [by, at]
+          properties:
+            by: { type: string }
+            at: { type: string, format: date-time }
+            reason: { type: string }
+
+OrgType:
+  type: string
+  enum: [PT, CV, Koperasi, UMKM, Asosiasi, Kelompok tani, Yayasan]
+
+NewOrgInput:
+  type: object
+  required: [name, type, categoryId]
+  properties:
+    name: { type: string, minLength: 3, description: Must not equal (case-insensitive) an organization the user already belongs to. }
+    type: { $ref: '#/components/schemas/OrgType' }
+    npwp:
+      type: string
+      description: Optional; 15 digits (old format) or 16 (NIK-based). Non-digits are ignored.
+    categoryId: { $ref: '#/components/schemas/CategoryId' }
+
+OrgInvitation:
+  type: object
+  description: A pending org invitation addressed to the signed-in user's email. `id` is the org member id.
+  required: [id, orgId, orgName, role, roleLabel, department, invitedAt]
+  properties:
+    id: { type: string }
+    orgId: { type: string }
+    orgName: { type: string }
+    role: { type: string }
+    roleLabel: { type: string }
+    department: { type: string }
+    invitedAt: { type: string, format: date-time }
+
+InvitationAction:
+  type: string
+  enum: [accept, decline]
+
+# ───────────────────────── features/admin/types.ts ─────────────────────────
+
+AccountStatus:
+  type: string
+  enum: [active, restricted, suspended]
+
+AdminUser:
+  type: object
+  required: [id, name, username, email, kind, capabilities, verified, status, joinedAt, reputation, transactions, reportCount]
+  properties:
+    id: { type: string }
+    name: { type: string }
+    username: { type: string }
+    email: { type: string }
+    location: { type: string }
+    kind: { type: string, enum: [person, business] }
+    capabilities:
+      type: array
+      items: { $ref: '#/components/schemas/Capability' }
+    verified: { type: boolean, description: Identity verified by an admin. }
+    status: { $ref: '#/components/schemas/AccountStatus' }
+    joinedAt: { type: string, format: date-time }
+    reputation: { type: number }
+    transactions: { type: integer }
+    reportCount: { type: integer }
+
+UserReport:
+  type: object
+  required: [id, reporter, reason, at]
+  properties:
+    id: { type: string }
+    reporter: { type: string }
+    reason: { type: string }
+    at: { type: string, format: date-time }
+    context: { type: string }
+
+Appeal:
+  type: object
+  required: [reason, at, status]
+  properties:
+    reason: { type: string }
+    at: { type: string, format: date-time }
+    status: { type: string, enum: [pending, granted, denied] }
+    decision:
+      type: object
+      required: [at, by, note]
+      properties:
+        at: { type: string, format: date-time }
+        by: { type: string }
+        note: { type: string }
+
+AdminUserDetail:
+  allOf:
+    - $ref: '#/components/schemas/AdminUser'
+    - type: object
+      required: [reports, history, orgs, audit]
+      properties:
+        appeal: { $ref: '#/components/schemas/Appeal' }
+        reports:
+          type: array
+          items: { $ref: '#/components/schemas/UserReport' }
+        history:
+          type: array
+          items: { $ref: '#/components/schemas/Transaction' }
+        orgs:
+          type: array
+          items: { type: string }
+        audit:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEntry' }
+
+UserAction:
+  type: string
+  enum: [verify, suspend, restrict, restore, deny_appeal]
+
+DocKind:
+  type: string
+  enum: [nib, npwp, akta, ktp, selfie]
+
+AdminVerificationStatus:
+  description: Declared as `VerificationStatus` in features/admin/types.ts; renamed because org.ts exports an unrelated `VerificationStatus`.
+  type: string
+  enum: [pending, approved, rejected, reupload]
+
+VerificationRequest:
+  type: object
+  required: [id, business, owner, submittedAt, status, form, documents]
+  properties:
+    id: { type: string }
+    kind:
+      type: string
+      enum: [business, personal]
+      default: business
+      description: Business documents (default) or a person's KTP + selfie.
+    business: { type: string }
+    owner: { type: string }
+    submittedAt: { type: string, format: date-time }
+    status: { $ref: '#/components/schemas/AdminVerificationStatus' }
+    form:
+      type: array
+      description: What the applicant typed into the form.
+      items: { $ref: '#/components/schemas/LabeledValue' }
+    documents:
+      type: array
+      description: What the uploaded documents say (OCR in the real BE). Labels that also appear in `form` are compared.
+      items:
+        type: object
+        required: [kind, fileName, fields]
+        properties:
+          kind: { $ref: '#/components/schemas/DocKind' }
+          fileName: { type: string }
+          fields:
+            type: array
+            items: { $ref: '#/components/schemas/LabeledValue' }
+    decision:
+      type: object
+      required: [at, by, note]
+      properties:
+        at: { type: string, format: date-time }
+        by: { type: string }
+        note: { type: string }
+
+VerificationAction:
+  type: string
+  enum: [approve, reject, reupload]
+
+MarketFlag:
+  type: object
+  required: [id, by, label, at]
+  properties:
+    id: { type: string }
+    by: { type: string }
+    label: { type: string }
+    at: { type: string, format: date-time }
+
+AdminMarket:
+  allOf:
+    - $ref: '#/components/schemas/Market'
+    - type: object
+      required: [flags, reports, disputes]
+      properties:
+        flags:
+          type: array
+          items: { $ref: '#/components/schemas/MarketFlag' }
+        reports:
+          type: array
+          items: { $ref: '#/components/schemas/UserReport' }
+        disputes: { type: integer }
+        reviewedAt: { type: string, format: date-time }
+
+MarketAction:
+  type: string
+  enum: [review, flag, suspend, restore]
+
+Finding:
+  type: object
+  required: [id, rule, severity, detail]
+  properties:
+    id: { type: string }
+    rule: { type: string }
+    severity: { type: string, enum: [low, medium, high] }
+    detail: { type: string }
+
+AdminBid:
+  type: object
+  required: [id, bidder, masked, priceIdr, at]
+  properties:
+    id: { type: string }
+    bidder: { type: string, description: Real identity; participants only ever see the masked label. }
+    masked: { type: string }
+    priceIdr: { type: integer }
+    at: { type: string, format: date-time }
+
+AdminAuction:
+  allOf:
+    - $ref: '#/components/schemas/Auction'
+    - type: object
+      required: [findings]
+      properties:
+        findings:
+          type: array
+          items: { $ref: '#/components/schemas/Finding' }
+
+AdminAuctionDetail:
+  allOf:
+    - $ref: '#/components/schemas/AdminAuction'
+    - type: object
+      required: [minStepIdr, bids, audit]
+      properties:
+        minStepIdr: { type: integer }
+        bids:
+          description: Null while a sealed auction is still open; bids are only unsealed after close.
+          oneOf:
+            - type: 'null'
+            - type: array
+              items: { $ref: '#/components/schemas/AdminBid' }
+        caseId: { type: string }
+        audit:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEntry' }
+
+AuctionAction:
+  type: string
+  enum: [freeze, unfreeze, open_case]
+
+DisputeParty:
+  allOf:
+    - $ref: '#/components/schemas/PartyRef'
+    - type: object
+      required: [role]
+      properties:
+        role: { $ref: '#/components/schemas/Role' }
+        userId: { type: string }
+
+Evidence:
+  type: object
+  required: [id, side, by, text, at]
+  properties:
+    id: { type: string }
+    side: { type: string, enum: [buyer, supplier, admin] }
+    by: { type: string }
+    text: { type: string }
+    file: { type: string }
+    at: { type: string, format: date-time }
+
+DisputeCase:
+  type: object
+  required: [id, code, status, reason, openedAt, openedBy, parties, transaction, evidence, timeline]
+  properties:
+    id: { type: string }
+    code: { type: string }
+    status: { $ref: '#/components/schemas/DisputeStatus' }
+    reason: { type: string }
+    openedAt: { type: string, format: date-time }
+    openedBy: { type: string }
+    parties:
+      type: array
+      items: { $ref: '#/components/schemas/DisputeParty' }
+    transaction: { $ref: '#/components/schemas/TransactionDetail' }
+    marketId: { type: string }
+    evidence:
+      type: array
+      items: { $ref: '#/components/schemas/Evidence' }
+    timeline:
+      type: array
+      items:
+        type: object
+        required: [at, by, label]
+        properties:
+          at: { type: string, format: date-time }
+          by: { type: string }
+          label: { type: string }
+    resolution:
+      allOf:
+        - $ref: '#/components/schemas/Resolution'
+        - type: object
+          required: [refundIdr, releaseIdr, reason, at, by]
+          properties:
+            refundIdr: { type: integer }
+            releaseIdr: { type: integer }
+            reason: { type: string }
+            at: { type: string, format: date-time }
+            by: { type: string }
+
+DisputeSummary:
+  type: object
+  description: DisputeCase without evidence, timeline and transaction, plus the transaction's total and title.
+  required: [id, code, status, reason, openedAt, openedBy, parties, totalIdr, title]
+  properties:
+    id: { type: string }
+    code: { type: string }
+    status: { $ref: '#/components/schemas/DisputeStatus' }
+    reason: { type: string }
+    openedAt: { type: string, format: date-time }
+    openedBy: { type: string }
+    parties:
+      type: array
+      items: { $ref: '#/components/schemas/DisputeParty' }
+    marketId: { type: string }
+    resolution:
+      allOf:
+        - $ref: '#/components/schemas/Resolution'
+        - type: object
+          required: [refundIdr, releaseIdr, reason, at, by]
+          properties:
+            refundIdr: { type: integer }
+            releaseIdr: { type: integer }
+            reason: { type: string }
+            at: { type: string, format: date-time }
+            by: { type: string }
+    totalIdr: { type: integer }
+    title: { type: string }
+
+DisputeActionRequestEvidence:
+  type: object
+  required: [action, from, reason]
+  properties:
+    action: { type: string, const: request_evidence }
+    from: { type: string, enum: [buyer, supplier, both] }
+    reason: { type: string }
+
+DisputeActionStartReview:
+  type: object
+  required: [action]
+  properties:
+    action: { type: string, const: start_review }
+    reason: { type: string }
+
+DisputeActionResolve:
+  type: object
+  required: [action, resolution, reason]
+  properties:
+    action: { type: string, const: resolve }
+    resolution: { $ref: '#/components/schemas/Resolution' }
+    reason: { type: string }
+
+DisputeActionInput:
+  description: Body of an admin dispute action.
+  oneOf:
+    - $ref: '#/components/schemas/DisputeActionRequestEvidence'
+    - $ref: '#/components/schemas/DisputeActionStartReview'
+    - $ref: '#/components/schemas/DisputeActionResolve'
+  discriminator:
+    propertyName: action
+    mapping:
+      request_evidence: '#/components/schemas/DisputeActionRequestEvidence'
+      start_review: '#/components/schemas/DisputeActionStartReview'
+      resolve: '#/components/schemas/DisputeActionResolve'
+
+AlertType:
+  type: string
+  enum: [bid_manipulation, collusion, fake_accounts, abnormal_bidding, wash_trading, price_manipulation, transaction_network]
+
+AlertStatus:
+  type: string
+  enum: [new, investigating, escalated, dismissed, closed]
+
+Subject:
+  type: object
+  required: [type, id, label]
+  properties:
+    type: { type: string, enum: [user, auction, market] }
+    id: { type: string }
+    label: { type: string }
+
+FraudAlert:
+  type: object
+  required: [id, code, type, source, title, score, confidence, status, detectedAt, subjects, evidence]
+  properties:
+    id: { type: string }
+    code: { type: string }
+    type: { $ref: '#/components/schemas/AlertType' }
+    source: { type: string, enum: [system, manual], description: "'system' = engine recommendation; 'manual' = case opened by an admin." }
+    title: { type: string }
+    score: { type: number, minimum: 0, maximum: 100, description: Risk score 0-100. }
+    confidence: { type: number, minimum: 0, maximum: 1, description: Engine confidence 0-1. }
+    status: { $ref: '#/components/schemas/AlertStatus' }
+    detectedAt: { type: string, format: date-time }
+    subjects:
+      type: array
+      items: { $ref: '#/components/schemas/Subject' }
+    evidence:
+      type: array
+      items: { type: string }
+    graph:
+      type: object
+      description: Relation graph for network-type alerts.
+      required: [nodes, edges]
+      properties:
+        nodes:
+          type: array
+          items:
+            type: object
+            required: [id, label, kind]
+            properties:
+              id: { type: string }
+              label: { type: string }
+              kind: { type: string, enum: [person, business, auction, device] }
+              flagged: { type: boolean }
+        edges:
+          type: array
+          items:
+            type: object
+            required: [source, target]
+            properties:
+              source: { type: string }
+              target: { type: string }
+              label: { type: string }
+    investigation:
+      type: object
+      required: [openedAt, by, notes]
+      properties:
+        openedAt: { type: string, format: date-time }
+        by: { type: string }
+        notes:
+          type: array
+          items:
+            type: object
+            required: [at, by, text]
+            properties:
+              at: { type: string, format: date-time }
+              by: { type: string }
+              text: { type: string }
+    resolution:
+      type: object
+      required: [at, by, outcome, reason]
+      properties:
+        at: { type: string, format: date-time }
+        by: { type: string }
+        outcome: { type: string }
+        reason: { type: string }
+
+EscalationAction:
+  type: string
+  enum: [suspend_user, restrict_user, freeze_auction, suspend_market]
+
+AlertActionInvestigate:
+  type: object
+  required: [action]
+  properties:
+    action: { type: string, const: investigate }
+
+AlertActionNote:
+  type: object
+  required: [action, text]
+  properties:
+    action: { type: string, const: note }
+    text: { type: string }
+
+AlertActionClose:
+  type: object
+  description: Dismiss or close an alert; both require a reason.
+  required: [action, reason]
+  properties:
+    action: { type: string, enum: [dismiss, close] }
+    reason: { type: string }
+
+AlertActionEscalate:
+  type: object
+  required: [action, subjectId, escalation, reason]
+  properties:
+    action: { type: string, const: escalate }
+    subjectId: { type: string }
+    escalation: { $ref: '#/components/schemas/EscalationAction' }
+    reason: { type: string }
+
+AlertActionInput:
+  description: Body of an admin fraud alert action.
+  oneOf:
+    - $ref: '#/components/schemas/AlertActionInvestigate'
+    - $ref: '#/components/schemas/AlertActionNote'
+    - $ref: '#/components/schemas/AlertActionClose'
+    - $ref: '#/components/schemas/AlertActionEscalate'
+  discriminator:
+    propertyName: action
+    mapping:
+      investigate: '#/components/schemas/AlertActionInvestigate'
+      note: '#/components/schemas/AlertActionNote'
+      dismiss: '#/components/schemas/AlertActionClose'
+      close: '#/components/schemas/AlertActionClose'
+      escalate: '#/components/schemas/AlertActionEscalate'
+
+AdminOverview:
+  type: object
+  required: [queues, newAlerts, openDisputes, sla]
+  properties:
+    queues:
+      type: object
+      required: [users, verification, markets, auctions, disputes, fraud]
+      properties:
+        users: { type: integer }
+        verification: { type: integer }
+        markets: { type: integer }
+        auctions: { type: integer }
+        disputes: { type: integer }
+        fraud: { type: integer }
+    newAlerts:
+      type: array
+      items: { $ref: '#/components/schemas/FraudAlert' }
+    openDisputes:
+      type: array
+      items: { $ref: '#/components/schemas/DisputeSummary' }
+    sla:
+      type: array
+      description: Items waiting longer than their review SLA.
+      items:
+        type: object
+        required: [module, label, slaHours, total, breached]
+        properties:
+          module: { type: string, enum: [verification, disputes] }
+          label: { type: string }
+          slaHours: { type: number }
+          total: { type: integer }
+          breached: { type: integer }
+          oldestAt: { type: string, format: date-time }
+
+# ───────────────────────── features/reputation/types.ts ─────────────────────────
+
+MatchState:
+  type: string
+  enum: [new, saved, connected, dismissed]
+
+Match:
+  type: object
+  required: [id, have, need, distanceKm, estimatedValueIdr, score, parts, state]
+  properties:
+    id: { type: string }
+    have:
+      type: object
+      description: 'What the user brings: a supply listing or an identity item.'
+      required: [source, id, label, detail]
+      properties:
+        source: { type: string, enum: [supply, identity] }
+        id: { type: string }
+        label: { type: string }
+        detail: { type: string }
+    need:
+      type: object
+      description: What the opportunity is short of.
+      required: [opportunityId, title, region, categoryId, gap, detail]
+      properties:
+        opportunityId: { type: string }
+        title: { type: string }
+        region: { type: string }
+        categoryId: { $ref: '#/components/schemas/CategoryId' }
+        gap: { $ref: '#/components/schemas/Quantity' }
+        detail: { type: string }
+    distanceKm: { type: number }
+    estimatedValueIdr: { type: integer }
+    score: { type: number }
+    parts: { $ref: '#/components/schemas/MatchParts' }
+    state: { $ref: '#/components/schemas/MatchState' }
+    conversationId: { type: string, description: Opened when the user connects. }
+
+MatchAction:
+  type: string
+  enum: [connect, save, dismiss, reset]
+
+ProfileReputation:
+  type: object
+  required: [score, counts]
+  properties:
+    score: { type: integer }
+    counts: { $ref: '#/components/schemas/ReputationCounts' }
+
+ProfileActivity:
+  type: object
+  required: [id, title, at]
+  properties:
+    id: { type: string }
+    title: { type: string }
+    at: { type: string, format: date-time }
+
+PublicProfile:
+  type: object
+  required: [name, username, location, bio, status, verification, reputation, supply, markets, orgs, activity]
+  properties:
+    name: { type: string }
+    username: { type: string }
+    location: { type: string }
+    bio: { type: string }
+    joinedAt: { type: string, format: date-time }
+    status: { type: string, enum: [active, restricted, suspended] }
+    verification:
+      type: object
+      description: Same as Identity.profile.verification.
+      required: [email, phone, identity]
+      properties:
+        email: { type: boolean }
+        phone: { type: boolean }
+        identity: { type: string, enum: [none, pending, verified] }
+    reputation: { $ref: '#/components/schemas/ProfileReputation' }
+    supply:
+      type: array
+      items:
+        type: object
+        required: [id, item, categoryId, quantity, priceIdr]
+        properties:
+          id: { type: string }
+          item: { type: string }
+          categoryId: { $ref: '#/components/schemas/CategoryId' }
+          quantity: { $ref: '#/components/schemas/Quantity' }
+          priceIdr: { type: integer }
+    markets:
+      type: array
+      description: Pick<Market, id | code | name | categoryId | region>.
+      items:
+        type: object
+        required: [id, code, name, categoryId, region]
+        properties:
+          id: { type: string }
+          code: { type: string }
+          name: { type: string }
+          categoryId: { $ref: '#/components/schemas/CategoryId' }
+          region: { type: string }
+    orgs:
+      type: array
+      items:
+        type: object
+        required: [name, slug]
+        properties:
+          name: { type: string }
+          slug: { type: string }
+    activity:
+      type: array
+      items: { $ref: '#/components/schemas/ProfileActivity' }
+
+BusinessProfile:
+  type: object
+  required: [name, slug, region, description, verified, documents, reputation, markets, auctions, activity]
+  properties:
+    name: { type: string }
+    slug: { type: string }
+    region: { type: string }
+    description: { type: string }
+    verified: { type: boolean }
+    documents:
+      type: array
+      items: { type: string }
+    reputation: { $ref: '#/components/schemas/ProfileReputation' }
+    markets:
+      type: array
+      items: { $ref: '#/components/schemas/Market' }
+    auctions:
+      type: array
+      items: { $ref: '#/components/schemas/Auction' }
+    activity:
+      type: array
+      items: { $ref: '#/components/schemas/ProfileActivity' }
+
+# ───────────────────────── features/*/hooks.ts ─────────────────────────
+
+Finance:
+  type: object
+  description: Personal finance (GET /me/finance; also returned by the bank and withdrawal mutations).
+  required: [escrowHeldIdr, receivableIdr, availableIdr, withdrawnIdr, withdrawals, entries]
+  properties:
+    escrowHeldIdr: { type: integer }
+    receivableIdr: { type: integer }
+    availableIdr: { type: integer }
+    withdrawnIdr: { type: integer }
+    bank:
+      type: object
+      required: [bank, accountNo, holder]
+      properties:
+        bank: { type: string }
+        accountNo: { type: string }
+        holder: { type: string }
+    withdrawals:
+      type: array
+      items:
+        type: object
+        required: [id, amountIdr, at, status]
+        properties:
+          id: { type: string }
+          amountIdr: { type: integer }
+          at: { type: string, format: date-time }
+          status: { type: string, enum: [processing, paid] }
+    entries:
+      type: array
+      items:
+        type: object
+        required: [id, at, label, amountIdr, kind]
+        properties:
+          id: { type: string }
+          at: { type: string, format: date-time }
+          label: { type: string }
+          amountIdr: { type: integer, description: Signed Rupiah amount. }
+          kind: { type: string, enum: [escrow, payout, refund, payment, withdrawal, fee] }
+
+Kyc:
+  type: object
+  description: Verification status and commitment limit of the signed-in user.
+  required: [level, label, limitIdr, verification, otpPending]
+  properties:
+    level: { $ref: '#/components/schemas/KycLevel' }
+    label: { type: string }
+    limitIdr: { type: integer }
+    next: { type: string, description: Hint on how to reach the next level. }
+    verification:
+      type: object
+      description: Same as Identity.profile.verification.
+      required: [email, phone, identity]
+      properties:
+        email: { type: boolean }
+        phone: { type: boolean }
+        identity: { type: string, enum: [none, pending, verified] }
+    otpPending: { type: boolean }
+
+KycActionPhone:
+  type: object
+  required: [type, phone]
+  properties:
+    type: { type: string, const: phone }
+    phone: { type: string, pattern: '^(62|0)8\d{7,11}$' }
+
+KycActionOtp:
+  type: object
+  required: [type, code]
+  properties:
+    type: { type: string, const: otp }
+    code: { type: string }
+
+KycActionIdentity:
+  type: object
+  description: ktpFile and selfieFile are required by the server although optional in the type.
+  required: [type, nik, fullName]
+  properties:
+    type: { type: string, const: identity }
+    nik: { type: string, pattern: '^\d{16}$' }
+    fullName: { type: string, minLength: 1 }
+    ktpFile: { type: string }
+    selfieFile: { type: string }
+
+KycAction:
+  description: |
+    Frontend action union. `type` selects the endpoint (`phone` POST /me/kyc/phone, `otp` POST /me/kyc/phone/verify,
+    `identity` POST /me/kyc/identity); the request body is the rest of the object without `type`.
+  oneOf:
+    - $ref: '#/components/schemas/KycActionPhone'
+    - $ref: '#/components/schemas/KycActionOtp'
+    - $ref: '#/components/schemas/KycActionIdentity'
+  discriminator:
+    propertyName: type
+    mapping:
+      phone: '#/components/schemas/KycActionPhone'
+      otp: '#/components/schemas/KycActionOtp'
+      identity: '#/components/schemas/KycActionIdentity'
+
+ContractView:
+  allOf:
+    - $ref: '#/components/schemas/Contract'
+    - type: object
+      required: [side, actions]
+      properties:
+        side: { $ref: '#/components/schemas/Role', description: The caller's side of the contract. }
+        actions:
+          type: array
+          description: Actions open to the caller now.
+          items: { $ref: '#/components/schemas/ContractAction' }
+
+RfqView:
+  allOf:
+    - $ref: '#/components/schemas/Rfq'
+    - type: object
+      required: [side]
+      properties:
+        side: { $ref: '#/components/schemas/Role', description: The caller's side of the RFQ. }
+
+NewRfq:
+  type: object
+  description: Body of POST /me/rfqs. Pick<Rfq, item | categoryId | quantity | targetPriceIdr | deadline | location | spec | source> plus invitations.
+  required: [item, categoryId, quantity, deadline, location, spec]
+  properties:
+    item: { type: string, minLength: 1 }
+    categoryId: { $ref: '#/components/schemas/CategoryId' }
+    quantity:
+      allOf:
+        - $ref: '#/components/schemas/Quantity'
+      description: quantity.value must be greater than 0.
+    targetPriceIdr: { type: integer, description: 'Buyer''s target price per unit (optional, shown to suppliers).' }
+    deadline: { type: string, format: date-time }
+    location: { type: string }
+    spec: { type: string }
+    source:
+      type: object
+      required: [kind, id]
+      properties:
+        kind: { type: string, enum: [repeat, listing, match, logistics] }
+        id: { type: string }
+    inviteUserIds:
+      type: array
+      items: { type: string }
+    inviteNames:
+      type: array
+      items: { type: string }
+
+PoolView:
+  allOf:
+    - $ref: '#/components/schemas/CollectivePool'
+    - type: object
+      required: [match]
+      properties:
+        match: { type: boolean }
+
+SupplierPage:
+  allOf:
+    - $ref: '#/components/schemas/SupplierDetail'
+    - type: object
+      required: [purchases, activity]
+      properties:
+        purchases:
+          type: array
+          description: OrgAnalytics['history'] rows for this supplier.
+          items:
+            type: object
+            required: [code, month, item, categoryId, supplier, quantity, unitPriceIdr, totalIdr, via]
+            properties:
+              code: { type: string }
+              month: { type: string }
+              item: { type: string }
+              categoryId: { $ref: '#/components/schemas/CategoryId' }
+              supplier: { type: string }
+              quantity: { $ref: '#/components/schemas/Quantity' }
+              unitPriceIdr: { type: integer }
+              totalIdr: { type: integer }
+              via: { type: string, enum: [auction, collective, direct] }
+        activity:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEntry' }
+
+OrgTransactionPage:
+  allOf:
+    - $ref: '#/components/schemas/TransactionDetail'
+    - type: object
+      required: [activity]
+      properties:
+        activity:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEntry' }
+        collective:
+          allOf:
+            - $ref: '#/components/schemas/PoolSettlement'
+            - type: object
+              required: [poolId, title, unit]
+              properties:
+                poolId: { type: string }
+                title: { type: string }
+                unit: { type: string }

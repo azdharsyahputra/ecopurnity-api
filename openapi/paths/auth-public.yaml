@@ -1,0 +1,787 @@
+# Auth, onboarding, public economy, search, explorer, matching, reputation, public profiles, KYC, catalog.
+# Source: src/mocks/handlers.ts, profileHandlers.ts, kyc.ts, catalog.ts (the `/_mock/*` helpers are not part of the API).
+
+/auth/me:
+  get:
+    operationId: getCurrentUser
+    summary: Get the signed-in user
+    description: Source of truth for the session. `401` means signed out; `403 account_suspended` means the account is suspended by governance.
+    tags: [Auth]
+    x-access: session
+    responses:
+      '200':
+        description: The current user.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/User' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'account_suspended: the account was suspended by the governance team.' }
+
+/auth/login:
+  post:
+    operationId: login
+    summary: Sign in with email and password
+    description: |
+      Sets the `ecp_session` cookie. The email is trimmed and lower-cased. Unknown email and wrong password return the
+      same message so the response does not reveal which emails exist.
+    tags: [Auth]
+    x-access: public
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AuthPublicLoginRequest' }
+    responses:
+      '200':
+        description: Signed in.
+        headers:
+          Set-Cookie:
+            description: The `ecp_session` httpOnly session cookie.
+            schema: { type: string }
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/User' }
+      '401': { $ref: '#/components/responses/Unauthenticated', description: 'invalid_credentials: email or password is wrong (same message for both).' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'account_suspended, or account_suspended_appealed when an appeal exists. The message mentions "Bandingmu sedang ditinjau." while the appeal is pending, or "Banding ditolak: <note>" when it was denied.' }
+    x-note: The mock does not validate the body (a missing email would throw); the real API should answer 422 validation with fields email and password.
+
+/auth/appeal:
+  post:
+    operationId: appealSuspension
+    summary: Appeal an account suspension
+    description: |
+      Suspended accounts cannot sign in, so the credentials are re-checked here. Checks run in this order: credentials,
+      account is suspended, no earlier appeal, reason length. Stores the appeal as `pending` for governance review.
+    tags: [Auth]
+    x-access: public
+    x-audit: true
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AuthPublicAppealRequest' }
+    responses:
+      '200':
+        description: Appeal recorded.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthPublicOk' }
+      '401': { $ref: '#/components/responses/Unauthenticated', description: 'invalid_credentials: email or password is wrong.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'not_suspended: the account is not suspended. already_appealed: an appeal was already submitted (one per account, even if denied).' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: reason (min 20 characters after trimming).' }
+
+/auth/register:
+  post:
+    operationId: register
+    summary: Create an account
+    description: |
+      Creates a participant account (no capabilities, no orgs, `onboarded: false`, `emailVerified: false`), derives the
+      username from the email's local part, issues an email verification token and signs the user in
+      (sets the `ecp_session` cookie).
+    tags: [Auth]
+    x-access: public
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AuthPublicRegisterRequest' }
+    responses:
+      '201':
+        description: Account created and signed in.
+        headers:
+          Set-Cookie:
+            description: The `ecp_session` httpOnly session cookie.
+            schema: { type: string }
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/User' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'email_taken: fields.email "Email ini sudah punya akun. Masuk saja."' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: password (min 8 characters).' }
+    x-note: The mock checks email uniqueness before password length, and does not validate name or email format; usernames are not made unique (two emails with the same local part share a username).
+
+/auth/google:
+  post:
+    operationId: loginWithGoogle
+    summary: Sign in or sign up with Google
+    description: |
+      Mock OAuth: the "provider" always returns the same Google account (`tamu.google@gmail.com`, email already verified).
+      The account is created on first use, then the user is signed in (sets the `ecp_session` cookie). A real
+      implementation exchanges an OAuth code and takes the identity from the provider.
+    tags: [Auth]
+    x-access: public
+    security: []
+    responses:
+      '200':
+        description: Signed in.
+        headers:
+          Set-Cookie:
+            description: The `ecp_session` httpOnly session cookie.
+            schema: { type: string }
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/User' }
+    x-note: Takes no body in the mock and always answers 200, including when it creates the account (not 201).
+
+/auth/logout:
+  post:
+    operationId: logout
+    summary: Sign out
+    description: Clears the session. Succeeds whether or not a session exists.
+    tags: [Auth]
+    x-access: public
+    security: []
+    responses:
+      '204': { description: Signed out. }
+
+/auth/verify-email:
+  post:
+    operationId: verifyEmail
+    summary: Verify an email address with a token
+    description: Marks the matching account's email verified and consumes the token. Does not need a session.
+    tags: [Auth]
+    x-access: public
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AuthPublicVerifyEmailRequest' }
+    responses:
+      '200':
+        description: Email verified.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/User' }
+      '400':
+        description: 'invalid_token: the link is invalid or expired.'
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiError' }
+
+/auth/resend-verification:
+  post:
+    operationId: resendVerificationEmail
+    summary: Resend the verification email
+    description: Issues a new verification token for the signed-in user and emails it (replaces any earlier token).
+    tags: [Auth]
+    x-access: session
+    responses:
+      '204': { description: Email queued. }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+
+/auth/forgot-password:
+  post:
+    operationId: forgotPassword
+    summary: Request a password reset email
+    description: Always answers 204 so the response never reveals whether an email is registered. When the account exists a reset token is issued and emailed.
+    tags: [Auth]
+    x-access: public
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AuthPublicForgotPasswordRequest' }
+    responses:
+      '204': { description: Accepted (whether or not the email is registered). }
+
+/auth/reset-password:
+  post:
+    operationId: resetPassword
+    summary: Set a new password with a reset token
+    description: Consumes the token and replaces the password. Does not sign the user in. The token is checked before the password length.
+    tags: [Auth]
+    x-access: public
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AuthPublicResetPasswordRequest' }
+    responses:
+      '204': { description: Password changed. }
+      '400':
+        description: 'invalid_token: the link is invalid or expired.'
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiError' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: password (min 8 characters). The token stays valid.' }
+
+/me/onboarding:
+  patch:
+    operationId: completeOnboarding
+    summary: Complete onboarding
+    description: |
+      Saves the onboarding answers and sets `onboarded: true`.
+      - Sets the user's location and the identity preferences (location, categories, min price, max budget, delivery radius).
+      - `firstListing` creates the user's first listing (supply: price = `minPriceIdr` or 0, status `available`; demand:
+        budget = `maxBudgetIdr` or 0, status `open`, deadline in 30 days), category = the first chosen category (`agri` if none).
+      - `organization` adds an unverified org membership with role `owner`.
+      - `marketMakerApplication` with a non-blank `organization` files a Market Maker application (pending), writes an
+        audit entry (`Ajukan Market Maker`) and notifies every admin (`transaction_update`, href `/admin/mm-applications`).
+    tags: [Auth]
+    x-access: session
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/OnboardingInput' }
+    responses:
+      '200':
+        description: The updated user.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/User' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+    x-audit: true
+    x-note: The mock performs no validation of the onboarding body and does not guard against repeating onboarding (an organization membership is added again each time). The audit entry is only written when a Market Maker application is filed.
+
+/public/stats:
+  get:
+    operationId: getPublicStats
+    summary: Get headline network statistics
+    description: Also pushed live on the `public:stats` channel.
+    tags: [Public]
+    x-access: public
+    security: []
+    responses:
+      '200':
+        description: Current stats.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PublicStats' }
+
+/public/activity:
+  get:
+    operationId: listPublicActivity
+    summary: List recent public activity
+    description: Newest first. Also pushed live on the `public:activity` channel.
+    tags: [Public]
+    x-access: public
+    security: []
+    parameters:
+      - name: limit
+        in: query
+        description: Maximum number of events.
+        schema: { type: integer, minimum: 1, default: 20 }
+    responses:
+      '200':
+        description: Recent events.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/ActivityEvent' }
+
+/opportunities:
+  get:
+    operationId: listOpportunities
+    summary: List detected opportunities
+    description: Sorted by `potentialValueIdr` descending. `q` matches title, code and description.
+    tags: [Public]
+    x-access: public
+    security: []
+    parameters:
+      - { $ref: '#/components/parameters/Page' }
+      - { $ref: '#/components/parameters/PageSize' }
+      - { $ref: '#/components/parameters/Q' }
+      - { $ref: '#/components/parameters/Category' }
+      - { $ref: '#/components/parameters/Region' }
+      - name: status
+        in: query
+        description: Comma-separated opportunity statuses.
+        schema: { type: string }
+    responses:
+      '200':
+        description: A page of opportunities.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthPublicOpportunityPage' }
+    x-note: The mock does not clamp pageSize below 1 and a non-numeric page/pageSize yields NaN; the real API should validate (422).
+
+/opportunities/{id}:
+  get:
+    operationId: getOpportunity
+    summary: Get an opportunity
+    description: Visitors (no session) see participant names masked to initials (`A•••`); signed-in users see full names.
+    tags: [Public]
+    x-access: public
+    security: []
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    responses:
+      '200':
+        description: The opportunity.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OpportunityDetail' }
+      '404': { $ref: '#/components/responses/NotFound' }
+
+/markets:
+  get:
+    operationId: listMarkets
+    summary: List markets
+    description: Sorted by `volume30dIdr` descending. `q` matches name, code and market maker name. Items are the summary `Market` (no description, rules, price history, activity or auctions).
+    tags: [Public]
+    x-access: public
+    security: []
+    parameters:
+      - { $ref: '#/components/parameters/Page' }
+      - { $ref: '#/components/parameters/PageSize' }
+      - { $ref: '#/components/parameters/Q' }
+      - { $ref: '#/components/parameters/Category' }
+      - { $ref: '#/components/parameters/Region' }
+      - name: status
+        in: query
+        description: Comma-separated market statuses.
+        schema: { type: string }
+    responses:
+      '200':
+        description: A page of markets.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthPublicMarketPage' }
+
+/markets/{id}:
+  get:
+    operationId: getMarket
+    summary: Get a market
+    tags: [Public]
+    x-access: public
+    security: []
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    responses:
+      '200':
+        description: The market with rules, price history, activity and auctions.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MarketDetail' }
+      '404': { $ref: '#/components/responses/NotFound' }
+
+/markets/{id}/orders:
+  post:
+    operationId: createDirectMarketOrder
+    summary: Place a direct order at a posted price
+    description: |
+      Buys a posted supply listing of a `direct_market` market at its listed unit price, on escrow terms with a 0.5%
+      maker fee. Creates a transaction between the buyer (the caller) and the listing owner, and reduces the listing's
+      remaining quantity; the listing becomes `sold` when it reaches zero (a history entry `Order langsung ...` is added
+      to the owner's listing). The commitment value (quantity x unit price) is checked against the caller's KYC limit.
+      Checks run in this order: session, account not restricted/suspended, market accepts direct orders, listing exists,
+      not own listing, quantity, KYC limit.
+    tags: [Public]
+    x-access: session
+    parameters:
+      - { name: id, in: path, required: true, description: Market id., schema: { type: string } }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AuthPublicDirectOrderRequest' }
+    responses:
+      '201':
+        description: Order placed.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthPublicDirectOrderResponse' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '403': { $ref: '#/components/responses/Forbidden', description: 'account_restricted: the account is restricted or suspended. kyc_limit: the order value exceeds the caller''s verification level limit.' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: the listing does not exist in this market or is not a supply listing.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'not_direct: the market is not a direct_market or is not active (also returned for an unknown market). own_listing: the listing belongs to the caller.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: quantity (must be > 0 and at most the listing''s remaining quantity).' }
+    x-note: An unknown market id returns 409 not_direct rather than 404. Listings from the seeded market catalog (no owner userId) have their in-memory quantity decremented without a stored history.
+
+/auctions:
+  get:
+    operationId: listAuctions
+    summary: List auctions
+    description: |
+      Sorted live/extended first, then qualification, then scheduled, then the rest, then by `endsAt` ascending.
+      `q` matches title, code and market name. `status` is a comma-separated list of auction statuses.
+    tags: [Public]
+    x-access: public
+    security: []
+    parameters:
+      - { $ref: '#/components/parameters/Page' }
+      - { $ref: '#/components/parameters/PageSize' }
+      - { $ref: '#/components/parameters/Q' }
+      - { $ref: '#/components/parameters/Category' }
+      - name: region
+        in: query
+        description: Accepted but has no effect on auctions (auctions carry no region).
+        schema: { type: string }
+      - name: status
+        in: query
+        description: Comma-separated auction statuses.
+        schema: { type: string }
+    responses:
+      '200':
+        description: A page of auctions (without rules, extension settings or bids).
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthPublicAuctionPage' }
+    x-note: The mock fills the region filter from the query itself, so `region` never filters anything.
+
+/auctions/{id}:
+  get:
+    operationId: getAuction
+    summary: Get an auction
+    description: 'Bid history with masked bidder names. Bids made by the signed-in user are flagged `mine: true`. Live updates arrive on the `auction:{id}` channel.'
+    tags: [Public]
+    x-access: public
+    security: []
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    responses:
+      '200':
+        description: The auction.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuctionDetail' }
+      '404': { $ref: '#/components/responses/NotFound' }
+
+/explorer/overview:
+  get:
+    operationId: getExplorerOverview
+    summary: Get the market explorer overview
+    description: Headline stats with period-over-period deltas, volume series, per-category price index and demand/supply.
+    tags: [Public]
+    x-access: public
+    security: []
+    parameters:
+      - name: range
+        in: query
+        schema: { type: string, enum: ['7d', '30d', '90d'], default: 30d }
+      - { $ref: '#/components/parameters/Category' }
+    responses:
+      '200':
+        description: The overview.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExplorerOverview' }
+    x-note: The mock does not validate `range` or `category`.
+
+/explorer/{side}:
+  get:
+    operationId: listExplorerAggregates
+    summary: List aggregated demand or supply
+    description: One row per market, aggregated for the explorer tables.
+    tags: [Public]
+    x-access: public
+    security: []
+    parameters:
+      - name: side
+        in: path
+        required: true
+        schema: { type: string, enum: [demand, supply] }
+      - { $ref: '#/components/parameters/Category' }
+    responses:
+      '200':
+        description: Aggregate rows.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/AggregateRow' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: side is neither demand nor supply.' }
+
+/search:
+  get:
+    operationId: search
+    summary: Search the public economy
+    description: |
+      Case-insensitive substring match over title and subtitle of opportunities, markets, auctions, market makers
+      (`business`) and auction lots (`product`, or `service` for the `it` and `logistics` categories). An empty `q`
+      returns an empty list.
+    tags: [Public]
+    x-access: public
+    security: []
+    parameters:
+      - name: q
+        in: query
+        schema: { type: string }
+      - name: type
+        in: query
+        description: Restrict to one hit type.
+        schema: { $ref: '#/components/schemas/SearchType' }
+      - name: limit
+        in: query
+        schema: { type: integer, minimum: 1, default: 50 }
+    responses:
+      '200':
+        description: Hits.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/SearchHit' }
+
+/me/reputation:
+  get:
+    operationId: getMyReputation
+    summary: Get my reputation report
+    description: Score, breakdown, counts and trend computed from the user's transactions.
+    tags: [Matching]
+    x-access: session
+    responses:
+      '200':
+        description: The report.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReputationReport' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+
+/me/matches:
+  get:
+    operationId: listMyMatches
+    summary: List my smart matches
+    description: |
+      Pairs what the user can offer (available/in_market/reserved supply listings and capacity items in their identity)
+      with open opportunities in the same category whose demand exceeds supply. Up to two opportunities per item, scored
+      by category, distance vs delivery radius, coverage and engine confidence, best first; at most two `new` matches
+      per opportunity. Matches the user already acted on are always kept.
+    tags: [Matching]
+    x-access: session
+    responses:
+      '200':
+        description: Matches, best first.
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/Match' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+
+/me/matches/{id}:
+  post:
+    operationId: actOnMatch
+    summary: Connect, save, dismiss or reset a match
+    description: |
+      Sets the match state (`connect` -> connected, `save` -> saved, `dismiss` -> dismissed, `reset` -> new).
+      `connect` also makes the user follow the opportunity (if not already related) and, once per match, opens a
+      conversation titled `Match: <opportunity title>` with the market maker (or an opportunity team placeholder) and
+      posts an opening message. When the maker is a registered user they get a notification
+      (`opportunity_detected`, title `<name> ingin terhubung`, href `/app/messages/{conversationId}`); otherwise an
+      automated reply is scheduled. Reconnecting reuses the existing conversation.
+    tags: [Matching]
+    x-access: session
+    parameters:
+      - { name: id, in: path, required: true, description: 'Match id: `<haveId>--<opportunityId>`.', schema: { type: string } }
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AuthPublicMatchActionRequest' }
+    responses:
+      '200':
+        description: The match with its new state (and `conversationId` once connected).
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Match' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '404': { $ref: '#/components/responses/NotFound', description: 'not_found: the match is not among the user''s current matches.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'validation: unknown action.' }
+    x-note: The returned `state` can be `connected`, `saved`, `dismissed` or `new`; the `Match.state` enum covers this. The match lookup (404) runs before the action check (422).
+
+/profiles/u/{username}:
+  get:
+    operationId: getPersonProfile
+    summary: Get a public person profile
+    description: |
+      Public view of a participant: reputation, verification, offered supply (available/in_market only), joined markets,
+      org names and up to 6 recent public activities (finished transactions with the counterparty hidden, offered
+      supply). Suspended and restricted users stay viewable with their `status`.
+    tags: [Public]
+    x-access: public
+    security: []
+    parameters:
+      - { name: username, in: path, required: true, schema: { type: string } }
+    responses:
+      '200':
+        description: The profile.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PublicProfile' }
+      '404': { $ref: '#/components/responses/NotFound' }
+
+/profiles/b/{slug}:
+  get:
+    operationId: getBusinessProfile
+    summary: Get a public business profile
+    description: |
+      Business profile by slug (slugified name). Businesses come from market makers, user organizations, business
+      accounts and verification submissions. Lists the markets the business operates and their non-cancelled auctions.
+      Verified businesses show the documents NIB, NPWP and Akta pendirian.
+    tags: [Public]
+    x-access: public
+    security: []
+    parameters:
+      - { name: slug, in: path, required: true, schema: { type: string } }
+    responses:
+      '200':
+        description: The profile.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BusinessProfile' }
+      '404': { $ref: '#/components/responses/NotFound' }
+
+/me/kyc:
+  get:
+    operationId: getMyKyc
+    summary: Get my verification level and limits
+    description: Level 0 email (Rp 10 jt), 1 email + phone (Rp 100 jt), 2 KTP verified (Rp 2 M). The limit applies per commitment (bid, Dutch accept, buyer auction, accepted quote, direct order); exceeding it fails with `403 kyc_limit`.
+    tags: [Verification]
+    x-access: session
+    responses:
+      '200':
+        description: Verification status.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Kyc' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+
+/me/kyc/phone:
+  post:
+    operationId: requestPhoneOtp
+    summary: Send a phone verification code
+    description: Sends an OTP to the number, valid for 5 minutes; a new request replaces the pending one. The mock does not send anything and accepts only the fixed code `246810`.
+    tags: [Verification]
+    x-access: session
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AuthPublicKycPhoneRequest' }
+    responses:
+      '200':
+        description: 'Status with `otpPending: true`.'
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Kyc' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: phone (Indonesian mobile number, 08... or 628..., 9 to 13 digits).' }
+
+/me/kyc/phone/verify:
+  post:
+    operationId: verifyPhoneOtp
+    summary: Verify the phone code
+    description: 'Marks the phone verified (level 1) and clears the pending OTP. Checks run in this order: pending and unexpired OTP, then the code.'
+    tags: [Verification]
+    x-access: session
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AuthPublicKycPhoneVerifyRequest' }
+    responses:
+      '200':
+        description: Updated status.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Kyc' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'otp_expired: no pending OTP or it expired; request a new one.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: code (does not match). The OTP stays pending.' }
+    x-note: 'The verified phone number is not stored, only the `phone: true` flag. There is no attempt limit on wrong codes.'
+
+/me/kyc/identity:
+  post:
+    operationId: submitKtpVerification
+    summary: Submit KTP and selfie for verification
+    description: |
+      Puts the submission in the admin verification queue as a pending `personal` verification (documents `ktp` and
+      `selfie`) and sets the identity status to `pending`. Admins approve or reject it from the verification queue,
+      which sets level 2. Writes an audit entry (`Ajukan verifikasi KTP`).
+    tags: [Verification]
+    x-access: session
+    x-audit: true
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AuthPublicKycIdentityRequest' }
+    responses:
+      '200':
+        description: Updated status with identity `pending`.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Kyc' }
+      '401': { $ref: '#/components/responses/Unauthenticated' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'already_submitted: identity is already verified, or a submission is under review.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'fields: nik (exactly 16 digits), fullName (required), ktpFile (required), selfieFile (required).' }
+
+/listings:
+  get:
+    operationId: listPublicListings
+    summary: List the public listing catalog
+    description: |
+      Supply and demand listings that are public (status available, in_market, open or matched) from active users
+      (restricted and suspended owners are hidden), plus demo listings derived from markets. Newest first. `q` matches
+      item, code and owner name. Owner contact details are never exposed.
+    tags: [Public]
+    x-access: public
+    security: []
+    parameters:
+      - { $ref: '#/components/parameters/Page' }
+      - { $ref: '#/components/parameters/PageSize' }
+      - { $ref: '#/components/parameters/Q' }
+      - { $ref: '#/components/parameters/Category' }
+      - name: region
+        in: query
+        description: Substring match on the listing location (not exact, unlike other lists).
+        schema: { type: string }
+      - name: kind
+        in: query
+        schema: { type: string, enum: [supply, demand] }
+      - name: market
+        in: query
+        description: Market id.
+        schema: { type: string }
+    responses:
+      '200':
+        description: A page of listings.
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthPublicPublicListingPage' }
+
+/listings/price-suggestion:
+  get:
+    operationId: getPriceSuggestion
+    summary: Suggest a unit price for a listing
+    description: |
+      Quartiles (low 25%, median, high 75%, rounded to Rp 50) over the last 8 weekly medians of markets and the unit
+      prices of catalog listings that share the category and unit. When `item` has words of 4+ letters, the samples are
+      first narrowed to markets/listings whose name shares a word, falling back to the whole category when that leaves
+      fewer than 3 data points. Returns `null` below 3 data points.
+    tags: [Public]
+    x-access: public
+    security: []
+    parameters:
+      - { name: category, in: query, required: true, schema: { $ref: '#/components/schemas/CategoryId' } }
+      - name: unit
+        in: query
+        required: true
+        description: Compared case-insensitively.
+        schema: { type: string }
+      - name: item
+        in: query
+        description: Item name used to narrow the comparison set.
+        schema: { type: string }
+      - name: exclude
+        in: query
+        description: Listing id to leave out of the samples (the listing being edited).
+        schema: { type: string }
+    responses:
+      '200':
+        description: The suggestion, or `null` when there is not enough data.
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - { $ref: '#/components/schemas/AuthPublicPriceSuggestion' }
+                - { type: 'null' }
+    x-note: The mock does not validate that category and unit are present; a missing one simply matches nothing and yields `null`.

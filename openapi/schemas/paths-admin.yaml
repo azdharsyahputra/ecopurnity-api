@@ -1,0 +1,72 @@
+AdminOk:
+  type: object
+  required: [ok]
+  properties:
+    ok: { type: boolean, const: true }
+AdminCaseOpened:
+  type: object
+  required: [caseId]
+  properties:
+    caseId: { type: string, description: Id of the new manual FraudAlert (investigating). }
+AdminUserActionRequest:
+  type: object
+  required: [action, reason]
+  properties:
+    action: { $ref: '#/components/schemas/UserAction' }
+    reason:
+      type: string
+      minLength: 10
+      description: 'Trimmed length at least 10; recorded in the audit trail (and as the appeal decision note when an appeal is decided).'
+AdminVerificationActionRequest:
+  type: object
+  required: [action]
+  properties:
+    action: { $ref: '#/components/schemas/VerificationAction' }
+    reason:
+      type: string
+      minLength: 10
+      description: 'Required for `reject` and `reupload` (trimmed length at least 10). Optional for `approve` (decision note defaults to "Dokumen sesuai").'
+AdminMarketActionRequest:
+  type: object
+  required: [action]
+  properties:
+    action: { $ref: '#/components/schemas/MarketAction' }
+    reason:
+      type: string
+      minLength: 10
+      description: 'Required for `flag`, `suspend`, `restore` (trimmed length at least 10); optional for `review`. For `flag` it becomes the flag label.'
+AdminAuctionActionRequest:
+  type: object
+  required: [action, reason]
+  properties:
+    action: { $ref: '#/components/schemas/AuctionAction' }
+    reason:
+      type: string
+      minLength: 10
+      description: 'Required for every action (trimmed length at least 10). For `open_case` it becomes the first investigation note.'
+    type:
+      allOf: [{ $ref: '#/components/schemas/AlertType' }]
+      description: Only for `open_case`; the fraud type of the new case. Defaults to `bid_manipulation`.
+AdminMarketDetail:
+  description: AdminMarket plus the market's auctions (with findings) and its audit entries, newest first.
+  allOf:
+    - $ref: '#/components/schemas/AdminMarket'
+    - type: object
+      required: [auctions, audit]
+      properties:
+        auctions:
+          type: array
+          items: { $ref: '#/components/schemas/AdminAuction' }
+        audit:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEntry' }
+AdminAlertDetail:
+  description: FraudAlert plus audit entries whose action text mentions the alert code (case history).
+  allOf:
+    - $ref: '#/components/schemas/FraudAlert'
+    - type: object
+      required: [audit]
+      properties:
+        audit:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEntry' }

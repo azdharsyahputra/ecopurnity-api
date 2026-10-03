@@ -1,0 +1,14 @@
+{
+  "name": "ecopurnity-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "openapi:bundle": "node scripts/bundle-openapi.mjs",
+    "openapi:lint": "npm run openapi:bundle && redocly lint api/openapi.yaml",
+    "openapi:docs": "npm run openapi:bundle && redocly preview-docs api/openapi.yaml"
+  },
+  "devDependencies": {
+    "@redocly/cli": "^2.0.0",
+    "yaml": "^2.8.0"
+  }
+}

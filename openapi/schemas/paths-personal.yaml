@@ -1,0 +1,130 @@
+PersonalListingPatch:
+  type: object
+  description: Partial `ListingInput` (any editable listing field). Merged into the stored listing as-is.
+  additionalProperties: true
+  properties:
+    item: { type: string }
+    categoryId: { $ref: '#/components/schemas/CategoryId' }
+    quantity: { $ref: '#/components/schemas/Quantity' }
+    location: { type: string }
+    spec: { type: string }
+    delivery: { $ref: '#/components/schemas/DeliveryMode' }
+    attachments: { type: array, items: { type: string } }
+    priceIdr: { type: integer, description: Supply only. }
+    availableFrom: { type: string, description: Supply only. }
+    expiresAt: { type: string, description: Supply only. }
+    budgetIdr: { type: integer, description: Demand only. }
+    deadline: { type: string, description: Demand only. }
+PersonalListingMarketInput:
+  type: object
+  required: [marketId]
+  properties:
+    marketId: { type: string }
+PersonalOpportunityJoinInput:
+  type: object
+  required: [kind, listingId, quantity]
+  properties:
+    kind: { type: string, enum: [supply, demand], description: Which side of the opportunity the contribution adds to. }
+    listingId: { type: string, description: The caller's listing backing the contribution. }
+    quantity:
+      allOf:
+        - $ref: '#/components/schemas/Quantity'
+      description: Contributed quantity; `value` must be > 0.
+PersonalMarketWatchInput:
+  type: object
+  properties:
+    priceIdr: { type: integer, description: Alert threshold on the median price. Omit or 0 to clear. }
+PersonalMyAuctions:
+  type: object
+  required: [eligible, bids, owned]
+  properties:
+    eligible:
+      type: array
+      items:
+        allOf:
+          - $ref: '#/components/schemas/Auction'
+          - type: object
+            required: [qualification]
+            properties:
+              qualification: { $ref: '#/components/schemas/QualificationStatus' }
+    bids:
+      type: array
+      items: { $ref: '#/components/schemas/MyBid' }
+    owned:
+      type: array
+      items: { $ref: '#/components/schemas/Auction' }
+PersonalAuctionMe:
+  type: object
+  required: [qualification, bid, owner]
+  properties:
+    qualification: { $ref: '#/components/schemas/Qualification' }
+    bid:
+      oneOf:
+        - $ref: '#/components/schemas/MyBid'
+        - type: 'null'
+      description: Null when the caller has not bid.
+    owner: { type: boolean, description: The caller created this auction as a buyer. }
+    evaluateHref: { type: string, description: Where the owner evaluates bids. Owner only. }
+PersonalQualificationInput:
+  type: object
+  required: [documentName, acceptRules]
+  properties:
+    documentName: { type: string, description: Uploaded spec document file name (uploads arrive with the BE). }
+    acceptRules: { type: boolean, description: Must be true. }
+PersonalBidInput:
+  type: object
+  required: [priceIdr]
+  properties:
+    priceIdr: { type: integer, minimum: 1, description: Price per unit. Direction of the limit depends on auction type. }
+PersonalAcceptResult:
+  type: object
+  required: [transactionId]
+  properties:
+    transactionId: { type: string }
+PersonalAwardInput:
+  type: object
+  required: [lines]
+  properties:
+    lines:
+      type: array
+      minItems: 1
+      items: { $ref: '#/components/schemas/AllocationLine' }
+PersonalAwardResult:
+  type: object
+  required: [transactionIds]
+  properties:
+    transactionIds:
+      type: array
+      items: { type: string }
+PersonalFinanceBank:
+  type: object
+  required: [bank, accountNo, holder]
+  properties:
+    bank: { type: string, minLength: 1 }
+    accountNo: { type: string, pattern: '^\d{8,16}$' }
+    holder: { type: string, minLength: 1 }
+PersonalWithdrawalInput:
+  type: object
+  required: [amountIdr]
+  properties:
+    amountIdr: { type: integer, minimum: 1, description: At most `Finance.availableIdr`. }
+PersonalNotificationsReadInput:
+  type: object
+  properties:
+    ids:
+      type: array
+      items: { type: string }
+      description: Omit to mark every notification read.
+PersonalContractCreateInput:
+  type: object
+  required: [fromTx, every, runs, startAt]
+  properties:
+    fromTx: { type: string, description: Id of one of the caller's completed transactions. }
+    every: { $ref: '#/components/schemas/ContractEvery' }
+    runs: { type: integer, minimum: 2, maximum: 52, description: Total orders to place. }
+    startAt: { type: string, format: date, description: 'First run date, today or later.' }
+PersonalContractActionInput:
+  type: object
+  required: [action]
+  properties:
+    action: { $ref: '#/components/schemas/ContractAction' }

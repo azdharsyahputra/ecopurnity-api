@@ -1,0 +1,2429 @@
+# Core domain schemas: src/domain/types.ts, status.ts, catalog.ts (generated once, now hand-maintained).
+Tone:
+  type: string
+  enum:
+    - gray
+    - teal
+    - green
+    - blue
+    - yellow
+    - orange
+    - red
+    - purple
+    - pink
+    - lime
+  description: UI colour token. Display-only; the API rarely returns it.
+Entity:
+  type: string
+  enum:
+    - supply
+    - demand
+    - opportunity
+    - market
+    - auction
+    - bid
+    - transaction
+    - qualification
+    - dispute
+  description: Entity kinds that own a status lifecycle (keys of the STATUS table).
+SupplyStatus:
+  type: string
+  enum:
+    - available
+    - reserved
+    - in_market
+    - sold
+    - expired
+  description: Supply lifecycle status.
+DemandStatus:
+  type: string
+  enum:
+    - open
+    - matched
+    - in_market
+    - fulfilled
+    - expired
+    - cancelled
+  description: Demand lifecycle status.
+OpportunityStatus:
+  type: string
+  enum:
+    - detected
+    - forming
+    - market_live
+    - dismissed
+    - closed
+  description: Opportunity lifecycle status.
+MarketStatus:
+  type: string
+  enum:
+    - draft
+    - formation
+    - active
+    - paused
+    - closed
+    - suspended
+  description: Market lifecycle status.
+AuctionStatus:
+  type: string
+  enum:
+    - scheduled
+    - qualification
+    - live
+    - extended
+    - closed
+    - awarded
+    - cancelled
+    - frozen
+  description: Auction lifecycle status.
+BidStatus:
+  type: string
+  enum:
+    - draft
+    - submitted
+    - leading
+    - outbid
+    - won
+    - lost
+    - withdrawn
+  description: Bid lifecycle status.
+TransactionStatus:
+  type: string
+  enum:
+    - agreement
+    - invoiced
+    - paid
+    - fulfilling
+    - delivered
+    - accepted
+    - completed
+    - cancelled
+    - disputed
+  description: Transaction lifecycle status.
+QualificationStatus:
+  type: string
+  enum:
+    - not_started
+    - pending
+    - qualified
+    - rejected
+  description: Qualification lifecycle status.
+DisputeStatus:
+  type: string
+  enum:
+    - open
+    - evidence
+    - review
+    - resolved
+  description: Dispute lifecycle status.
+Quantity:
+  type: object
+  required:
+    - value
+    - unit
+  properties:
+    value:
+      type: number
+    unit:
+      type: string
+ApiErrorBody:
+  $ref: "#/components/schemas/ApiError"
+  description: Error envelope; identical to ApiError.
+RealtimeMessage:
+  type: object
+  required:
+    - channel
+    - type
+    - payload
+    - ts
+  properties:
+    channel:
+      type: string
+    type:
+      type: string
+    payload:
+      description: Channel-specific payload (AuctionEvent, AppNotification, ...).
+    ts:
+      type: string
+      format: date-time
+  description: WebSocket message envelope (PRD 12.2).
+Capability:
+  type: string
+  enum:
+    - market_maker
+    - admin
+  description: Capabilities on top of the base Participant account (PRD 3).
+OrgRole:
+  type: string
+  enum:
+    - owner
+    - procurement
+    - finance
+    - operations
+    - sales
+OrgMembership:
+  type: object
+  required:
+    - orgId
+    - orgName
+    - role
+    - verified
+  properties:
+    orgId:
+      type: string
+    orgName:
+      type: string
+    role:
+      $ref: "#/components/schemas/OrgRole"
+    verified:
+      type: boolean
+User:
+  type: object
+  required:
+    - id
+    - name
+    - username
+    - email
+    - emailVerified
+    - capabilities
+    - orgs
+    - onboarded
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    username:
+      type: string
+    email:
+      type: string
+    emailVerified:
+      type: boolean
+    location:
+      type: string
+    avatarUrl:
+      type: string
+    capabilities:
+      type: array
+      items:
+        $ref: "#/components/schemas/Capability"
+    orgs:
+      type: array
+      items:
+        $ref: "#/components/schemas/OrgMembership"
+    onboarded:
+      type: boolean
+PublicStats:
+  type: object
+  required:
+    - activeParticipants
+    - activeMarkets
+    - opportunitiesDetected
+    - transactionVolumeIdr
+  properties:
+    activeParticipants:
+      type: integer
+    activeMarkets:
+      type: integer
+    opportunitiesDetected:
+      type: integer
+    transactionVolumeIdr:
+      type: integer
+ActivityType:
+  type: string
+  enum:
+    - opportunity_detected
+    - market_formed
+    - auction_started
+    - bid_placed
+    - auction_closed
+    - transaction_completed
+ActivityEvent:
+  type: object
+  required:
+    - id
+    - type
+    - title
+    - at
+  properties:
+    id:
+      type: string
+    type:
+      $ref: "#/components/schemas/ActivityType"
+    title:
+      type: string
+    amountIdr:
+      type: integer
+    at:
+      type: string
+      format: date-time
+CategoryId:
+  type: string
+  enum:
+    - agri
+    - food
+    - packaging
+    - manufacturing
+    - logistics
+    - it
+    - energy
+MarketMechanism:
+  type: string
+  enum:
+    - forward_auction
+    - reverse_auction
+    - sealed_bid
+    - dutch_auction
+    - direct_market
+    - collective_procurement
+MarketObjective:
+  type: string
+  enum:
+    - procurement
+    - selling
+    - resource_exchange
+    - service_exchange
+LabeledValue:
+  type: object
+  required:
+    - label
+    - value
+  properties:
+    label:
+      type: string
+    value:
+      type: string
+PartyRef:
+  type: object
+  required:
+    - name
+    - kind
+    - verified
+  properties:
+    name:
+      type: string
+    kind:
+      type: string
+      enum:
+        - person
+        - business
+    verified:
+      type: boolean
+OpportunityKind:
+  type: string
+  enum:
+    - collective_demand
+    - supply_gap
+    - market_gap
+    - capacity_match
+Opportunity:
+  type: object
+  required:
+    - id
+    - code
+    - title
+    - kind
+    - categoryId
+    - region
+    - status
+    - demand
+    - supply
+    - participants
+    - potentialValueIdr
+    - suggestedMechanism
+    - confidence
+    - detectedAt
+  properties:
+    id:
+      type: string
+    code:
+      type: string
+    title:
+      type: string
+    kind:
+      $ref: "#/components/schemas/OpportunityKind"
+    categoryId:
+      $ref: "#/components/schemas/CategoryId"
+    region:
+      type: string
+    status:
+      $ref: "#/components/schemas/OpportunityStatus"
+    demand:
+      $ref: "#/components/schemas/Quantity"
+      description: Potential demand per month.
+    supply:
+      $ref: "#/components/schemas/Quantity"
+      description: Current supply per month, same unit as demand.
+    participants:
+      type: integer
+    potentialValueIdr:
+      type: integer
+    suggestedMechanism:
+      $ref: "#/components/schemas/MarketMechanism"
+    confidence:
+      type: number
+      description: Engine confidence, 0-1.
+      minimum: 0
+      maximum: 1
+    detectedAt:
+      type: string
+      format: date-time
+OpportunityDetail:
+  allOf:
+    - $ref: "#/components/schemas/Opportunity"
+    - type: object
+      required:
+        - description
+        - requiredContribution
+        - mechanismReason
+        - history
+        - participantsPreview
+        - markets
+      properties:
+        description:
+          type: string
+        requiredContribution:
+          type: string
+        mechanismReason:
+          type: string
+        history:
+          type: array
+          items:
+            type: object
+            required:
+              - month
+              - demand
+              - supply
+            properties:
+              month:
+                type: string
+              demand:
+                type: number
+              supply:
+                type: number
+          description: Monthly demand vs supply, oldest first.
+        participantsPreview:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/PartyRef"
+              - type: object
+                required:
+                  - role
+                properties:
+                  role:
+                    type: string
+                    enum:
+                      - buyer
+                      - supplier
+          description: Visitors see a masked list; members see names (PRD 6.3).
+        markets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Market"
+Market:
+  type: object
+  required:
+    - id
+    - code
+    - name
+    - categoryId
+    - region
+    - objective
+    - mechanism
+    - status
+    - maker
+    - demand
+    - supply
+    - buyers
+    - suppliers
+    - priceRange
+    - volume30dIdr
+    - activeAuctions
+  properties:
+    id:
+      type: string
+    code:
+      type: string
+    name:
+      type: string
+    categoryId:
+      $ref: "#/components/schemas/CategoryId"
+    region:
+      type: string
+    objective:
+      $ref: "#/components/schemas/MarketObjective"
+    mechanism:
+      $ref: "#/components/schemas/MarketMechanism"
+    status:
+      $ref: "#/components/schemas/MarketStatus"
+    maker:
+      $ref: "#/components/schemas/PartyRef"
+    demand:
+      $ref: "#/components/schemas/Quantity"
+    supply:
+      $ref: "#/components/schemas/Quantity"
+    buyers:
+      type: integer
+    suppliers:
+      type: integer
+    priceRange:
+      type: object
+      required:
+        - minIdr
+        - maxIdr
+        - unit
+      properties:
+        minIdr:
+          type: integer
+        maxIdr:
+          type: integer
+        unit:
+          type: string
+      description: Rupiah per unit over the last 30 days.
+    volume30dIdr:
+      type: integer
+    activeAuctions:
+      type: integer
+MarketDetail:
+  allOf:
+    - $ref: "#/components/schemas/Market"
+    - type: object
+      required:
+        - description
+        - rules
+        - priceHistory
+        - activity
+        - auctions
+      properties:
+        description:
+          type: string
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/LabeledValue"
+        priceHistory:
+          type: array
+          items:
+            type: object
+            required:
+              - week
+              - medianIdr
+              - lowIdr
+              - highIdr
+            properties:
+              week:
+                type: string
+              medianIdr:
+                type: integer
+              lowIdr:
+                type: integer
+              highIdr:
+                type: integer
+          description: Weekly median price with its low-high band, oldest first.
+        activity:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActivityEvent"
+        auctions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Auction"
+AuctionType:
+  type: string
+  enum:
+    - forward
+    - reverse
+    - sealed
+    - dutch
+BidVisibility:
+  type: string
+  enum:
+    - full
+    - rank_only
+    - sealed
+Auction:
+  type: object
+  required:
+    - id
+    - code
+    - title
+    - marketId
+    - marketName
+    - categoryId
+    - type
+    - status
+    - lot
+    - startsAt
+    - endsAt
+    - participants
+    - bidCount
+    - visibility
+    - openingPriceIdr
+  properties:
+    id:
+      type: string
+    code:
+      type: string
+    title:
+      type: string
+    marketId:
+      type: string
+    marketName:
+      type: string
+    categoryId:
+      $ref: "#/components/schemas/CategoryId"
+    type:
+      $ref: "#/components/schemas/AuctionType"
+    status:
+      $ref: "#/components/schemas/AuctionStatus"
+    lot:
+      type: object
+      required:
+        - item
+        - quantity
+        - spec
+      properties:
+        item:
+          type: string
+        quantity:
+          $ref: "#/components/schemas/Quantity"
+        spec:
+          type: string
+    startsAt:
+      type: string
+      format: date-time
+    endsAt:
+      type: string
+      format: date-time
+    participants:
+      type: integer
+    bidCount:
+      type: integer
+    visibility:
+      $ref: "#/components/schemas/BidVisibility"
+    openingPriceIdr:
+      type: integer
+    currentPriceIdr:
+      type: integer
+      description: Best bid per unit so far (lowest for reverse, highest for forward); absent for sealed. Current ask for Dutch.
+PublicBid:
+  type: object
+  required:
+    - id
+    - bidder
+    - priceIdr
+    - at
+  properties:
+    id:
+      type: string
+    bidder:
+      type: string
+      description: Masked per visibility rule, e.g. "Supplier 3".
+    priceIdr:
+      type: integer
+    at:
+      type: string
+      format: date-time
+    mine:
+      type: boolean
+      description: Only ever true for the signed-in user's own bids.
+AuctionDetail:
+  allOf:
+    - $ref: "#/components/schemas/Auction"
+    - type: object
+      required:
+        - rules
+        - minStepIdr
+        - extension
+        - bids
+      properties:
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/LabeledValue"
+        minStepIdr:
+          type: integer
+        extension:
+          type: object
+          required:
+            - windowMinutes
+            - extendMinutes
+          properties:
+            windowMinutes:
+              type: integer
+            extendMinutes:
+              type: integer
+        bids:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublicBid"
+          description: Newest first; empty for sealed auctions.
+AuctionEventBid:
+  type: object
+  required:
+    - kind
+    - bid
+    - bidCount
+    - participants
+  properties:
+    kind:
+      const: bid
+    bid:
+      $ref: "#/components/schemas/PublicBid"
+    currentPriceIdr:
+      type: integer
+    bidCount:
+      type: integer
+    participants:
+      type: integer
+AuctionEventExtended:
+  type: object
+  required:
+    - kind
+    - endsAt
+  properties:
+    kind:
+      const: extended
+    endsAt:
+      type: string
+      format: date-time
+AuctionEventPrice:
+  type: object
+  required:
+    - kind
+    - currentPriceIdr
+  properties:
+    kind:
+      const: price
+    currentPriceIdr:
+      type: integer
+AuctionEventClosed:
+  type: object
+  required:
+    - kind
+    - status
+  properties:
+    kind:
+      const: closed
+    status:
+      $ref: "#/components/schemas/AuctionStatus"
+AuctionEvent:
+  description: Payloads on the `auction:{id}` channel.
+  oneOf:
+    - $ref: "#/components/schemas/AuctionEventBid"
+    - $ref: "#/components/schemas/AuctionEventExtended"
+    - $ref: "#/components/schemas/AuctionEventPrice"
+    - $ref: "#/components/schemas/AuctionEventClosed"
+  discriminator:
+    propertyName: kind
+    mapping:
+      bid: "#/components/schemas/AuctionEventBid"
+      extended: "#/components/schemas/AuctionEventExtended"
+      price: "#/components/schemas/AuctionEventPrice"
+      closed: "#/components/schemas/AuctionEventClosed"
+ExplorerRange:
+  type: string
+  enum:
+    - 7d
+    - 30d
+    - 90d
+ExplorerOverview:
+  type: object
+  required:
+    - stats
+    - deltas
+    - volume
+    - priceIndex
+    - demandSupply
+  properties:
+    stats:
+      $ref: "#/components/schemas/PublicStats"
+    deltas:
+      type: object
+      required:
+        - participants
+        - markets
+        - opportunities
+        - volume
+      properties:
+        participants:
+          type: number
+        markets:
+          type: number
+        opportunities:
+          type: number
+        volume:
+          type: number
+      description: Change vs the previous period of the same length, as fractions.
+    volume:
+      type: array
+      items:
+        type: object
+        required:
+          - date
+          - volumeIdr
+        properties:
+          date:
+            type: string
+            format: date
+          volumeIdr:
+            type: integer
+    priceIndex:
+      type: array
+      items:
+        type: object
+        required:
+          - date
+        properties:
+          date:
+            type: string
+            format: date
+          agri:
+            type: number
+          food:
+            type: number
+          packaging:
+            type: number
+          manufacturing:
+            type: number
+          logistics:
+            type: number
+          it:
+            type: number
+          energy:
+            type: number
+      description: Price index (start of range = 100) per category; each point carries `date` plus one number per category.
+    demandSupply:
+      type: array
+      items:
+        type: object
+        required:
+          - categoryId
+          - demandIdr
+          - supplyIdr
+        properties:
+          categoryId:
+            $ref: "#/components/schemas/CategoryId"
+          demandIdr:
+            type: integer
+          supplyIdr:
+            type: integer
+AggregateRow:
+  type: object
+  required:
+    - categoryId
+    - item
+    - region
+    - quantity
+    - listings
+    - trend
+  properties:
+    categoryId:
+      $ref: "#/components/schemas/CategoryId"
+    item:
+      type: string
+    region:
+      type: string
+    quantity:
+      $ref: "#/components/schemas/Quantity"
+    listings:
+      type: integer
+    trend:
+      type: number
+      description: 30-day change, fraction.
+SearchType:
+  type: string
+  enum:
+    - product
+    - service
+    - business
+    - market
+    - opportunity
+    - auction
+SearchHit:
+  type: object
+  required:
+    - type
+    - id
+    - title
+    - subtitle
+    - href
+  properties:
+    type:
+      $ref: "#/components/schemas/SearchType"
+    id:
+      type: string
+    title:
+      type: string
+    subtitle:
+      type: string
+    href:
+      type: string
+      description: In-app path.
+OnboardingGoal:
+  type: string
+  enum:
+    - sell
+    - buy
+    - business
+    - market_maker
+OnboardingInput:
+  type: object
+  required:
+    - goals
+    - location
+    - radiusKm
+    - categories
+  properties:
+    goals:
+      type: array
+      items:
+        $ref: "#/components/schemas/OnboardingGoal"
+    location:
+      type: string
+    radiusKm:
+      type: number
+    categories:
+      type: array
+      items:
+        $ref: "#/components/schemas/CategoryId"
+    firstListing:
+      type: object
+      required:
+        - kind
+        - item
+        - quantity
+      properties:
+        kind:
+          type: string
+          enum:
+            - supply
+            - demand
+        item:
+          type: string
+        quantity:
+          $ref: "#/components/schemas/Quantity"
+    minPriceIdr:
+      type: integer
+    maxBudgetIdr:
+      type: integer
+    organization:
+      type: object
+      required:
+        - name
+        - industry
+        - location
+      properties:
+        name:
+          type: string
+        industry:
+          type: string
+        location:
+          type: string
+    marketMakerApplication:
+      type: object
+      required:
+        - organization
+        - reason
+      properties:
+        organization:
+          type: string
+        reason:
+          type: string
+CapacityKind:
+  type: string
+  enum:
+    - skill
+    - asset
+    - capacity
+    - resource
+CapacityItem:
+  type: object
+  required:
+    - id
+    - kind
+    - name
+    - detail
+  properties:
+    id:
+      type: string
+    kind:
+      $ref: "#/components/schemas/CapacityKind"
+    name:
+      type: string
+    detail:
+      type: string
+      description: Level, quantity per period, condition... e.g. "500 unit/bulan".
+    categoryId:
+      $ref: "#/components/schemas/CategoryId"
+      description: What Smart Matching pairs it with; older items fall back to a keyword guess.
+Identity:
+  type: object
+  required:
+    - profile
+    - items
+    - availability
+    - preferences
+    - completeness
+  properties:
+    profile:
+      type: object
+      required:
+        - name
+        - username
+        - location
+        - bio
+        - verification
+      properties:
+        name:
+          type: string
+        username:
+          type: string
+        location:
+          type: string
+        bio:
+          type: string
+        verification:
+          type: object
+          required:
+            - email
+            - phone
+            - identity
+          properties:
+            email:
+              type: boolean
+            phone:
+              type: boolean
+            identity:
+              type: string
+              enum:
+                - none
+                - pending
+                - verified
+    items:
+      type: array
+      items:
+        $ref: "#/components/schemas/CapacityItem"
+    availability:
+      type: object
+      required:
+        - days
+        - from
+        - to
+      properties:
+        days:
+          type: array
+          items:
+            type: integer
+            minimum: 0
+            maximum: 6
+        from:
+          type: string
+        to:
+          type: string
+      description: Days 0 = Senin ... 6 = Minggu; hours as HH:mm.
+    preferences:
+      type: object
+      required:
+        - locations
+        - categories
+        - deliveryRadiusKm
+      properties:
+        locations:
+          type: array
+          items:
+            type: string
+        categories:
+          type: array
+          items:
+            $ref: "#/components/schemas/CategoryId"
+        minPriceIdr:
+          type: integer
+        maxBudgetIdr:
+          type: integer
+        deliveryRadiusKm:
+          type: number
+    completeness:
+      type: number
+      description: 0-1, drives the "lengkapi profil" prompt.
+      minimum: 0
+      maximum: 1
+DeliveryMode:
+  type: string
+  enum:
+    - pickup
+    - deliver
+    - both
+SupplyListing:
+  type: object
+  required:
+    - id
+    - code
+    - item
+    - categoryId
+    - quantity
+    - location
+    - spec
+    - delivery
+    - attachments
+    - createdAt
+    - updatedAt
+    - kind
+    - status
+    - priceIdr
+    - availableFrom
+  properties:
+    id:
+      type: string
+    code:
+      type: string
+    item:
+      type: string
+    categoryId:
+      $ref: "#/components/schemas/CategoryId"
+    quantity:
+      $ref: "#/components/schemas/Quantity"
+    location:
+      type: string
+    spec:
+      type: string
+    delivery:
+      $ref: "#/components/schemas/DeliveryMode"
+    attachments:
+      type: array
+      items:
+        type: string
+      description: File names; real uploads arrive with the BE.
+    marketId:
+      type: string
+    createdAt:
+      type: string
+      format: date-time
+    updatedAt:
+      type: string
+      format: date-time
+    kind:
+      const: supply
+    status:
+      $ref: "#/components/schemas/SupplyStatus"
+    priceIdr:
+      type: integer
+      description: Expected price per unit.
+    availableFrom:
+      type: string
+      format: date-time
+    expiresAt:
+      type: string
+      format: date-time
+DemandListing:
+  type: object
+  required:
+    - id
+    - code
+    - item
+    - categoryId
+    - quantity
+    - location
+    - spec
+    - delivery
+    - attachments
+    - createdAt
+    - updatedAt
+    - kind
+    - status
+    - budgetIdr
+    - deadline
+  properties:
+    id:
+      type: string
+    code:
+      type: string
+    item:
+      type: string
+    categoryId:
+      $ref: "#/components/schemas/CategoryId"
+    quantity:
+      $ref: "#/components/schemas/Quantity"
+    location:
+      type: string
+    spec:
+      type: string
+    delivery:
+      $ref: "#/components/schemas/DeliveryMode"
+    attachments:
+      type: array
+      items:
+        type: string
+      description: File names; real uploads arrive with the BE.
+    marketId:
+      type: string
+    createdAt:
+      type: string
+      format: date-time
+    updatedAt:
+      type: string
+      format: date-time
+    kind:
+      const: demand
+    status:
+      $ref: "#/components/schemas/DemandStatus"
+    budgetIdr:
+      type: integer
+      description: Total budget for the whole quantity.
+    deadline:
+      type: string
+      format: date-time
+    auctionId:
+      type: string
+Listing:
+  oneOf:
+    - $ref: "#/components/schemas/SupplyListing"
+    - $ref: "#/components/schemas/DemandListing"
+  discriminator:
+    propertyName: kind
+    mapping:
+      supply: "#/components/schemas/SupplyListing"
+      demand: "#/components/schemas/DemandListing"
+PublicListing:
+  type: object
+  required:
+    - id
+    - code
+    - kind
+    - item
+    - categoryId
+    - quantity
+    - location
+    - spec
+    - delivery
+    - createdAt
+    - unitPriceIdr
+    - owner
+  properties:
+    id:
+      type: string
+    code:
+      type: string
+    kind:
+      type: string
+      enum:
+        - supply
+        - demand
+    item:
+      type: string
+    categoryId:
+      $ref: "#/components/schemas/CategoryId"
+    quantity:
+      $ref: "#/components/schemas/Quantity"
+    location:
+      type: string
+    spec:
+      type: string
+    delivery:
+      $ref: "#/components/schemas/DeliveryMode"
+    marketId:
+      type: string
+    createdAt:
+      type: string
+      format: date-time
+    unitPriceIdr:
+      type: integer
+      description: "Per unit: the supplier's asking price, or the buyer's budget divided by quantity."
+    owner:
+      type: object
+      required:
+        - name
+        - verified
+      properties:
+        name:
+          type: string
+        username:
+          type: string
+        userId:
+          type: string
+        verified:
+          type: boolean
+  description: "A listing in the public catalog (PRD F6): who posted it, never their contact details."
+SupplyListingInput:
+  type: object
+  required:
+    - item
+    - categoryId
+    - quantity
+    - location
+    - spec
+    - delivery
+    - attachments
+    - kind
+    - priceIdr
+    - availableFrom
+  properties:
+    item:
+      type: string
+    categoryId:
+      $ref: "#/components/schemas/CategoryId"
+    quantity:
+      $ref: "#/components/schemas/Quantity"
+    location:
+      type: string
+    spec:
+      type: string
+    delivery:
+      $ref: "#/components/schemas/DeliveryMode"
+    attachments:
+      type: array
+      items:
+        type: string
+      description: File names; real uploads arrive with the BE.
+    kind:
+      const: supply
+    priceIdr:
+      type: integer
+      description: Expected price per unit.
+    availableFrom:
+      type: string
+      format: date-time
+    expiresAt:
+      type: string
+      format: date-time
+DemandListingInput:
+  type: object
+  required:
+    - item
+    - categoryId
+    - quantity
+    - location
+    - spec
+    - delivery
+    - attachments
+    - kind
+    - budgetIdr
+    - deadline
+  properties:
+    item:
+      type: string
+    categoryId:
+      $ref: "#/components/schemas/CategoryId"
+    quantity:
+      $ref: "#/components/schemas/Quantity"
+    location:
+      type: string
+    spec:
+      type: string
+    delivery:
+      $ref: "#/components/schemas/DeliveryMode"
+    attachments:
+      type: array
+      items:
+        type: string
+      description: File names; real uploads arrive with the BE.
+    kind:
+      const: demand
+    budgetIdr:
+      type: integer
+      description: Total budget for the whole quantity.
+    deadline:
+      type: string
+      format: date-time
+ListingInput:
+  oneOf:
+    - $ref: "#/components/schemas/SupplyListingInput"
+    - $ref: "#/components/schemas/DemandListingInput"
+  discriminator:
+    propertyName: kind
+    mapping:
+      supply: "#/components/schemas/SupplyListingInput"
+      demand: "#/components/schemas/DemandListingInput"
+ListingDetail:
+  allOf:
+    - $ref: "#/components/schemas/Listing"
+    - type: object
+      required:
+        - history
+        - matches
+        - markets
+      properties:
+        history:
+          type: array
+          items:
+            type: object
+            required:
+              - at
+              - status
+              - note
+            properties:
+              at:
+                type: string
+                format: date-time
+              status:
+                type: string
+              note:
+                type: string
+        matches:
+          type: array
+          items:
+            $ref: "#/components/schemas/Opportunity"
+        markets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Market"
+MatchReason:
+  type: object
+  required:
+    - label
+    - detail
+  properties:
+    label:
+      type: string
+    detail:
+      type: string
+PersonalOpportunity:
+  allOf:
+    - $ref: "#/components/schemas/Opportunity"
+    - type: object
+      required:
+        - reasons
+        - distanceKm
+        - personalValueIdr
+        - relation
+      properties:
+        reasons:
+          type: array
+          items:
+            $ref: "#/components/schemas/MatchReason"
+        distanceKm:
+          type: number
+        personalValueIdr:
+          type: integer
+          description: Estimated monthly value for this user if they take part.
+        relation:
+          type: string
+          enum:
+            - none
+            - following
+            - joined
+        contribution:
+          type: object
+          required:
+            - kind
+            - listingId
+            - quantity
+          properties:
+            kind:
+              type: string
+              enum:
+                - supply
+                - demand
+            listingId:
+              type: string
+            quantity:
+              $ref: "#/components/schemas/Quantity"
+MyMarket:
+  allOf:
+    - $ref: "#/components/schemas/Market"
+    - type: object
+      required:
+        - joined
+        - myListings
+      properties:
+        joined:
+          type: boolean
+        approval:
+          type: string
+          enum:
+            - pending
+            - active
+            - rejected
+            - suspended
+          description: Membership state in markets that require the market maker's approval.
+        watchPriceIdr:
+          type: integer
+          description: Alert when the median price crosses this value.
+        myListings:
+          type: integer
+Qualification:
+  type: object
+  required:
+    - auctionId
+    - status
+    - checks
+  properties:
+    auctionId:
+      type: string
+    status:
+      $ref: "#/components/schemas/QualificationStatus"
+    checks:
+      type: array
+      items:
+        type: object
+        required:
+          - id
+          - label
+          - done
+        properties:
+          id:
+            type: string
+          label:
+            type: string
+          done:
+            type: boolean
+          detail:
+            type: string
+MyBid:
+  type: object
+  required:
+    - auction
+    - priceIdr
+    - status
+    - submittedAt
+    - updatedAt
+    - canWithdraw
+  properties:
+    auction:
+      $ref: "#/components/schemas/Auction"
+    priceIdr:
+      type: integer
+    status:
+      $ref: "#/components/schemas/BidStatus"
+    rank:
+      type: integer
+      description: 1 = best. Absent for sealed auctions until they close.
+    submittedAt:
+      type: string
+      format: date-time
+    updatedAt:
+      type: string
+      format: date-time
+    canWithdraw:
+      type: boolean
+Offer:
+  type: object
+  required:
+    - id
+    - supplier
+    - priceIdr
+    - capacity
+    - submittedAt
+  properties:
+    id:
+      type: string
+    supplier:
+      allOf:
+        - $ref: "#/components/schemas/PartyRef"
+        - type: object
+          required:
+            - reputation
+          properties:
+            reputation:
+              type: number
+    priceIdr:
+      type: integer
+    capacity:
+      $ref: "#/components/schemas/Quantity"
+      description: Most this supplier can deliver.
+    submittedAt:
+      type: string
+      format: date-time
+AllocationLine:
+  type: object
+  required:
+    - offerId
+    - supplier
+    - quantity
+    - priceIdr
+  properties:
+    offerId:
+      type: string
+    supplier:
+      type: string
+    quantity:
+      type: number
+    priceIdr:
+      type: integer
+AuctionEvaluation:
+  type: object
+  required:
+    - auction
+    - offers
+    - suggestion
+  properties:
+    auction:
+      $ref: "#/components/schemas/AuctionDetail"
+    demand:
+      $ref: "#/components/schemas/DemandListing"
+    offers:
+      type: array
+      items:
+        $ref: "#/components/schemas/Offer"
+    suggestion:
+      type: object
+      required:
+        - lines
+        - totalIdr
+        - savingsIdr
+        - reason
+      properties:
+        lines:
+          type: array
+          items:
+            $ref: "#/components/schemas/AllocationLine"
+        totalIdr:
+          type: integer
+        savingsIdr:
+          type: integer
+        reason:
+          type: string
+      description: "Smart Allocation: cheapest reliable split that covers the lot."
+CreateAuctionInput:
+  type: object
+  required:
+    - demandId
+    - type
+    - durationMinutes
+    - openingPriceIdr
+    - minStepIdr
+    - visibility
+    - invite
+  properties:
+    demandId:
+      type: string
+    type:
+      type: string
+      enum:
+        - reverse
+        - sealed
+    durationMinutes:
+      type: integer
+    openingPriceIdr:
+      type: integer
+    minStepIdr:
+      type: integer
+    visibility:
+      $ref: "#/components/schemas/BidVisibility"
+    invite:
+      type: array
+      items:
+        type: string
+PaymentTerms:
+  type: string
+  enum:
+    - escrow
+    - net14
+    - net30
+Shipment:
+  type: object
+  required:
+    - id
+    - quantity
+    - dropPoint
+    - carrier
+    - scheduledAt
+    - status
+  properties:
+    id:
+      type: string
+    quantity:
+      type: number
+    dropPoint:
+      type: string
+    carrier:
+      type: string
+    scheduledAt:
+      type: string
+      format: date-time
+    status:
+      type: string
+      enum:
+        - scheduled
+        - in_transit
+        - delivered
+    deliveredAt:
+      type: string
+      format: date-time
+    proof:
+      type: string
+Review:
+  type: object
+  required:
+    - rating
+    - quality
+    - timeliness
+    - communication
+    - text
+    - by
+    - at
+  properties:
+    rating:
+      type: number
+      description: 1-5
+      minimum: 1
+      maximum: 5
+    quality:
+      type: number
+    timeliness:
+      type: number
+    communication:
+      type: number
+    text:
+      type: string
+    by:
+      type: string
+    at:
+      type: string
+      format: date-time
+Transaction:
+  type: object
+  required:
+    - id
+    - code
+    - title
+    - role
+    - counterparty
+    - status
+    - quantity
+    - unitPriceIdr
+    - totalIdr
+    - createdAt
+    - updatedAt
+    - dueAt
+  properties:
+    id:
+      type: string
+    code:
+      type: string
+    title:
+      type: string
+    role:
+      type: string
+      enum:
+        - buyer
+        - supplier
+    counterparty:
+      $ref: "#/components/schemas/PartyRef"
+    status:
+      $ref: "#/components/schemas/TransactionStatus"
+    quantity:
+      $ref: "#/components/schemas/Quantity"
+    unitPriceIdr:
+      type: integer
+    totalIdr:
+      type: integer
+    createdAt:
+      type: string
+      format: date-time
+    updatedAt:
+      type: string
+      format: date-time
+    dueAt:
+      type: string
+      format: date-time
+    auctionId:
+      type: string
+    terms:
+      $ref: "#/components/schemas/PaymentTerms"
+    peer:
+      type: object
+      required:
+        - userId
+        - txId
+      properties:
+        userId:
+          type: string
+        txId:
+          type: string
+      description: The same trade as seen by the other party, when they are a platform account.
+TransactionDetail:
+  allOf:
+    - $ref: "#/components/schemas/Transaction"
+    - type: object
+      required:
+        - timeline
+        - documents
+        - payment
+        - delivery
+      properties:
+        timeline:
+          type: array
+          items:
+            type: object
+            required:
+              - status
+            properties:
+              status:
+                $ref: "#/components/schemas/TransactionStatus"
+              at:
+                type: string
+                format: date-time
+              note:
+                type: string
+        documents:
+          type: array
+          items:
+            type: object
+            required:
+              - id
+              - kind
+              - name
+              - at
+            properties:
+              id:
+                type: string
+              kind:
+                type: string
+                enum:
+                  - order
+                  - agreement
+                  - invoice
+                  - proof
+              name:
+                type: string
+              at:
+                type: string
+                format: date-time
+        payment:
+          type: object
+          required:
+            - status
+          properties:
+            status:
+              type: string
+              enum:
+                - unpaid
+                - escrow
+                - released
+                - refunded
+            paidAt:
+              type: string
+              format: date-time
+        delivery:
+          type: object
+          required:
+            - address
+          properties:
+            address:
+              type: string
+            eta:
+              type: string
+              format: date-time
+            proof:
+              type: string
+        dispute:
+          type: object
+          required:
+            - status
+            - reason
+            - openedAt
+          properties:
+            status:
+              $ref: "#/components/schemas/DisputeStatus"
+            reason:
+              type: string
+            openedAt:
+              type: string
+              format: date-time
+            evidence:
+              type: array
+              items:
+                type: object
+                required:
+                  - id
+                  - by
+                  - name
+                  - text
+                  - at
+                properties:
+                  id:
+                    type: string
+                  by:
+                    type: string
+                    enum:
+                      - buyer
+                      - supplier
+                  name:
+                    type: string
+                  text:
+                    type: string
+                  file:
+                    type: string
+                  at:
+                    type: string
+                    format: date-time
+              description: Evidence from either party (F6); the opening reason is the first entry.
+        agreement:
+          type: object
+          properties:
+            buyerAcceptedAt:
+              type: string
+              format: date-time
+            supplierAcceptedAt:
+              type: string
+              format: date-time
+        makerFeeRate:
+          type: number
+          description: Market maker commission rate for trades formed inside a market (0 otherwise).
+        invoice:
+          type: object
+          required:
+            - number
+            - issuedAt
+            - dueAt
+          properties:
+            number:
+              type: string
+            issuedAt:
+              type: string
+              format: date-time
+            dueAt:
+              type: string
+              format: date-time
+        shipments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Shipment"
+        qc:
+          type: object
+          required:
+            - outcome
+            - acceptedQty
+            - at
+          properties:
+            outcome:
+              type: string
+              enum:
+                - accepted
+                - partial
+                - rejected
+            acceptedQty:
+              type: number
+            note:
+              type: string
+            at:
+              type: string
+              format: date-time
+        reviews:
+          type: object
+          properties:
+            buyer:
+              $ref: "#/components/schemas/Review"
+            supplier:
+              $ref: "#/components/schemas/Review"
+        group:
+          type: object
+          required:
+            - id
+            - label
+            - share
+          properties:
+            id:
+              type: string
+            label:
+              type: string
+            share:
+              type: number
+          description: Part of an aggregated (collective) settlement.
+NotificationType:
+  type: string
+  enum:
+    - opportunity_detected
+    - new_market
+    - auction_invitation
+    - outbid
+    - winning_bid
+    - auction_ending
+    - transaction_update
+    - payment
+    - delivery
+    - reputation_update
+AppNotification:
+  type: object
+  required:
+    - id
+    - type
+    - title
+    - body
+    - href
+    - at
+    - read
+  properties:
+    id:
+      type: string
+    type:
+      $ref: "#/components/schemas/NotificationType"
+    title:
+      type: string
+    body:
+      type: string
+    href:
+      type: string
+    at:
+      type: string
+      format: date-time
+    read:
+      type: boolean
+NotificationPrefs:
+  type: object
+  required:
+    - opportunity_detected
+    - new_market
+    - auction_invitation
+    - outbid
+    - winning_bid
+    - auction_ending
+    - transaction_update
+    - payment
+    - delivery
+    - reputation_update
+  properties:
+    opportunity_detected:
+      type: object
+      required:
+        - inApp
+        - email
+      properties:
+        inApp:
+          type: boolean
+        email:
+          type: boolean
+    new_market:
+      type: object
+      required:
+        - inApp
+        - email
+      properties:
+        inApp:
+          type: boolean
+        email:
+          type: boolean
+    auction_invitation:
+      type: object
+      required:
+        - inApp
+        - email
+      properties:
+        inApp:
+          type: boolean
+        email:
+          type: boolean
+    outbid:
+      type: object
+      required:
+        - inApp
+        - email
+      properties:
+        inApp:
+          type: boolean
+        email:
+          type: boolean
+    winning_bid:
+      type: object
+      required:
+        - inApp
+        - email
+      properties:
+        inApp:
+          type: boolean
+        email:
+          type: boolean
+    auction_ending:
+      type: object
+      required:
+        - inApp
+        - email
+      properties:
+        inApp:
+          type: boolean
+        email:
+          type: boolean
+    transaction_update:
+      type: object
+      required:
+        - inApp
+        - email
+      properties:
+        inApp:
+          type: boolean
+        email:
+          type: boolean
+    payment:
+      type: object
+      required:
+        - inApp
+        - email
+      properties:
+        inApp:
+          type: boolean
+        email:
+          type: boolean
+    delivery:
+      type: object
+      required:
+        - inApp
+        - email
+      properties:
+        inApp:
+          type: boolean
+        email:
+          type: boolean
+    reputation_update:
+      type: object
+      required:
+        - inApp
+        - email
+      properties:
+        inApp:
+          type: boolean
+        email:
+          type: boolean
+  description: Per notification type delivery channels.
+DashboardSummary:
+  type: object
+  required:
+    - stats
+    - actions
+    - topMatches
+    - liveBids
+    - activity
+    - connections
+  properties:
+    stats:
+      type: object
+      required:
+        - activeOpportunities
+        - activeBids
+        - openDemands
+        - currentOffers
+        - runningTransactions
+        - earnings30dIdr
+        - savings30dIdr
+        - reputation
+      properties:
+        activeOpportunities:
+          type: integer
+        activeBids:
+          type: integer
+        openDemands:
+          type: integer
+        currentOffers:
+          type: integer
+        runningTransactions:
+          type: integer
+        earnings30dIdr:
+          type: integer
+        savings30dIdr:
+          type: integer
+        reputation:
+          type: number
+    actions:
+      type: array
+      items:
+        type: object
+        required:
+          - id
+          - tone
+          - title
+          - detail
+          - href
+        properties:
+          id:
+            type: string
+          tone:
+            type: string
+            enum:
+              - red
+              - orange
+              - blue
+              - lime
+          title:
+            type: string
+          detail:
+            type: string
+          href:
+            type: string
+    topMatches:
+      type: array
+      items:
+        $ref: "#/components/schemas/PersonalOpportunity"
+    liveBids:
+      type: array
+      items:
+        $ref: "#/components/schemas/MyBid"
+    activity:
+      type: array
+      items:
+        $ref: "#/components/schemas/ActivityEvent"
+    connections:
+      type: object
+      required:
+        - count
+        - sample
+      properties:
+        count:
+          type: integer
+        sample:
+          type: array
+          items:
+            $ref: "#/components/schemas/PartyRef"
+AuditEntry:
+  type: object
+  required:
+    - id
+    - actor
+    - action
+    - entity
+    - at
+  properties:
+    id:
+      type: string
+    actor:
+      type: string
+      description: Who did it, e.g. "Sari Kusuma (Admin)" or "Sistem".
+    action:
+      type: string
+      description: Verb phrase, e.g. "Suspend market".
+    entity:
+      type: object
+      required:
+        - type
+        - id
+        - label
+      properties:
+        type:
+          type: string
+          enum:
+            - user
+            - business
+            - opportunity
+            - market
+            - auction
+            - alert
+            - transaction
+            - dispute
+            - rule
+            - procurement
+            - supplier
+        id:
+          type: string
+        label:
+          type: string
+    at:
+      type: string
+      format: date-time
+    reason:
+      type: string
+      description: Required for punitive actions (suspend, freeze, reject...).
+    changes:
+      type: array
+      items:
+        type: object
+        required:
+          - field
+        properties:
+          field:
+            type: string
+          before:
+            type: string
+          after:
+            type: string
+      description: "Field-level diff: what changed, before to after."
+TradeParty:
+  allOf:
+    - $ref: "#/components/schemas/PartyRef"
+    - type: object
+      properties:
+        userId:
+          type: string
+QuoteStatus:
+  type: string
+  enum:
+    - submitted
+    - countered
+    - accepted
+    - declined
+    - withdrawn
+Quote:
+  type: object
+  required:
+    - id
+    - supplier
+    - priceIdr
+    - quantity
+    - leadTimeDays
+    - terms
+    - note
+    - status
+    - at
+    - history
+  properties:
+    id:
+      type: string
+    supplier:
+      $ref: "#/components/schemas/TradeParty"
+    priceIdr:
+      type: integer
+    quantity:
+      type: number
+    leadTimeDays:
+      type: integer
+    terms:
+      $ref: "#/components/schemas/PaymentTerms"
+    note:
+      type: string
+    status:
+      $ref: "#/components/schemas/QuoteStatus"
+    counterPriceIdr:
+      type: integer
+      description: Buyer's counter-offer price per unit, while status is `countered`.
+    at:
+      type: string
+      format: date-time
+    history:
+      type: array
+      items:
+        type: object
+        required:
+          - at
+          - by
+          - text
+        properties:
+          at:
+            type: string
+            format: date-time
+          by:
+            type: string
+          text:
+            type: string
+Rfq:
+  type: object
+  required:
+    - id
+    - code
+    - buyer
+    - item
+    - categoryId
+    - quantity
+    - deadline
+    - location
+    - spec
+    - status
+    - invited
+    - quotes
+    - createdAt
+    - conversationId
+  properties:
+    id:
+      type: string
+    code:
+      type: string
+    buyer:
+      $ref: "#/components/schemas/TradeParty"
+    item:
+      type: string
+    categoryId:
+      $ref: "#/components/schemas/CategoryId"
+    quantity:
+      $ref: "#/components/schemas/Quantity"
+    targetPriceIdr:
+      type: integer
+      description: Buyer's target price per unit (optional, shown to suppliers).
+    deadline:
+      type: string
+      format: date-time
+    location:
+      type: string
+    spec:
+      type: string
+    status:
+      type: string
+      enum:
+        - open
+        - awarded
+        - closed
+    invited:
+      type: array
+      items:
+        $ref: "#/components/schemas/TradeParty"
+    quotes:
+      type: array
+      items:
+        $ref: "#/components/schemas/Quote"
+    createdAt:
+      type: string
+      format: date-time
+    conversationId:
+      type: string
+    transactionId:
+      type: string
+    source:
+      type: object
+      required:
+        - kind
+        - id
+      properties:
+        kind:
+          type: string
+          enum:
+            - repeat
+            - listing
+            - match
+            - logistics
+        id:
+          type: string
+Conversation:
+  type: object
+  required:
+    - id
+    - subject
+    - participants
+    - messages
+    - updatedAt
+  properties:
+    id:
+      type: string
+    subject:
+      type: string
+    participants:
+      type: array
+      items:
+        $ref: "#/components/schemas/TradeParty"
+    link:
+      type: object
+      required:
+        - type
+        - id
+        - href
+      properties:
+        type:
+          type: string
+          enum:
+            - rfq
+            - match
+            - transaction
+        id:
+          type: string
+        href:
+          type: string
+    messages:
+      type: array
+      items:
+        type: object
+        required:
+          - id
+          - by
+          - text
+          - at
+        properties:
+          id:
+            type: string
+          by:
+            type: string
+          userId:
+            type: string
+          text:
+            type: string
+          at:
+            type: string
+            format: date-time
+    updatedAt:
+      type: string
+      format: date-time

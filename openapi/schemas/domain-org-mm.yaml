@@ -1,0 +1,1002 @@
+# Schemas for src/domain/{org,mm,marketRules,dispute,auction,matching}.ts (schema agent S2).
+# Name collisions between those files (OpenAPI needs unique names):
+#   org.ts PipelineStage    -> ProcurementPipelineStage   (mm.ts keeps PipelineStage)
+#   org.ts AwardRule        -> OrgAwardRule               (marketRules.ts keeps AwardRule)
+#   mm.ts  DisputeAction    -> MmDisputeAction            (dispute.ts keeps DisputeAction)
+# auction.ts exports no types (only functions).
+
+# ── org.ts: roles & permissions ─────────────────────────────────
+
+Module:
+  type: string
+  enum: [procurement, auctions, collective, suppliers, inventory, transactions, analytics, team, profile]
+Action:
+  type: string
+  enum: [view, create, approve, manage]
+Permissions:
+  type: object
+  description: 'roleId → module → allowed actions. Built-in role ids are `OrgRole`; custom roles get `custom-…` ids.'
+  additionalProperties:
+    type: object
+    propertyNames: { $ref: '#/components/schemas/Module' }
+    additionalProperties:
+      type: array
+      items: { $ref: '#/components/schemas/Action' }
+
+# ── org.ts: approval rules ──────────────────────────────────────
+
+ApprovalSubject:
+  type: string
+  enum: [procurement, auction]
+ApprovalRule:
+  type: object
+  required: [id, label, minAmountIdr, approvers, appliesTo]
+  properties:
+    id: { type: string }
+    label: { type: string }
+    minAmountIdr: { type: integer, description: Applies when the value is strictly above this. }
+    approvers:
+      type: array
+      description: Role ids that must each approve.
+      items: { type: string }
+    appliesTo:
+      type: array
+      items: { $ref: '#/components/schemas/ApprovalSubject' }
+Approval:
+  type: object
+  required: [role, by, at, decision]
+  properties:
+    role: { type: string }
+    by: { type: string }
+    at: { type: string, format: date-time }
+    decision: { type: string, enum: [approved, rejected] }
+    note: { type: string }
+
+# ── org.ts: procurement ─────────────────────────────────────────
+
+ProcurementStatus:
+  type: string
+  enum: [draft, pending_approval, approved, published, in_auction, in_collective, awarded, po_issued, rejected, cancelled]
+Visibility:
+  type: string
+  description: >-
+    public = all verified suppliers in the category; private = internal team only; invite = invited suppliers only;
+    aggregate = merged with other businesses' demand (collective).
+  enum: [public, private, invite, aggregate]
+ProcurementRequest:
+  type: object
+  required: [id, code, need, categoryId, quantity, budgetIdr, deadline, spec, deliveryLocation, visibility, invitedSupplierIds, status, requiredApprovers, approvals, createdBy, createdAt, updatedAt]
+  properties:
+    id: { type: string }
+    code: { type: string }
+    need: { type: string }
+    categoryId: { $ref: '#/components/schemas/CategoryId' }
+    quantity: { $ref: '#/components/schemas/Quantity' }
+    budgetIdr: { type: integer }
+    deadline: { type: string, format: date-time }
+    spec: { type: string }
+    deliveryLocation: { type: string }
+    visibility: { $ref: '#/components/schemas/Visibility' }
+    invitedSupplierIds: { type: array, items: { type: string } }
+    status: { $ref: '#/components/schemas/ProcurementStatus' }
+    requiredApprovers: { type: array, items: { type: string } }
+    approvals: { type: array, items: { $ref: '#/components/schemas/Approval' } }
+    createdBy: { type: string }
+    createdAt: { type: string, format: date-time }
+    updatedAt: { type: string, format: date-time }
+    auctionId: { type: string }
+    poolId: { type: string }
+ProcurementInput:
+  type: object
+  description: Pick of ProcurementRequest (need, categoryId, quantity, budgetIdr, deadline, spec, deliveryLocation, visibility, invitedSupplierIds).
+  required: [need, categoryId, quantity, budgetIdr, deadline, spec, deliveryLocation, visibility, invitedSupplierIds]
+  properties:
+    need: { type: string }
+    categoryId: { $ref: '#/components/schemas/CategoryId' }
+    quantity: { $ref: '#/components/schemas/Quantity' }
+    budgetIdr: { type: integer }
+    deadline: { type: string, format: date-time }
+    spec: { type: string }
+    deliveryLocation: { type: string }
+    visibility: { $ref: '#/components/schemas/Visibility' }
+    invitedSupplierIds: { type: array, items: { type: string } }
+ProcurementPipelineStage:
+  type: string
+  description: 'TypeScript name `PipelineStage` in org.ts (renamed to avoid clashing with the market maker `PipelineStage`).'
+  enum: [draft, approval, published, auction, awarded, po]
+ProcurementAction:
+  type: string
+  description: Actions a role can take on a request now; the mock API accepts exactly these.
+  enum: [submit, approve, reject, publish, cancel, collective]
+
+# ── org.ts: suppliers ───────────────────────────────────────────
+
+ScorePoint:
+  type: object
+  required: [month, price, reliability, quality, delivery]
+  properties:
+    month: { type: string, description: 'YYYY-MM.', examples: ['2026-05'] }
+    price: { type: number, description: 0-100. }
+    reliability: { type: number, description: 0-100. }
+    quality: { type: number, description: 0-100. }
+    delivery: { type: number, description: 0-100. }
+Supplier:
+  type: object
+  required: [id, name, categories, region, rating, verified, documents, capacity, scorecard]
+  properties:
+    id: { type: string }
+    name: { type: string }
+    categories: { type: array, items: { $ref: '#/components/schemas/CategoryId' } }
+    region: { type: string }
+    rating: { type: number, minimum: 0, maximum: 5, description: 0-5 stars from all buyers. }
+    verified: { type: boolean }
+    documents: { type: array, items: { type: string } }
+    capacity: { type: string }
+    scorecard:
+      type: array
+      description: Monthly 0-100 scorecard, oldest first.
+      items: { $ref: '#/components/schemas/ScorePoint' }
+SupplierRelation:
+  type: string
+  enum: [none, shortlisted, invited, verified, blocked]
+OrgSupplier:
+  allOf:
+    - $ref: '#/components/schemas/Supplier'
+    - type: object
+      required: [relation, transactions, spendIdr]
+      properties:
+        relation: { $ref: '#/components/schemas/SupplierRelation' }
+        myRating: { type: integer, minimum: 1, maximum: 5, description: "This org's own rating, 1-5." }
+        transactions: { type: integer }
+        spendIdr: { type: integer }
+SupplierDetail:
+  allOf:
+    - $ref: '#/components/schemas/OrgSupplier'
+    - type: object
+      required: [history]
+      properties:
+        history: { type: array, items: { $ref: '#/components/schemas/TransactionDetail' } }
+SupplierAction:
+  type: string
+  enum: [shortlist, invite, verify, block, unblock, rate]
+
+# ── org.ts: weighted scoring & award rules ──────────────────────
+
+Weights:
+  type: object
+  description: Scoring weights; they need not sum to 100 (defaults price 60, quality 20, delivery 10, reliability 10).
+  required: [price, quality, delivery, reliability]
+  properties:
+    price: { type: number }
+    quality: { type: number }
+    delivery: { type: number }
+    reliability: { type: number }
+LotOffer:
+  allOf:
+    - $ref: '#/components/schemas/Offer'
+    - type: object
+      required: [supplierId, quality, delivery, reliability]
+      properties:
+        supplierId: { type: string }
+        quality: { type: number, description: 0-100 from the supplier scorecard. }
+        delivery: { type: number }
+        reliability: { type: number }
+OrgAwardRule:
+  type: string
+  description: 'TypeScript name `AwardRule` in org.ts (renamed to avoid clashing with the market rules `AwardRule`). lowest = cheapest bidder (highest when selling); weighted = combined score; split = Smart Allocation across suppliers; bundled = all lots to one supplier with the best total.'
+  enum: [lowest, weighted, split, bundled]
+
+# ── org.ts: collective procurement ──────────────────────────────
+
+PoolStatus:
+  type: string
+  enum: [open, market_requested, market_live, settled]
+PoolMember:
+  type: object
+  required: [name, quantity, optIn]
+  properties:
+    name: { type: string, description: 'Shown only when `optIn`; otherwise masked as "Bisnis lain".' }
+    quantity: { type: number }
+    optIn: { type: boolean }
+    mine: { type: boolean }
+PoolSettlement:
+  type: object
+  description: Round result split pro-rata over the pool; each business member's line links its own sub-PO.
+  required: [at, by, winner, priceIdr, lines]
+  properties:
+    at: { type: string, format: date-time }
+    by: { type: string }
+    winner: { type: string }
+    priceIdr: { type: integer }
+    lines:
+      type: array
+      items:
+        allOf:
+          - $ref: '#/components/schemas/PoolMember'
+          - type: object
+            required: [share, amountIdr]
+            properties:
+              share: { type: number }
+              amountIdr: { type: integer }
+              transactionId: { type: string }
+CollectivePool:
+  type: object
+  required: [id, title, categoryId, spec, region, deadline, unit, baseUnitPriceIdr, refQty, thresholdQty, status, members]
+  properties:
+    id: { type: string }
+    title: { type: string }
+    categoryId: { $ref: '#/components/schemas/CategoryId' }
+    spec: { type: string }
+    region: { type: string }
+    deadline: { type: string, format: date-time }
+    unit: { type: string }
+    baseUnitPriceIdr: { type: integer }
+    refQty: { type: number, description: Lot size suppliers quote the base price for. }
+    thresholdQty: { type: number, description: Total demand that justifies its own market. }
+    status: { $ref: '#/components/schemas/PoolStatus' }
+    members: { type: array, items: { $ref: '#/components/schemas/PoolMember' } }
+    marketRequestedAt: { type: string, format: date-time }
+    marketId: { type: string, description: Set once a market maker forms the market and opens its round (PRD F6). }
+    auctionId: { type: string }
+    round:
+      type: object
+      description: The round's live state, for display.
+      required: [status, endsAt]
+      properties:
+        status: { $ref: '#/components/schemas/AuctionStatus' }
+        endsAt: { type: string, format: date-time }
+    settlement: { $ref: '#/components/schemas/PoolSettlement' }
+
+# ── org.ts: business auctions ───────────────────────────────────
+
+AuctionObjective:
+  type: string
+  enum: [procurement, selling]
+WithdrawRule:
+  type: string
+  enum: [anytime, before_last_30, never]
+OrgAuctionStatus:
+  type: string
+  enum: [pending_approval, scheduled, live, closed, awarded, rejected]
+OrgLot:
+  type: object
+  required: [id, item, quantity, spec, reservePriceIdr]
+  properties:
+    id: { type: string }
+    item: { type: string }
+    quantity: { $ref: '#/components/schemas/Quantity' }
+    spec: { type: string }
+    reservePriceIdr: { type: integer, description: 'Reverse: target/max price per unit; forward: reserve per unit. Also the opening price.' }
+    auctionId: { type: string, description: Economy auction this lot runs as once live. }
+OrgAuctionInput:
+  type: object
+  required: [title, categoryId, type, objective, multiLot, lots, rules, qualification, invited, schedule]
+  properties:
+    title: { type: string }
+    categoryId: { $ref: '#/components/schemas/CategoryId' }
+    type: { $ref: '#/components/schemas/AuctionType' }
+    objective: { $ref: '#/components/schemas/AuctionObjective' }
+    multiLot: { type: boolean }
+    lots:
+      type: array
+      items:
+        type: object
+        description: OrgLot without `id` and `auctionId`.
+        required: [item, quantity, spec, reservePriceIdr]
+        properties:
+          item: { type: string }
+          quantity: { $ref: '#/components/schemas/Quantity' }
+          spec: { type: string }
+          reservePriceIdr: { type: integer }
+    rules:
+      type: object
+      required: [minStepIdr, visibility, autoExtension, withdraw, award, weights]
+      properties:
+        minStepIdr: { type: integer }
+        visibility: { $ref: '#/components/schemas/BidVisibility' }
+        autoExtension: { type: boolean }
+        withdraw: { $ref: '#/components/schemas/WithdrawRule' }
+        award: { $ref: '#/components/schemas/OrgAwardRule' }
+        weights: { $ref: '#/components/schemas/Weights' }
+    qualification:
+      type: object
+      required: [documents, minRating, regions]
+      properties:
+        documents: { type: array, items: { type: string } }
+        minRating: { type: number }
+        regions: { type: array, items: { type: string } }
+    invited: { type: array, items: { type: string } }
+    schedule:
+      type: object
+      required: [durationMinutes]
+      properties:
+        startsAt: { type: string, format: date-time }
+        durationMinutes: { type: integer }
+    procurementId: { type: string }
+OrgAuction:
+  type: object
+  description: OrgAuctionInput with `lots` replaced by OrgLot[] plus server fields.
+  required: [id, code, title, categoryId, type, objective, multiLot, lots, rules, qualification, invited, schedule, status, valueIdr, requiredApprovers, approvals, createdBy, createdAt]
+  properties:
+    id: { type: string }
+    code: { type: string }
+    title: { type: string }
+    categoryId: { $ref: '#/components/schemas/CategoryId' }
+    type: { $ref: '#/components/schemas/AuctionType' }
+    objective: { $ref: '#/components/schemas/AuctionObjective' }
+    multiLot: { type: boolean }
+    lots: { type: array, items: { $ref: '#/components/schemas/OrgLot' } }
+    rules:
+      type: object
+      required: [minStepIdr, visibility, autoExtension, withdraw, award, weights]
+      properties:
+        minStepIdr: { type: integer }
+        visibility: { $ref: '#/components/schemas/BidVisibility' }
+        autoExtension: { type: boolean }
+        withdraw: { $ref: '#/components/schemas/WithdrawRule' }
+        award: { $ref: '#/components/schemas/OrgAwardRule' }
+        weights: { $ref: '#/components/schemas/Weights' }
+    qualification:
+      type: object
+      required: [documents, minRating, regions]
+      properties:
+        documents: { type: array, items: { type: string } }
+        minRating: { type: number }
+        regions: { type: array, items: { type: string } }
+    invited: { type: array, items: { type: string } }
+    schedule:
+      type: object
+      required: [durationMinutes]
+      properties:
+        startsAt: { type: string, format: date-time }
+        durationMinutes: { type: integer }
+    procurementId: { type: string }
+    status: { $ref: '#/components/schemas/OrgAuctionStatus' }
+    valueIdr: { type: integer }
+    requiredApprovers: { type: array, items: { type: string } }
+    approvals: { type: array, items: { $ref: '#/components/schemas/Approval' } }
+    createdBy: { type: string }
+    createdAt: { type: string, format: date-time }
+    award:
+      type: object
+      required: [lines, reason, at, by]
+      properties:
+        lines:
+          type: array
+          description: Award lines per lot.
+          items: { type: array, items: { $ref: '#/components/schemas/AllocationLine' } }
+        reason: { type: string }
+        at: { type: string, format: date-time }
+        by: { type: string }
+        poNumber: { type: string }
+        transactionIds: { type: array, items: { type: string } }
+OrgAuctionView:
+  description: Per-lot live facts merged from the economy auction.
+  allOf:
+    - $ref: '#/components/schemas/OrgAuction'
+    - type: object
+      required: [live]
+      properties:
+        live:
+          type: array
+          items:
+            type: object
+            required: [auctionId, status, bidCount, participants, endsAt]
+            properties:
+              auctionId: { type: string }
+              status: { $ref: '#/components/schemas/AuctionStatus' }
+              bidCount: { type: integer }
+              participants: { type: integer }
+              bestPriceIdr: { type: integer }
+              endsAt: { type: string, format: date-time }
+LotEvaluation:
+  type: object
+  required: [lot, status, offers]
+  properties:
+    lot: { $ref: '#/components/schemas/OrgLot' }
+    status: { $ref: '#/components/schemas/AuctionStatus' }
+    offers: { type: array, items: { $ref: '#/components/schemas/LotOffer' } }
+OrgAuctionEvaluation:
+  type: object
+  required: [auction, lots, org]
+  properties:
+    auction: { $ref: '#/components/schemas/OrgAuctionView' }
+    lots: { type: array, items: { $ref: '#/components/schemas/LotEvaluation' } }
+    org:
+      type: object
+      required: [name, location, npwp]
+      properties:
+        name: { type: string }
+        location: { type: string }
+        npwp: { type: string }
+
+# ── org.ts: inventory ───────────────────────────────────────────
+
+InventoryItem:
+  type: object
+  required: [id, sku, name, categoryId, warehouse, quantity, moq, leadTimeDays, qualitySpec]
+  properties:
+    id: { type: string }
+    sku: { type: string }
+    name: { type: string }
+    categoryId: { $ref: '#/components/schemas/CategoryId' }
+    warehouse: { type: string }
+    quantity: { $ref: '#/components/schemas/Quantity' }
+    moq: { type: number }
+    leadTimeDays: { type: number }
+    qualitySpec: { type: string }
+InventoryData:
+  type: object
+  required: [items, warehouses, capacity, logistics, schedules]
+  properties:
+    items: { type: array, items: { $ref: '#/components/schemas/InventoryItem' } }
+    warehouses:
+      type: array
+      items:
+        type: object
+        required: [name, location, capacityM2]
+        properties:
+          name: { type: string }
+          location: { type: string }
+          capacityM2: { type: number }
+    capacity:
+      type: array
+      items:
+        type: object
+        required: [line, outputPerMonth, utilization]
+        properties:
+          line: { type: string }
+          outputPerMonth: { $ref: '#/components/schemas/Quantity' }
+          utilization: { type: number }
+    logistics:
+      type: object
+      required: [fleet, regions]
+      properties:
+        fleet:
+          type: array
+          items:
+            type: object
+            required: [type, count, capacity]
+            properties:
+              type: { type: string }
+              count: { type: number }
+              capacity: { type: string }
+        regions: { type: array, items: { type: string } }
+    schedules:
+      type: array
+      items:
+        type: object
+        required: [id, item, quantity, every, counterparty, direction, nextAt]
+        properties:
+          id: { type: string }
+          item: { type: string }
+          quantity: { $ref: '#/components/schemas/Quantity' }
+          every: { type: string, enum: [weekly, monthly] }
+          counterparty: { type: string }
+          direction: { type: string, enum: [in, out] }
+          nextAt: { type: string, format: date-time }
+
+# ── org.ts: profile, team, overview, analytics ──────────────────
+
+VerificationStatus:
+  type: string
+  enum: [unverified, pending, verified, rejected]
+OrgProfile:
+  type: object
+  required: [name, industry, location, legal, description, categories, hours, documents, verification]
+  properties:
+    name: { type: string }
+    industry: { type: string }
+    location: { type: string }
+    legal:
+      type: object
+      required: [nib, npwp, akta]
+      properties:
+        nib: { type: string }
+        npwp: { type: string }
+        akta: { type: string }
+    description: { type: string }
+    categories: { type: array, items: { $ref: '#/components/schemas/CategoryId' } }
+    hours:
+      type: object
+      required: [days, from, to]
+      properties:
+        days: { type: array, items: { type: integer } }
+        from: { type: string }
+        to: { type: string }
+    documents:
+      type: array
+      items:
+        type: object
+        required: [name, kind, uploadedAt]
+        properties:
+          name: { type: string }
+          kind: { type: string, enum: [nib, npwp, akta, other] }
+          uploadedAt: { type: string, format: date-time }
+    verification: { $ref: '#/components/schemas/VerificationStatus' }
+OrgRoleDef:
+  type: object
+  required: [id, label, custom]
+  properties:
+    id: { type: string }
+    label: { type: string }
+    custom: { type: boolean }
+OrgMember:
+  type: object
+  required: [id, name, email, role, department, status, joinedAt]
+  properties:
+    id: { type: string }
+    name: { type: string }
+    email: { type: string }
+    role: { type: string }
+    department: { type: string }
+    status: { type: string, enum: [active, invited] }
+    joinedAt: { type: string, format: date-time }
+OrgSettings:
+  type: object
+  required: [profile, roles, permissions, departments, approvalRules]
+  properties:
+    profile: { $ref: '#/components/schemas/OrgProfile' }
+    roles: { type: array, items: { $ref: '#/components/schemas/OrgRoleDef' } }
+    permissions: { $ref: '#/components/schemas/Permissions' }
+    departments: { type: array, items: { type: string } }
+    approvalRules: { type: array, items: { $ref: '#/components/schemas/ApprovalRule' } }
+TeamData:
+  allOf:
+    - $ref: '#/components/schemas/OrgSettings'
+    - type: object
+      required: [members]
+      properties:
+        members: { type: array, items: { $ref: '#/components/schemas/OrgMember' } }
+WaitingItem:
+  type: object
+  required: [kind, id, code, title, valueIdr, href]
+  properties:
+    kind: { $ref: '#/components/schemas/ApprovalSubject' }
+    id: { type: string }
+    code: { type: string }
+    title: { type: string }
+    valueIdr: { type: integer }
+    href: { type: string }
+OrgOverview:
+  type: object
+  required: [stats, waiting, pipeline, activity]
+  properties:
+    stats:
+      type: object
+      required: [spendMonthIdr, savingsMonthIdr, savingsTargetIdr, activeProcurement, activeAuctions, activeSuppliers, runningTransactions]
+      properties:
+        spendMonthIdr: { type: integer }
+        savingsMonthIdr: { type: integer }
+        savingsTargetIdr: { type: integer }
+        activeProcurement: { type: integer }
+        activeAuctions: { type: integer }
+        activeSuppliers: { type: integer }
+        runningTransactions: { type: integer }
+    waiting: { type: array, items: { $ref: '#/components/schemas/WaitingItem' } }
+    pipeline:
+      type: object
+      description: Count per procurement pipeline stage.
+      propertyNames: { $ref: '#/components/schemas/ProcurementPipelineStage' }
+      additionalProperties: { type: integer }
+    activity: { type: array, items: { $ref: '#/components/schemas/AuditEntry' } }
+OrgAnalytics:
+  type: object
+  required: [categories, spend, savings, unitPrices, priceTrend, demand, suppliers, auctions, history]
+  properties:
+    categories: { type: array, items: { $ref: '#/components/schemas/CategoryId' } }
+    spend:
+      type: array
+      description: Spend per month per category (Rupiah), oldest first. Keys other than `month` are CategoryIds.
+      items:
+        type: object
+        required: [month]
+        properties:
+          month: { type: string, description: 'YYYY-MM.' }
+        additionalProperties: { type: integer }
+    savings:
+      type: array
+      description: Paid vs budget vs market per month.
+      items:
+        type: object
+        required: [month, spendIdr, budgetIdr, marketIdr]
+        properties:
+          month: { type: string }
+          spendIdr: { type: integer }
+          budgetIdr: { type: integer }
+          marketIdr: { type: integer }
+    unitPrices:
+      type: array
+      description: Average unit price per item, ours vs market.
+      items:
+        type: object
+        required: [item, unit, avgIdr, marketIdr]
+        properties:
+          item: { type: string }
+          unit: { type: string }
+          avgIdr: { type: integer }
+          marketIdr: { type: integer }
+    priceTrend:
+      type: object
+      description: Our unit price vs market for the biggest item, indexed to its first month = 100.
+      required: [item, points]
+      properties:
+        item: { type: string }
+        points:
+          type: array
+          items:
+            type: object
+            required: [month, ours, market]
+            properties:
+              month: { type: string }
+              ours: { type: number }
+              market: { type: number }
+    demand:
+      type: object
+      description: Purchased quantity of the biggest item per month.
+      required: [item, unit, points]
+      properties:
+        item: { type: string }
+        unit: { type: string }
+        points:
+          type: array
+          items:
+            type: object
+            required: [month, quantity, requests]
+            properties:
+              month: { type: string }
+              quantity: { type: number }
+              requests: { type: integer }
+    suppliers:
+      type: array
+      items:
+        type: object
+        required: [id, name, score, onTime, spendIdr]
+        properties:
+          id: { type: string }
+          name: { type: string }
+          score: { type: number }
+          onTime: { type: number }
+          spendIdr: { type: integer }
+    auctions:
+      type: array
+      items:
+        type: object
+        required: [code, title, bidders, openingIdr, clearingIdr]
+        properties:
+          code: { type: string }
+          title: { type: string }
+          bidders: { type: integer }
+          openingIdr: { type: integer }
+          clearingIdr: { type: integer }
+    history:
+      type: array
+      items:
+        type: object
+        required: [code, month, item, categoryId, supplier, quantity, unitPriceIdr, totalIdr, via]
+        properties:
+          code: { type: string }
+          month: { type: string }
+          item: { type: string }
+          categoryId: { $ref: '#/components/schemas/CategoryId' }
+          supplier: { type: string }
+          quantity: { $ref: '#/components/schemas/Quantity' }
+          unitPriceIdr: { type: integer }
+          totalIdr: { type: integer }
+          via: { type: string, enum: [auction, collective, direct] }
+
+# ── marketRules.ts ──────────────────────────────────────────────
+
+Eligibility:
+  type: string
+  enum: [open, verified, verified_docs]
+AwardRule:
+  type: string
+  description: 'Market rules award rule (pro_rata = split across all qualifying bidders). Not to be confused with `OrgAwardRule`.'
+  enum: [lowest_price, highest_price, score, pro_rata]
+MarketRules:
+  type: object
+  required: [eligibility, visibility, minStepPct, minQuantity, maxQuantity, windowStart, windowEnd, region, radiusKm, award]
+  properties:
+    eligibility: { $ref: '#/components/schemas/Eligibility' }
+    visibility: { $ref: '#/components/schemas/BidVisibility' }
+    minStepPct: { type: number, minimum: 0, maximum: 20, description: 'Minimum bid improvement, % of the opening price.' }
+    minQuantity: { type: number, exclusiveMinimum: 0 }
+    maxQuantity: { type: number, description: Not below minQuantity. }
+    windowStart: { type: string, format: date, description: YYYY-MM-DD }
+    windowEnd: { type: string, format: date, description: 'YYYY-MM-DD, not before windowStart.' }
+    region: { type: string, minLength: 1 }
+    radiusKm: { type: number, exclusiveMinimum: 0 }
+    award: { $ref: '#/components/schemas/AwardRule' }
+RuleVersion:
+  type: object
+  required: [version, rules, effectiveFromRound, createdAt, author]
+  properties:
+    version: { type: integer }
+    rules: { $ref: '#/components/schemas/MarketRules' }
+    effectiveFromRound: { type: integer, description: First round this version governs. }
+    createdAt: { type: string, format: date-time }
+    author: { type: string }
+    reason: { type: string }
+
+# ── dispute.ts ──────────────────────────────────────────────────
+
+DisputeAction:
+  type: string
+  description: Admin dispute case workflow action (open|evidence → evidence/review; review → resolved).
+  enum: [request_evidence, start_review, resolve]
+Resolution:
+  description: 'refund = buyer gets everything back, order cancelled; release = supplier gets everything, order completes; partial = buyer gets `refundIdr` back, supplier the rest, order completes.'
+  oneOf:
+    - { $ref: '#/components/schemas/ResolutionRefund' }
+    - { $ref: '#/components/schemas/ResolutionRelease' }
+    - { $ref: '#/components/schemas/ResolutionPartial' }
+  discriminator:
+    propertyName: kind
+    mapping:
+      refund: '#/components/schemas/ResolutionRefund'
+      release: '#/components/schemas/ResolutionRelease'
+      partial: '#/components/schemas/ResolutionPartial'
+ResolutionRefund:
+  type: object
+  description: '`{ kind: "refund" }` variant of Resolution.'
+  required: [kind]
+  properties:
+    kind: { type: string, const: refund }
+ResolutionRelease:
+  type: object
+  description: '`{ kind: "release" }` variant of Resolution.'
+  required: [kind]
+  properties:
+    kind: { type: string, const: release }
+ResolutionPartial:
+  type: object
+  description: '`{ kind: "partial", refundIdr }` variant of Resolution. refundIdr must be an integer > 0 and less than the transaction total.'
+  required: [kind, refundIdr]
+  properties:
+    kind: { type: string, const: partial }
+    refundIdr: { type: integer, exclusiveMinimum: 0 }
+ResolutionOutcome:
+  type: object
+  required: [status, payment, refundIdr, releaseIdr, note]
+  properties:
+    status: { $ref: '#/components/schemas/TransactionStatus' }
+    payment: { type: string, enum: [unpaid, escrow, released, refunded], description: 'TransactionDetail["payment"]["status"].' }
+    refundIdr: { type: integer }
+    releaseIdr: { type: integer }
+    note: { type: string, description: Human summary for the timeline and notifications. }
+
+# ── matching.ts ─────────────────────────────────────────────────
+
+MatchInput:
+  type: object
+  required: [categoryMatch, distanceKm, radiusKm, coverage, confidence]
+  properties:
+    categoryMatch: { type: boolean }
+    distanceKm: { type: number }
+    radiusKm: { type: number, description: "The user's delivery radius." }
+    coverage:
+      type: [number, 'null']
+      description: "What the user has ÷ the opportunity's gap, in the same unit; null when units can't be compared."
+    confidence: { type: number, minimum: 0, maximum: 1, description: 'Engine confidence in the opportunity, 0-1.' }
+MatchParts:
+  type: object
+  description: 'Score parts; weights are category 35, distance 25, coverage 25, confidence 15 (sum 100).'
+  required: [category, distance, coverage, confidence]
+  properties:
+    category: { type: number }
+    distance: { type: number }
+    coverage: { type: number }
+    confidence: { type: number }
+
+# ── mm.ts ───────────────────────────────────────────────────────
+
+PipelineStage:
+  type: string
+  description: >-
+    Market maker opportunity pipeline stage. Manual moves: detected → evaluating|forming|dismissed;
+    evaluating → detected|forming|dismissed; forming → evaluating|dismissed; dismissed → detected.
+    market_live is only reached by publishing a market; dismissing needs a reason.
+  enum: [detected, evaluating, forming, market_live, dismissed]
+PipelineCard:
+  allOf:
+    - $ref: '#/components/schemas/Opportunity'
+    - type: object
+      required: [stage, mechanismReason]
+      properties:
+        stage: { $ref: '#/components/schemas/PipelineStage' }
+        mechanismReason: { type: string }
+        dismissReason: { type: string }
+        marketId: { type: string }
+MmAlertKind:
+  type: string
+  enum: [low_liquidity, disputes, approvals]
+MmAlert:
+  type: object
+  required: [kind, label]
+  properties:
+    kind: { $ref: '#/components/schemas/MmAlertKind' }
+    label: { type: string }
+MmMarketRow:
+  allOf:
+    - $ref: '#/components/schemas/Market'
+    - type: object
+      required: [liveRounds, alerts]
+      properties:
+        liveRounds: { type: integer }
+        alerts: { type: array, items: { $ref: '#/components/schemas/MmAlert' } }
+MmOverview:
+  type: object
+  required: [stats, markets, events, liveAuctions]
+  properties:
+    stats:
+      type: object
+      required: [activeMarkets, participants, activeAuctions, volumeIdr, matchedDemand]
+      properties:
+        activeMarkets: { type: integer }
+        participants: { type: integer }
+        activeAuctions: { type: integer }
+        volumeIdr: { type: integer }
+        matchedDemand: { type: number }
+    markets: { type: array, items: { $ref: '#/components/schemas/MmMarketRow' } }
+    events: { type: array, items: { $ref: '#/components/schemas/ActivityEvent' } }
+    liveAuctions:
+      type: array
+      description: 'Subscribe to `auction:{id}` for these to keep the feed live.'
+      items:
+        type: object
+        required: [id, title]
+        properties:
+          id: { type: string }
+          title: { type: string }
+ParticipantStatus:
+  type: string
+  enum: [pending, active, rejected, suspended]
+MmParticipant:
+  allOf:
+    - $ref: '#/components/schemas/PartyRef'
+    - type: object
+      required: [id, role, status, reputation, joinedAt]
+      properties:
+        id: { type: string }
+        role: { type: string, enum: [buyer, supplier] }
+        status: { $ref: '#/components/schemas/ParticipantStatus' }
+        reputation: { type: number }
+        joinedAt: { type: string, format: date-time }
+        userId: { type: string, description: Set when the participant is a platform account we can notify. }
+        note: { type: string }
+MmDispute:
+  type: object
+  required: [id, title, parties, status, openedAt]
+  properties:
+    id: { type: string }
+    title: { type: string }
+    parties: { type: string }
+    status: { $ref: '#/components/schemas/DisputeStatus' }
+    openedAt: { type: string, format: date-time }
+    resolution: { type: string }
+    escalatedTo: { type: string, description: 'Admin dispute case id once a market maker escalated it (PRD F6); status then follows the admin case.' }
+ParticipantAction:
+  type: string
+  enum: [approve, reject, verify, suspend]
+MmDisputeAction:
+  type: string
+  description: 'TypeScript name `DisputeAction` in mm.ts (renamed to avoid clashing with dispute.ts `DisputeAction`). Market maker dispute action.'
+  enum: [review, resolve, escalate]
+MarketStatusAction:
+  type: string
+  enum: [pause, resume, close]
+RoundResult:
+  type: object
+  description: "A round's recorded prices. Closed rounds are history: read-only everywhere."
+  required: [round, title, status, at, openingIdr]
+  properties:
+    round: { type: integer }
+    auctionId: { type: string }
+    title: { type: string }
+    status: { type: string, enum: [live, closed] }
+    at: { type: string, format: date-time }
+    openingIdr: { type: integer }
+    currentIdr: { type: integer }
+    medianIdr: { type: integer }
+    clearingIdr: { type: integer }
+SupplierVerification:
+  type: string
+  description: 'none = not required; documents = legal business documents; verified_business = Ecopurnity-verified business.'
+  enum: [none, documents, verified_business]
+MmMarketOps:
+  type: object
+  required: [market, participants, disputes, ruleVersions, currentRound, rounds, results, settings, alerts]
+  properties:
+    market: { $ref: '#/components/schemas/MarketDetail' }
+    participants: { type: array, items: { $ref: '#/components/schemas/MmParticipant' } }
+    disputes: { type: array, items: { $ref: '#/components/schemas/MmDispute' } }
+    ruleVersions: { type: array, items: { $ref: '#/components/schemas/RuleVersion' } }
+    currentRound: { type: integer, description: 'Rounds started so far; the next round is `currentRound + 1`.' }
+    rounds: { type: array, items: { $ref: '#/components/schemas/Auction' } }
+    results: { type: array, items: { $ref: '#/components/schemas/RoundResult' } }
+    settings:
+      type: object
+      required: [approval, supplierVerification]
+      properties:
+        approval: { type: string, enum: [auto, manual] }
+        supplierVerification: { $ref: '#/components/schemas/SupplierVerification' }
+    alerts: { type: array, items: { $ref: '#/components/schemas/MmAlert' } }
+CreateRoundInput:
+  type: object
+  required: [title, quantity, openingPriceIdr, durationMinutes]
+  properties:
+    title: { type: string }
+    quantity: { type: number }
+    openingPriceIdr: { type: integer }
+    durationMinutes: { type: integer }
+MmAnalytics:
+  type: object
+  required: [liquidity, byMarket, efficiency, growth, priceDiscovery]
+  properties:
+    liquidity:
+      type: object
+      required: [buyers, suppliers, activeOrders, ratio]
+      properties:
+        buyers: { type: integer }
+        suppliers: { type: integer }
+        activeOrders: { type: integer }
+        ratio: { type: number }
+    byMarket:
+      type: array
+      items:
+        type: object
+        required: [id, name, buyers, suppliers]
+        properties:
+          id: { type: string }
+          name: { type: string }
+          buyers: { type: integer }
+          suppliers: { type: integer }
+    efficiency:
+      type: array
+      items:
+        type: object
+        required: [week, matched, unmatched, utilization]
+        properties:
+          week: { type: string }
+          matched: { type: number }
+          unmatched: { type: number }
+          utilization: { type: number }
+    growth:
+      type: array
+      items:
+        type: object
+        required: [week, participants, transactions, connections, repeat]
+        properties:
+          week: { type: string }
+          participants: { type: integer }
+          transactions: { type: integer }
+          connections: { type: integer }
+          repeat: { type: integer }
+    priceDiscovery:
+      type: array
+      items:
+        type: object
+        required: [marketId, name, unit, rounds]
+        properties:
+          marketId: { type: string }
+          name: { type: string }
+          unit: { type: string }
+          rounds: { type: array, items: { $ref: '#/components/schemas/RoundResult' } }
+CreateMarketInput:
+  type: object
+  required: [name, objective, mechanism, categoryId, unit, demand, supply, referencePriceIdr, rules, autoInvite, approval, supplierVerification]
+  properties:
+    opportunityId: { type: string }
+    name: { type: string }
+    objective: { $ref: '#/components/schemas/MarketObjective' }
+    mechanism: { $ref: '#/components/schemas/MarketMechanism' }
+    categoryId: { $ref: '#/components/schemas/CategoryId' }
+    unit: { type: string }
+    demand: { type: number, description: 'Expected monthly quantity, same unit. Prefilled from the opportunity.' }
+    supply: { type: number, description: 'Expected monthly quantity, same unit. Prefilled from the opportunity.' }
+    referencePriceIdr: { type: integer }
+    rules: { $ref: '#/components/schemas/MarketRules' }
+    autoInvite: { type: boolean }
+    approval: { type: string, enum: [auto, manual] }
+    supplierVerification: { $ref: '#/components/schemas/SupplierVerification' }

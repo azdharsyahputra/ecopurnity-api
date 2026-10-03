@@ -1,0 +1,1170 @@
+/orgs/{orgId}:
+  parameters:
+    - &a1
+      $ref: "#/components/parameters/OrgId"
+  get:
+    tags:
+      - Organization
+    operationId: getOrgSettings
+    summary: Get organization settings
+    description: Profile, roles, permission matrix, departments and approval rules of the organization. Used by the frontend to render role-aware controls.
+    x-access: org:member
+    x-note: "Session and membership of the organization in the URL are checked first (401 / 403). The mock does not check `<resource>.view` on read endpoints: any member can read."
+    responses:
+      "200":
+        description: Organization settings.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgSettings"
+      "401": &a2
+        $ref: "#/components/responses/Unauthenticated"
+        description: "unauthenticated: no session."
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization."
+/orgs/{orgId}/overview:
+  parameters:
+    - *a1
+  get:
+    tags:
+      - Organization
+    operationId: getOrgOverview
+    summary: Get organization overview
+    description: "Dashboard (PRD 9.1): month stats, approvals waiting for the caller's role (procurement and auctions in `pending_approval` where the caller's role is a still-pending required approver), procurement pipeline counts and the 12 latest audit entries. Spend and savings are computed from purchase history plus awarded procurement auctions of the current month."
+    x-access: org:member
+    responses:
+      "200":
+        description: Overview.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgOverview"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization."
+/orgs/{orgId}/profile:
+  parameters:
+    - *a1
+  put:
+    tags:
+      - Organization
+    operationId: updateOrgProfile
+    summary: Update business profile
+    description: Replaces the profile. `documents` and `verification` in the body are ignored (kept from the stored profile). The audit entry lists the changed fields (name, industry, location, NIB, NPWP, akta, description, categories, hours).
+    x-access: org:profile.manage
+    x-audit: true
+    x-note: The handler reads `legal.npwp` without a null check, so a body without `legal` is a server error rather than a 422. `legal.npwp` and `legal.nib` are only validated when non-empty.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgProfile"
+    responses:
+      "200":
+        description: Saved profile.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgProfile"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks profile.manage."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: "fields: name (required), npwp (format `00.000.000.0-000.000`), nib (13 digits)."
+/orgs/{orgId}/profile/documents:
+  parameters:
+    - *a1
+  post:
+    tags:
+      - Organization
+    operationId: uploadOrgDocument
+    summary: Register a verification document
+    description: Records an uploaded document by name (the mock takes no file bytes). A document of the same `kind` replaces the previous one, except `other`, which accumulates.
+    x-access: org:profile.manage
+    x-audit: true
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgProfileDocumentInput"
+    responses:
+      "200":
+        description: Profile with updated documents.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgProfile"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks profile.manage."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: "fields: file (when `name` is empty)."
+/orgs/{orgId}/profile/verification:
+  parameters:
+    - *a1
+  post:
+    tags:
+      - Organization
+    operationId: requestOrgVerification
+    summary: Request business verification
+    description: Moves `verification` to `pending`. Requires one document each of kind nib, npwp and akta. No request body.
+    x-access: org:profile.manage
+    x-audit: true
+    x-note: "There is no status guard: the mock sets `pending` even when the profile is already `verified` or `pending`. Nothing ever moves it onward (review is an admin concern outside this file)."
+    responses:
+      "200":
+        description: "Profile with `verification: pending`."
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgProfile"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks profile.manage."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: 'validation without `fields`: message lists missing documents, e.g. "Dokumen belum lengkap: NIB, AKTA".'
+/orgs/{orgId}/team:
+  parameters:
+    - *a1
+  get:
+    tags:
+      - Organization
+    operationId: getOrgTeam
+    summary: Get team
+    description: Settings (profile, roles, permissions, departments, approval rules) plus the member list. Member `userId` is never exposed.
+    x-access: org:member
+    responses:
+      "200":
+        description: Team data.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TeamData"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization."
+/orgs/{orgId}/team/invite:
+  parameters:
+    - *a1
+  post:
+    tags:
+      - Organization
+    operationId: inviteOrgMember
+    summary: Invite a team member
+    description: "Adds a member with `status: invited` and `name` set to the email. If an account with that email already exists the invitee gets an in-app notification (type `transaction_update`, href `/app?invitation={memberId}`); otherwise they see it after registering with that email (`GET /me/invitations`). Validation order: email, duplicate, role."
+    x-access: org:team.manage
+    x-audit: true
+    x-note: The notification type is `transaction_update` (no dedicated invitation type). `department` is not validated.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgInviteInput"
+    responses:
+      "204":
+        description: Invited.
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks team.manage."
+      "409":
+        $ref: "#/components/responses/Conflict"
+        description: "exists: email is already a member (`fields.email`)."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: "fields: email (valid email required), role (must be one of the org roles)."
+/orgs/{orgId}/team/members/{memberId}:
+  parameters:
+    - *a1
+    - name: memberId
+      in: path
+      required: true
+      description: Team member id (`OrgMember.id`).
+      schema:
+        type: string
+  patch:
+    tags:
+      - Organization
+    operationId: updateOrgMember
+    summary: Change member role or department
+    description: Partial update. The audit entry lists role and department changes.
+    x-access: org:team.manage
+    x-audit: true
+    x-note: The new `role` is not validated against the org roles and the patch is applied as-is (any extra field is merged into the member). Demoting an owner is allowed when at least two owners exist.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgMemberPatch"
+    responses:
+      "204":
+        description: Updated.
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks team.manage."
+      "404":
+        $ref: "#/components/responses/NotFound"
+        description: "not_found: member does not exist."
+      "409":
+        $ref: "#/components/responses/Conflict"
+        description: "last_owner: the only owner cannot be changed to another role (`fields.role`)."
+  delete:
+    tags:
+      - Organization
+    operationId: removeOrgMember
+    summary: Remove a team member
+    x-access: org:team.manage
+    x-audit: true
+    x-note: The self-removal check compares `member.userId` with the caller; invited members have no userId so they can always be removed.
+    responses:
+      "204":
+        description: Removed.
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks team.manage."
+      "404":
+        $ref: "#/components/responses/NotFound"
+        description: "not_found: member does not exist."
+      "409":
+        $ref: "#/components/responses/Conflict"
+        description: "self: caller cannot remove themselves. last_owner: the only owner cannot be removed."
+/orgs/{orgId}/team/settings:
+  parameters:
+    - *a1
+  put:
+    tags:
+      - Organization
+    operationId: updateOrgTeamSettings
+    summary: Save roles, permissions, departments and approval rules
+    description: "Replaces the four settings blocks wholesale. Approval rules decide `requiredApprovers` for new procurement requests and auctions: every rule whose `appliesTo` includes the subject and whose `minAmountIdr` is strictly below the value contributes its approver roles (deduplicated, in rule order). Already-created requests keep the approvers they were created with (procurement is re-evaluated on `submit`). The audit entry lists which blocks changed."
+    x-access: org:team.manage
+    x-audit: true
+    x-note: "Not validated: that `permissions` keys refer to existing roles, that rule `approvers` refer to existing roles, or that owner stays intact (owner permissions are hard-wired to everything in `can()` anyway). A body missing `approvalRules` or `roles` is a server error."
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgTeamSettingsInput"
+    responses:
+      "200":
+        description: Full settings after the update.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgSettings"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks team.manage."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: "fields: rule-{index} (label required / minAmountIdr must be a number >= 0 / at least one approver), roles (role label must not be empty)."
+/orgs/{orgId}/inventory:
+  parameters:
+    - *a1
+  get:
+    tags:
+      - Organization
+    operationId: getOrgInventory
+    summary: Get inventory
+    description: Items, warehouses, production capacity, logistics and recurring supply schedules.
+    x-access: org:member
+    responses:
+      "200":
+        description: Inventory.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InventoryData"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization."
+/orgs/{orgId}/inventory/items:
+  parameters:
+    - *a1
+  post:
+    tags:
+      - Organization
+    operationId: addOrgInventoryItem
+    summary: Add an inventory item
+    description: The new item is added at the top of the list with a generated id.
+    x-access: org:inventory.create
+    x-audit: true
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgInventoryItemInput"
+    responses:
+      "201":
+        description: Created (no body).
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks inventory.create."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: "fields: name (required), quantity (`quantity.value` must be a number >= 0)."
+/orgs/{orgId}/inventory/import:
+  parameters:
+    - *a1
+  post:
+    tags:
+      - Organization
+    operationId: importOrgInventory
+    summary: Bulk import inventory items
+    description: "The client parses the CSV; the server re-validates the rows (sku, name, category, warehouse, quantity, unit: required columns of the CSV format, category must be a known CategoryId, quantity a number >= 0) and rejects the whole batch on the first error. On success all items are added at the top with generated ids."
+    x-access: org:inventory.create
+    x-audit: true
+    x-note: "Only the first error is returned and without `fields`. Re-validation covers the six core columns only: `moq`, `leadTimeDays` and `qualitySpec` are stored as sent. The stored items are the client's objects, not the normalised ones (so a blank `sku` stays blank). An empty `items` array succeeds with `imported: 0`."
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgInventoryImportInput"
+    responses:
+      "200":
+        description: Import result.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgInventoryImportResult"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks inventory.create."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: 'validation without `fields`: message is the first row error, e.g. "Baris 3: kategori \"x\" tidak dikenal" or "Baris 2: nama kosong".'
+/orgs/{orgId}/inventory/schedules:
+  parameters:
+    - *a1
+  post:
+    tags:
+      - Organization
+    operationId: addOrgSupplySchedule
+    summary: Add a recurring supply schedule
+    x-access: org:inventory.manage
+    x-audit: true
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgInventoryScheduleInput"
+    responses:
+      "201":
+        description: Created (no body).
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks inventory.manage."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: "fields: item (required), quantity (`quantity.value` must be > 0)."
+/orgs/{orgId}/procurement:
+  parameters:
+    - *a1
+  get:
+    tags:
+      - Organization
+    operationId: listOrgProcurement
+    summary: List procurement requests
+    description: All requests of the organization, newest `updatedAt` first. Not paginated or filtered.
+    x-access: org:member
+    responses:
+      "200":
+        description: Requests.
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: "#/components/schemas/ProcurementRequest"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization."
+  post:
+    tags:
+      - Organization
+    operationId: createOrgProcurement
+    summary: Create a procurement request
+    description: 'Creates the request with code `PRQ-xxxx`, `requiredApprovers` from the approval rules for the budget (rules with `appliesTo` containing `procurement` and `minAmountIdr` strictly below `budgetIdr`), and `approvals: []`. With `submit: false` the status is `draft`. With `submit: true` the status is `approved` when no approver is required, otherwise `pending_approval`; in that case every member whose role is a pending approver (except the caller) gets an in-app notification "Perlu approval kamu: {code}" (type `transaction_update`, href `/org/{orgId}/procurement/{id}`).'
+    x-access: org:procurement.create
+    x-audit: true
+    x-note: "`categoryId`, `spec` and `deliveryLocation` are not validated. A missing `invitedSupplierIds` with `visibility: invite` is a server error rather than 422."
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgProcurementCreateInput"
+    responses:
+      "201":
+        description: Created request.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProcurementRequest"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks procurement.create."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: "fields: need (required), quantity (`quantity.value` > 0), budgetIdr (> 0), deadline (required, must be in the future), invited (`visibility: invite` needs at least one `invitedSupplierIds`)."
+/orgs/{orgId}/procurement/{id}:
+  parameters:
+    - *a1
+    - name: id
+      in: path
+      required: true
+      description: Procurement request id.
+      schema:
+        type: string
+  get:
+    tags:
+      - Organization
+    operationId: getOrgProcurement
+    summary: Get a procurement request
+    description: The request, audit entries for it (and for its auction), and the collective pool it joined, if any (masked per member as in `GET /orgs/{orgId}/collective`).
+    x-access: org:member
+    responses:
+      "200":
+        description: Request detail.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgProcurementDetail"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization."
+      "404":
+        $ref: "#/components/responses/NotFound"
+        description: "not_found: request does not exist in this org."
+/orgs/{orgId}/procurement/{id}/actions:
+  parameters:
+    - *a1
+    - name: id
+      in: path
+      required: true
+      description: Procurement request id.
+      schema:
+        type: string
+  post:
+    tags:
+      - Organization
+    operationId: actOnOrgProcurement
+    summary: Take a workflow action on a procurement request
+    description: |-
+      One endpoint for the request workflow. The action must be in the set currently available to the caller's role (`procurementActions`), otherwise `409 invalid_action` (also used when the role lacks permission: no 403).
+
+      | Action | Available when | Role needs | Effect |
+      |---|---|---|---|
+      | submit | status `draft` | procurement.manage or procurement.create | Recomputes `requiredApprovers` from the approval rules, status becomes `approved` (no approver needed) or `pending_approval` (approvers notified as in create). |
+      | approve | `pending_approval` | caller's role is a still-pending required approver | Records an approval; status becomes `approved` when every required role has approved. |
+      | reject | `pending_approval` | same as approve | Requires `note`. A single rejection sets status `rejected`. |
+      | publish | `approved` | procurement.manage or procurement.create | Status `published`. |
+      | collective | `approved` or `published` | collective.create | Joins (or creates) the open collective pool with the same category and unit; status `in_collective`, `poolId` set, `visibility` forced to `aggregate`. |
+      | cancel | `draft`, `pending_approval`, `approved`, `published` | procurement.manage or procurement.create | Status `cancelled`. |
+
+      Collective: pool quantity is `quantity` (defaults to the request quantity) and `optIn` (default false) controls whether the business name is shown to other pool members. When no open matching pool exists a new one is created from the request (base price = budget / quantity, `refQty` = request quantity, `thresholdQty` = 8 x request quantity, region from the last part of the org location, default "Jawa Barat").
+    x-access: org:member
+    x-audit: true
+    x-note: 'Permission failures surface as 409 `invalid_action`, not 403. The 403 from the approve/reject path is unreachable because availability already requires canApprove. `approve` does not notify the remaining approvers of a multi-step rule. Audit labels: Ajukan procurement, Publish procurement, Batalkan procurement, Gabungkan ke collective; approve/reject write "Approve procurement" / "Tolak procurement" (reject carries `reason`).'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgProcurementActionInput"
+    responses:
+      "200":
+        description: Updated request.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProcurementRequest"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: (approve/reject only) caller role is not waiting for approval; effectively unreachable."
+      "404":
+        $ref: "#/components/responses/NotFound"
+        description: "not_found: request does not exist."
+      "409":
+        $ref: "#/components/responses/Conflict"
+        description: "invalid_action: the action is not available for this status or role."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: "fields: note (reject requires a reason), quantity (collective: must be > 0)."
+/orgs/{orgId}/collective:
+  parameters:
+    - *a1
+  get:
+    tags:
+      - Organization
+    operationId: listOrgPools
+    summary: List collective procurement pools
+    description: |-
+      All pools on the platform (shared across organizations), each as this organization sees it, plus `match` (the pool category is one of the org's categories). Not paginated.
+
+      Masking: members of other businesses show `name: "Bisnis lain #n"` unless they opted in; the caller's own member row has `mine: true` and its real name. The internal market maker user is never exposed. `round` mirrors the pool's live market auction (`status`, `endsAt`) once the market maker opened it.
+
+      Settlement (PRD F6): once the round closes, `settlement` carries the winner, clearing `priceIdr` and one line per member with `quantity`, pro-rata `share`, `amountIdr`; `transactionId` (the sub-PO the member's org received on the F6 trade model, see `GET /orgs/{orgId}/transactions/{tid}`) is present only on the caller's own line. Other lines are masked like members.
+    x-access: org:member
+    responses:
+      "200":
+        description: Pools.
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: "#/components/schemas/PoolView"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization."
+  post:
+    tags:
+      - Organization
+    operationId: createOrgPool
+    summary: Create a collective pool
+    description: Creates an `open` pool and joins the caller's org with `quantity`. `refQty` = quantity and `thresholdQty` = 8 x quantity.
+    x-access: org:collective.create
+    x-audit: true
+    x-note: "`categoryId`, `deadline`, `unit` and `region` are not validated. Audit entry type is `procurement`."
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgPoolCreateInput"
+    responses:
+      "201":
+        description: Created pool.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CollectivePool"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks collective.create."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: "fields: title (required), quantity (> 0), baseUnitPriceIdr (> 0)."
+/orgs/{orgId}/collective/{poolId}/join:
+  parameters:
+    - *a1
+    - name: poolId
+      in: path
+      required: true
+      description: Pool id.
+      schema:
+        type: string
+  post:
+    tags:
+      - Organization
+    operationId: joinOrgPool
+    summary: Join a pool or change demand
+    description: Adds the caller's org to the pool, or updates its `quantity` and `optIn` if it is already a member.
+    x-access: org:collective.create
+    x-audit: true
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgPoolJoinInput"
+    responses:
+      "200":
+        description: Pool as this org sees it.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CollectivePool"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks collective.create."
+      "404":
+        $ref: "#/components/responses/NotFound"
+        description: "not_found: pool does not exist."
+      "409":
+        $ref: "#/components/responses/Conflict"
+        description: "closed: the pool is no longer `open` (a market was requested or formed)."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: "fields: quantity (> 0)."
+/orgs/{orgId}/collective/{poolId}/leave:
+  parameters:
+    - *a1
+    - name: poolId
+      in: path
+      required: true
+      description: Pool id.
+      schema:
+        type: string
+  post:
+    tags:
+      - Organization
+    operationId: leaveOrgPool
+    summary: Leave a pool
+    description: Removes the caller's org from the pool. Any of the org's procurement requests `in_collective` on that pool go back to `approved` with `poolId` cleared.
+    x-access: org:collective.create
+    x-audit: true
+    x-note: "Leaving a pool the org never joined is a silent 204 (and still writes an audit entry). The `visibility: aggregate` set when the request joined is not reverted."
+    responses:
+      "204":
+        description: Left.
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks collective.create."
+      "404":
+        $ref: "#/components/responses/NotFound"
+        description: "not_found: pool does not exist."
+      "409":
+        $ref: "#/components/responses/Conflict"
+        description: "closed: the pool is no longer `open`."
+/orgs/{orgId}/collective/{poolId}/market:
+  parameters:
+    - *a1
+    - name: poolId
+      in: path
+      required: true
+      description: Pool id.
+      schema:
+        type: string
+  post:
+    tags:
+      - Organization
+    operationId: requestOrgPoolMarket
+    summary: Ask a market maker to form a market for the pool
+    description: Allowed once the combined demand reaches `thresholdQty` and the caller's org is a member. Sets status `market_requested` and `marketRequestedAt`. A market maker then forms the market and opens the round (`marketId`, `auctionId`, status `market_live`); after the round the pool becomes `settled` with `settlement` filled (see `GET /orgs/{orgId}/collective`). Those steps are market maker endpoints outside this file.
+    x-access: org:collective.manage
+    x-audit: true
+    x-note: "There is no status guard: a pool already `market_requested`, `market_live` or `settled` can be requested again and is reset to `market_requested` with a new `marketRequestedAt`. Audit entry type is `market`."
+    responses:
+      "200":
+        description: "Pool with `status: market_requested`."
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CollectivePool"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks collective.manage."
+      "404":
+        $ref: "#/components/responses/NotFound"
+        description: "not_found: pool does not exist."
+      "409":
+        $ref: "#/components/responses/Conflict"
+        description: "not_ready: combined demand is below the market threshold. not_member: join the pool first."
+/orgs/{orgId}/auctions:
+  parameters:
+    - *a1
+  get:
+    tags:
+      - Organization
+    operationId: listOrgAuctions
+    summary: List organization auctions
+    description: "All business auctions, newest first. `status` is derived from the lots' live status: `live` while any lot runs, `scheduled` before start, `closed` when all are done, `awarded` after award; `pending_approval` and `rejected` are stored. `live[]` has one entry per lot (index-aligned with `lots`) with realtime facts; `bestPriceIdr` is hidden (absent) on sealed auctions while live."
+    x-access: org:member
+    responses:
+      "200":
+        description: Auctions.
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: "#/components/schemas/OrgAuctionView"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization."
+  post:
+    tags:
+      - Organization
+    operationId: createOrgAuction
+    summary: Create a business auction
+    description: |-
+      Creates the auction (code `OAU-xxxx`, lots get ids `lot-1..n`, `multiLot` is derived from the lot count, `valueIdr` = sum of quantity x reserve price). Required approvers come from the approval rules for `valueIdr` (rules with `appliesTo` containing `auction`).
+
+      - With approvers: status `pending_approval`; pending approvers are notified (type `transaction_update`, href `/org/{orgId}/auctions?review={id}`). It goes live only after every required role approves (`POST .../auctions/{aid}/actions`).
+      - Without approvers: it opens immediately: one realtime auction is created per lot (published as public auctions `oau-...`, owned by the org owner) and status becomes `scheduled` or `live`. Lots whose start time has passed start on a 5 s timer.
+      - If `procurementId` points to a request in status `approved` or `published`, that request becomes `in_auction` immediately (even while the auction waits for approval).
+    x-access: org:auctions.create
+    x-audit: true
+    x-note: Audit label is "Ajukan auction untuk approval" or "Buka auction". `categoryId`, `type`, `rules`, `qualification` are not validated. A `startsAt` up to 60 s in the past is accepted.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgAuctionInput"
+    responses:
+      "201":
+        description: Created auction.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgAuctionView"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks auctions.create."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: "fields: title (required), lots (at least one lot), lot-{index} (item, quantity.value > 0 and reservePriceIdr > 0 required), duration (`schedule.durationMinutes` > 0), startsAt (more than 60 s in the past)."
+/orgs/{orgId}/auctions/{aid}/actions:
+  parameters:
+    - *a1
+    - name: aid
+      in: path
+      required: true
+      description: Business auction id (`OrgAuction.id`).
+      schema:
+        type: string
+  post:
+    tags:
+      - Organization
+    operationId: decideOrgAuction
+    summary: Approve or reject an auction
+    description: Records the caller's approval for the role it holds. Allowed only while the auction is `pending_approval` and the caller's role is still a pending required approver (the org's approval rules, not the `auctions.approve` permission). When every required role has approved the auction opens as in create (lots go live, status `scheduled` or `live`). One rejection sets status `rejected` and returns a linked procurement request (`in_auction`) to `approved`. A rejection requires `note`, which is stored on the approval and as the audit `reason`.
+    x-access: org:member
+    x-audit: true
+    x-note: Any `action` other than `approve` is treated as a rejection. Remaining approvers of a multi-step rule are not notified after a partial approval. Audit labels "Approve auction" / "Tolak auction".
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgAuctionDecisionInput"
+    responses:
+      "200":
+        description: Updated auction.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgAuctionView"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: this approval is not waiting for the caller's role (`Approval ini tidak menunggu peran {role}`)."
+      "404":
+        $ref: "#/components/responses/NotFound"
+        description: "not_found: auction does not exist."
+      "409":
+        $ref: "#/components/responses/Conflict"
+        description: "invalid_action: the auction is not waiting for approval."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: "fields: note (reject requires a reason)."
+/orgs/{orgId}/auctions/{aid}/evaluation:
+  parameters:
+    - *a1
+    - name: aid
+      in: path
+      required: true
+      description: Business auction id.
+      schema:
+        type: string
+  get:
+    tags:
+      - Organization
+    operationId: getOrgAuctionEvaluation
+    summary: Evaluate offers per lot
+    description: "For each lot: its live status and one offer per bidder (their best price: lowest when buying, highest for forward/Dutch selling auctions), mapped onto the supplier directory with scorecard values for quality, delivery and reliability. Sorted best price first. Used by the award simulation (weights, award rule, split)."
+    x-access: org:member
+    x-note: "The mock cannot see hidden bids (sealed or rank-only): it synthesizes a plausible ladder of up to 6 offers behind the best price. Real implementations should read the actual bids. Bidders are mapped onto the supplier directory by index, so `supplierId`s are fictional."
+    responses:
+      "200":
+        description: Evaluation.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgAuctionEvaluation"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization."
+      "404":
+        $ref: "#/components/responses/NotFound"
+        description: "not_found: auction does not exist."
+/orgs/{orgId}/auctions/{aid}/award:
+  parameters:
+    - *a1
+    - name: aid
+      in: path
+      required: true
+      description: Business auction id.
+      schema:
+        type: string
+  post:
+    tags:
+      - Organization
+    operationId: awardOrgAuction
+    summary: Award an auction
+    description: Records the winners per lot, marks every lot auction `awarded` and the linked procurement request `awarded`. Allowed only after all lot auctions are `closed` and no award exists yet. `lines` has one array per lot (same order as `lots`), each with at least one allocation of quantity > 0. The `reason` is stored on the award and as the audit `reason`; the audit entry lists the allocation per lot. Issuing the PO is a separate step.
+    x-access: org:auctions.manage
+    x-audit: true
+    x-note: "Check order: 404, awarded, not_closed, reason, lines. The allocations are not checked against lot quantity, against the actual bidders or against price; only `quantity > 0` per line. A body without `lines` is a server error."
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgAwardInput"
+    responses:
+      "200":
+        description: Awarded auction.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgAuctionView"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks auctions.manage."
+      "404":
+        $ref: "#/components/responses/NotFound"
+        description: "not_found: auction does not exist."
+      "409":
+        $ref: "#/components/responses/Conflict"
+        description: "awarded: a winner was already set. not_closed: not all lots are closed (also when the auction has no live lots yet, e.g. pending approval)."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: 'fields: reason (required). Without `fields`: "Setiap lot harus punya pemenang" when the number of lot arrays differs from the lot count, a lot has no allocation, or any allocation has quantity <= 0.'
+/orgs/{orgId}/auctions/{aid}/po:
+  parameters:
+    - *a1
+    - name: aid
+      in: path
+      required: true
+      description: Business auction id.
+      schema:
+        type: string
+  post:
+    tags:
+      - Organization
+    operationId: issueOrgPurchaseOrder
+    summary: Issue the purchase order after award
+    description: "Generates a PO number (`PO-{initials}-{4 digits}`) and creates one org transaction per award line on the F6 trade model: status `agreement`, `terms: escrow`, `role: buyer` (or `supplier` for selling auctions), counterparty = the awarded supplier as a business, quantity and unit price from the line. The transaction ids are returned and stored on the award (`transactionIds`, `poNumber`). The linked procurement request becomes `po_issued`. Follow the trades with `GET /orgs/{orgId}/transactions`."
+    x-access: org:auctions.manage
+    x-audit: true
+    x-note: An unknown auction id also answers 409 `not_awarded` (there is no 404). Success is 200, not 201.
+    responses:
+      "200":
+        description: Issued PO.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgPoIssued"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: role lacks auctions.manage."
+      "409":
+        $ref: "#/components/responses/Conflict"
+        description: "not_awarded: no award yet (or auction not found). exists: the PO was already issued."
+/orgs/{orgId}/suppliers:
+  parameters:
+    - *a1
+  get:
+    tags:
+      - Organization
+    operationId: listOrgSuppliers
+    summary: List suppliers in the directory
+    description: "Platform supplier directory as this org sees it: `relation` (this org's relationship), `myRating`, platform-wide `rating` (the directory seed counts as 10 reviews plus buyer reviews on the platform and this org's own rating), `transactions` and `spendIdr` with this org. Filters are all optional and combined with AND. Not paginated."
+    x-access: org:member
+    x-note: "`verified` is truthy for any non-empty value, including `false`. `minRating` that is not a number matches nothing."
+    parameters:
+      - $ref: "#/components/parameters/Q"
+      - $ref: "#/components/parameters/Category"
+      - $ref: "#/components/parameters/Region"
+      - name: minRating
+        in: query
+        description: Minimum platform rating.
+        schema:
+          type: number
+          minimum: 0
+          maximum: 5
+          default: 0
+      - name: verified
+        in: query
+        description: Any non-empty value restricts to platform-verified suppliers.
+        schema:
+          type: string
+          examples:
+            - "true"
+      - name: relation
+        in: query
+        description: Only suppliers with this relation to the org.
+        schema:
+          $ref: "#/components/schemas/SupplierRelation"
+    responses:
+      "200":
+        description: Suppliers.
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: "#/components/schemas/OrgSupplier"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization."
+/orgs/{orgId}/suppliers/{sid}:
+  parameters:
+    - *a1
+    - name: sid
+      in: path
+      required: true
+      description: Supplier id.
+      schema:
+        type: string
+  get:
+    tags:
+      - Organization
+    operationId: getOrgSupplier
+    summary: Get a supplier
+    description: Supplier with scorecard, this org's transactions with them (`history`), up to 12 latest purchase-history rows (`purchases`, newest first) and audit entries about the supplier (`activity`).
+    x-access: org:member
+    responses:
+      "200":
+        description: Supplier detail.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SupplierPage"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization."
+      "404":
+        $ref: "#/components/responses/NotFound"
+        description: "not_found: supplier does not exist."
+/orgs/{orgId}/suppliers/{sid}/actions:
+  parameters:
+    - *a1
+    - name: sid
+      in: path
+      required: true
+      description: Supplier id.
+      schema:
+        type: string
+  post:
+    tags:
+      - Organization
+    operationId: actOnOrgSupplier
+    summary: Shortlist, invite, verify, block, unblock or rate a supplier
+    description: "Changes this org's relation to the supplier: shortlist -> `shortlisted`, invite -> `invited`, verify -> `verified`, block -> `blocked`, unblock -> `none`; rate stores `myRating` (1-5) and leaves the relation. Permission: `shortlist` and `invite` need suppliers.create, every other action needs suppliers.manage. Checks run in this order: supplier exists, permission, validation (block reason, rating), verify prerequisites, blocked state."
+    x-access: org:suppliers.manage
+    x-audit: true
+    x-note: "`x-access` is suppliers.create for shortlist/invite. A blocked supplier rejects every action except unblock (including rate). `unblock` resets any relation to `none`, even for a supplier that was not blocked. An unrecognised `action` needs suppliers.manage and does not change the relation. Audit entry carries `reason` for block."
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OrgSupplierActionInput"
+    responses:
+      "200":
+        description: Supplier with the updated relation.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgSupplier"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization. Also forbidden: shortlist/invite need suppliers.create; other actions need suppliers.manage."
+      "404":
+        $ref: "#/components/responses/NotFound"
+        description: "not_found: supplier does not exist."
+      "409":
+        $ref: "#/components/responses/Conflict"
+        description: "docs_missing: verify needs at least two legal documents on the supplier unless it is platform-verified. blocked: supplier is blocked, unblock first."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: "fields: reason (block requires a reason), rating (rate requires 1-5)."
+/orgs/{orgId}/transactions:
+  parameters:
+    - *a1
+  get:
+    tags:
+      - Organization
+    operationId: listOrgTransactions
+    summary: List organization transactions
+    description: "Trades of the organization on the F6 model (from awarded auctions via PO, from collective pool settlement, or created elsewhere), in storage order (newest first). Summary fields only: `timeline`, `documents`, `payment`, `delivery`, `dispute`, `shipments` and `reviews` are omitted (use the detail endpoint). Not paginated."
+    x-access: org:member
+    x-note: The handler strips only the listed detail fields, so remaining optional fields (`agreement`, `invoice`, `qc`, `group`, `makerFeeRate`, `supplierId`) are present when set.
+    responses:
+      "200":
+        description: Transactions.
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: "#/components/schemas/Transaction"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization."
+/orgs/{orgId}/transactions/{tid}:
+  parameters:
+    - *a1
+    - name: tid
+      in: path
+      required: true
+      description: Transaction id.
+      schema:
+        type: string
+  get:
+    tags:
+      - Organization
+    operationId: getOrgTransaction
+    summary: Get an organization transaction
+    description: "Full trade detail (terms, agreement, invoice, shipments, QC, dispute with evidence, reviews, timeline, documents) plus the team `activity` for it and, for a sub-PO created by collective pool settlement (`group.id` is the pool), `collective`: the pool's pro-rata split with the pool id, title and unit (masked as in `GET /orgs/{orgId}/collective`, own line carries `transactionId`)."
+    x-access: org:member
+    responses:
+      "200":
+        description: Transaction.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgTransactionPage"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization."
+      "404":
+        $ref: "#/components/responses/NotFound"
+        description: "not_found: transaction does not exist in this org."
+/orgs/{orgId}/transactions/{tid}/actions:
+  parameters:
+    - *a1
+    - name: tid
+      in: path
+      required: true
+      description: Transaction id.
+      schema:
+        type: string
+  post:
+    tags:
+      - Organization
+    operationId: actOnOrgTransaction
+    summary: Take a step on an organization trade
+    description: |-
+      Shared F6 trade action endpoint (same body and rules as the personal `POST /me/transactions/{id}/actions`), taken by the organization on its side of the trade (`role` of the transaction: buyer for procurement POs, supplier for selling auctions).
+
+      Role gate (PRD 9.8): money moves by Finance, goods by Operations, commitments by Procurement/Sales. Built-in roles follow this table; a custom role may take any action when it has transactions.manage.
+
+      | Action | Roles that may take it |
+      |---|---|
+      | accept_agreement | owner, procurement, sales |
+      | issue_invoice | owner, finance, sales |
+      | pay | owner, finance |
+      | ship | owner, operations |
+      | upload_proof | owner, operations |
+      | confirm_receipt | owner, procurement, operations |
+      | cancel | owner, procurement |
+      | dispute | owner, procurement |
+      | add_evidence | owner, procurement, operations |
+      | review | owner, procurement |
+
+      The role gate runs before the state machine. Then the action must be available for the org's side in the current status, otherwise `409 invalid_transition`. Per action: `ship` needs `shipment` (quantity > 0 and <= unscheduled quantity, `dropPoint`), `upload_proof` needs `file`, `confirm_receipt` takes `qc` (outcome `partial` needs `acceptedQty` between 1 and quantity-1, any non-`accepted` outcome needs a `note`; `rejected` opens a dispute), `dispute` and `add_evidence` need `note`, `review` needs `review.rating` 1-5.
+
+      Side effects: the action is written as an audit entry on the org (with a status change diff); the transaction timeline and documents are updated; the peer account is notified when the counterparty is a platform account. Fictional counterparties are played by a bot that advances the trade (agreement, invoice, payment, shipment, delivery proof, receipt, review) about 8 s after each change and notifies every org member (type `payment`, `delivery` or `transaction_update`, href `/org/{orgId}/transactions/{id}`).
+    x-access: org:transactions.manage
+    x-audit: true
+    x-note: "`x-access` shows the custom-role fallback; built-in roles are gated by the per-action table in the description. A missing or unknown `action` is a server error (403 check indexes TX_ACTION_ROLES with it)."
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/TradeActionInput"
+    responses:
+      "200":
+        description: Updated transaction page.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgTransactionPage"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: 'forbidden: the caller is not a member of this organization. Also forbidden: the role may not take this action: "{action label} hanya untuk {roles}; peranmu {role}", or for custom roles "Peran {role} tidak punya izin kelola Transactions".'
+      "404":
+        $ref: "#/components/responses/NotFound"
+        description: "not_found: transaction does not exist."
+      "409":
+        $ref: "#/components/responses/Conflict"
+        description: "invalid_transition: action not available in the current status for the org's side."
+      "422":
+        $ref: "#/components/responses/Validation"
+        description: "fields per action: quantity, dropPoint (ship), file (upload_proof), acceptedQty and note (confirm_receipt QC), note (dispute, add_evidence), rating (review)."
+/orgs/{orgId}/analytics:
+  parameters:
+    - *a1
+  get:
+    tags:
+      - Organization
+    operationId: getOrgAnalytics
+    summary: Get purchase analytics
+    description: "Procurement analytics (PRD 9.9) over the latest `months` months that have data: spend per month per category, savings (paid vs budget vs market), unit prices vs market, price trend and demand of the biggest item, supplier scorecard, auction results and purchase history. Source: seeded purchase history plus every awarded procurement auction."
+    x-access: org:member
+    x-note: Budget and market reference of awarded auctions are both the lot target price (no market reference on awards yet). `months` counts months with data, not calendar months.
+    parameters:
+      - name: months
+        in: query
+        description: Number of months to include, most recent first.
+        schema:
+          type: integer
+          minimum: 1
+          default: 12
+      - name: category
+        in: query
+        description: Restrict to one category.
+        schema:
+          $ref: "#/components/schemas/CategoryId"
+    responses:
+      "200":
+        description: Analytics.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgAnalytics"
+      "401": *a2
+      "403":
+        $ref: "#/components/responses/Forbidden"
+        description: "forbidden: the caller is not a member of this organization."

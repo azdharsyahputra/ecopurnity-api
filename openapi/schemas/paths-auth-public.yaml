@@ -1,0 +1,124 @@
+# Inline request/response shapes for paths/auth-public.yaml (prefix AuthPublic).
+AuthPublicLoginRequest:
+  type: object
+  required: [email, password]
+  properties:
+    email: { type: string, description: Trimmed and lower-cased before lookup. }
+    password: { type: string }
+AuthPublicRegisterRequest:
+  type: object
+  required: [name, email, password]
+  properties:
+    name: { type: string, description: Trimmed. }
+    email: { type: string, description: Trimmed and lower-cased; the username is its local part. }
+    password: { type: string, minLength: 8 }
+AuthPublicAppealRequest:
+  type: object
+  required: [email, password, reason]
+  description: Suspended accounts cannot sign in, so the appeal re-checks the credentials.
+  properties:
+    email: { type: string }
+    password: { type: string }
+    reason: { type: string, minLength: 20, description: 'Trimmed, min 20 characters.' }
+AuthPublicOk:
+  type: object
+  required: [ok]
+  properties:
+    ok: { type: boolean, const: true }
+AuthPublicVerifyEmailRequest:
+  type: object
+  required: [token]
+  properties:
+    token: { type: string, description: Token from the verification email link. }
+AuthPublicForgotPasswordRequest:
+  type: object
+  required: [email]
+  properties:
+    email: { type: string }
+AuthPublicResetPasswordRequest:
+  type: object
+  required: [token, password]
+  properties:
+    token: { type: string, description: Token from the reset email link. }
+    password: { type: string, minLength: 8 }
+AuthPublicOpportunityPage:
+  type: object
+  required: [data, meta]
+  properties:
+    data: { type: array, items: { $ref: '#/components/schemas/Opportunity' } }
+    meta: { $ref: '#/components/schemas/PageMeta' }
+AuthPublicMarketPage:
+  type: object
+  required: [data, meta]
+  properties:
+    data: { type: array, items: { $ref: '#/components/schemas/Market' } }
+    meta: { $ref: '#/components/schemas/PageMeta' }
+AuthPublicAuctionPage:
+  type: object
+  required: [data, meta]
+  properties:
+    data: { type: array, items: { $ref: '#/components/schemas/Auction' } }
+    meta: { $ref: '#/components/schemas/PageMeta' }
+AuthPublicPublicListingPage:
+  type: object
+  required: [data, meta]
+  properties:
+    data: { type: array, items: { $ref: '#/components/schemas/PublicListing' } }
+    meta: { $ref: '#/components/schemas/PageMeta' }
+AuthPublicMatchActionRequest:
+  type: object
+  required: [action]
+  properties:
+    action:
+      type: string
+      enum: [connect, save, dismiss, reset]
+      description: connect sets the match to `connected`, save to `saved`, dismiss to `dismissed`, reset back to `new`.
+    reason: { type: string, description: 'Optional free text; trimmed, stored with the match state.' }
+AuthPublicKycPhoneRequest:
+  type: object
+  required: [phone]
+  properties:
+    phone:
+      type: string
+      description: Non-digits are stripped; the digits must match `^(62|0)8\d{7,11}$`.
+      examples: ['0812xxxxxxxx']
+AuthPublicKycPhoneVerifyRequest:
+  type: object
+  required: [code]
+  properties:
+    code: { type: string, description: The OTP sent to the phone. The mock accepts the fixed code `246810`. }
+AuthPublicKycIdentityRequest:
+  type: object
+  required: [nik, fullName, ktpFile, selfieFile]
+  properties:
+    nik: { type: string, pattern: '^\d{16}$' }
+    fullName: { type: string, minLength: 1, description: As on the KTP; trimmed. }
+    ktpFile: { type: string, description: KTP photo file name (real uploads arrive with the BE). }
+    selfieFile: { type: string, description: Selfie-with-KTP file name. }
+AuthPublicPriceSuggestion:
+  description: The suggestion plus the unit it was computed for and the markets whose price history fed it.
+  allOf:
+    - $ref: '#/components/schemas/PriceSuggestion'
+    - type: object
+      required: [unit, markets]
+      properties:
+        unit: { type: string, description: 'The unit from the request, trimmed and lower-cased.' }
+        markets:
+          type: array
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: { type: string }
+              name: { type: string }
+AuthPublicDirectOrderRequest:
+  type: object
+  required: [listingId, quantity]
+  properties:
+    listingId: { type: string, description: A public supply listing posted in this market. }
+    quantity: { type: number, exclusiveMinimum: 0, description: 'At most the listing''s remaining quantity.' }
+AuthPublicDirectOrderResponse:
+  type: object
+  required: [transactionId]
+  properties:
+    transactionId: { type: string, description: The buyer's side of the created transaction. }

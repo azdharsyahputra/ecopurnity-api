@@ -1,0 +1,146 @@
+# Inline-only request/response shapes for paths/mm-rfq-roles.yaml (prefixes Mm / Rfq / Roles).
+
+MmStageInput:
+  type: object
+  required: [stage]
+  properties:
+    stage: { $ref: '#/components/schemas/PipelineStage' }
+    reason:
+      type: string
+      description: Required (non-blank) when `stage` is `dismissed`; stored on the card as `dismissReason`.
+
+MmPoolMarketInput:
+  type: object
+  required: [durationMinutes]
+  properties:
+    durationMinutes:
+      type: number
+      exclusiveMinimum: 0
+      description: Length of the pool's first round, in minutes.
+
+MmPoolMarketResult:
+  type: object
+  required: [marketId, auctionId]
+  properties:
+    marketId: { type: string }
+    auctionId: { type: string }
+
+MmCreatedResource:
+  type: object
+  required: [id]
+  properties:
+    id: { type: string }
+
+MmParticipantActionInput:
+  type: object
+  required: [action]
+  properties:
+    action: { $ref: '#/components/schemas/ParticipantAction' }
+    reason:
+      type: string
+      description: Required (non-blank) for `reject` and `suspend`; stored as the participant's `note` and sent to them.
+
+MmRulesInput:
+  type: object
+  required: [rules]
+  properties:
+    rules: { $ref: '#/components/schemas/MarketRules' }
+    reason: { type: string, description: Optional note stored on the new rule version and the audit entry. }
+
+MmMarketStatusInput:
+  type: object
+  required: [action, reason]
+  properties:
+    action: { $ref: '#/components/schemas/MarketStatusAction' }
+    reason: { type: string, minLength: 1, description: Non-blank. Sent to every participant of the market. }
+
+MmDisputeActionInput:
+  type: object
+  required: [action]
+  properties:
+    action: { $ref: '#/components/schemas/MmDisputeAction' }
+    note:
+      type: string
+      description: Required (non-blank) for `resolve` (the decision sent to both parties) and `escalate` (why an admin is needed).
+
+MmSettlementResult:
+  description: >-
+    `Settlement` (preview of the pro-rata split of a closed round, plus `settled` = null until it has been settled).
+    The mock also returns `winnerUserId` when the winning bid belongs to a platform account.
+  allOf:
+    - $ref: '#/components/schemas/Settlement'
+    - type: object
+      properties:
+        winnerUserId: { type: string, description: Platform user id of the winning bidder; absent for fictional (bot) bidders. }
+
+RfqQuoteInput:
+  type: object
+  description: Supplier's quote on an RFQ (`Pick<Quote, 'priceIdr' | 'quantity' | 'leadTimeDays' | 'terms' | 'note'>`).
+  required: [priceIdr, quantity, leadTimeDays, terms, note]
+  properties:
+    priceIdr: { type: integer, exclusiveMinimum: 0, description: Unit price. }
+    quantity: { type: number, exclusiveMinimum: 0 }
+    leadTimeDays: { type: integer }
+    terms: { $ref: '#/components/schemas/PaymentTerms' }
+    note: { type: string }
+
+RfqQuoteActionInput:
+  type: object
+  required: [action]
+  properties:
+    action: { $ref: '#/components/schemas/QuoteAction' }
+    priceIdr:
+      type: integer
+      exclusiveMinimum: 0
+      description: Required for `counter` (the buyer's counter price per unit) and `revise` (the supplier's new price per unit).
+    note: { type: string, description: Appended to the quote history entry. }
+
+RfqConversationInput:
+  type: object
+  required: [subject, with]
+  properties:
+    subject: { type: string, minLength: 1, description: Non-blank after trim. }
+    with:
+      allOf:
+        - $ref: '#/components/schemas/TradeParty'
+      description: The other participant. Only `name` is checked (must be non-empty).
+    link:
+      type: object
+      required: [type, id, href]
+      properties:
+        type: { type: string, enum: [rfq, match, transaction] }
+        id: { type: string }
+        href: { type: string }
+    text: { type: string, description: 'Optional opening message, posted as the caller.' }
+
+RfqMessageInput:
+  type: object
+  required: [text]
+  properties:
+    text: { type: string, minLength: 1, description: Non-blank after trim; stored trimmed. }
+
+RolesInvitationAnswerInput:
+  type: object
+  required: [action]
+  properties:
+    action: { $ref: '#/components/schemas/InvitationAction' }
+
+RolesMmDecisionInput:
+  type: object
+  required: [action]
+  properties:
+    action: { type: string, enum: [approve, reject] }
+    reason:
+      type: string
+      minLength: 10
+      description: Required (min 10 chars after trim) for `reject`; optional note for `approve`.
+
+RolesCreateOrgResult:
+  type: object
+  required: [orgId, user]
+  properties:
+    orgId: { type: string }
+    user:
+      allOf:
+        - $ref: '#/components/schemas/User'
+      description: The caller with the new organization added (role owner, unverified).
