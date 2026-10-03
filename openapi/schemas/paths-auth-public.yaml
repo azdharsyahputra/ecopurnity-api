@@ -111,7 +111,7 @@ AuthPublicDirectOrderResponse:
     transactionId: { type: string, description: The buyer's side of the created transaction. }
 UploadPurpose:
   type: string
-  enum: [kyc_ktp, kyc_selfie, org_document, trade_proof, dispute_evidence]
+  enum: [kyc_ktp, kyc_selfie, org_document, listing_attachment, trade_proof, dispute_evidence]
   description: |-
     What the file is for; decides the allowed types, the size limit and who may read it. More purposes are added with the features that need them.
     `trade_proof` (shipment proof for `upload_proof`) and `dispute_evidence` (`dispute` / `add_evidence` attachment): JPEG, PNG, WebP or PDF, max 10 MB; readable by both sides of the trade (personal party / org members with transactions.view) and by admins on the dispute case.

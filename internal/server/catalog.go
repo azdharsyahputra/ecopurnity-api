@@ -47,7 +47,7 @@ func (s *Server) ListPublicListings(ctx context.Context, req api.ListPublicListi
 		       CASE pt.kind WHEN 'user' THEN i.identity_verified_at IS NOT NULL
 		                    WHEN 'org' THEN coalesce(op.verification = 'verified', false)
 		                    ELSE pt.verified END,
-		       count(*) OVER ()
+		       count(*) OVER (), `+attachmentsJSON+`
 		FROM listings l
 		JOIN parties pt ON pt.id = l.owner_party_id
 		LEFT JOIN users u ON u.id = pt.user_id
@@ -68,8 +68,13 @@ func (s *Server) ListPublicListings(ctx context.Context, req api.ListPublicListi
 		var unitPrice int64
 		var userID *string
 		var total int64
+		var atts []attachmentRow
 		if err := rows.Scan(&l.Id, &l.Code, &l.Kind, &l.Item, &l.CategoryId, &qty, &unit, &l.Location, &l.Spec, &l.Delivery, &l.MarketId,
-			&l.CreatedAt, &unitPrice, &l.Owner.Name, &userID, &l.Owner.Username, &l.Owner.Verified, &total); err != nil {
+			&l.CreatedAt, &unitPrice, &l.Owner.Name, &userID, &l.Owner.Username, &l.Owner.Verified, &total, &atts); err != nil {
+			return nil, err
+		}
+		// Public statuses only (WHERE above), so the files may be shown to anyone.
+		if l.Attachments, err = s.signAttachments(ctx, atts); err != nil {
 			return nil, err
 		}
 		l.Quantity = api.Quantity{Value: qty, Unit: unit}

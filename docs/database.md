@@ -19,6 +19,7 @@ Authoring rules: [migrations/CONVENTIONS.md](../migrations/CONVENTIONS.md).
 | 00021_bid_capacity | auctions | bids.capacity (quantity a supplier can deliver with a reverse/sealed bid; NULL = whole lot; owner and bidder only) |
 | 00022_org_approval_on_behalf | business workspace | procurement_approvals / org_auction_approvals.on_behalf (owner signed for a required role with no active member) |
 | 00023_org_purchase_history_outbox | business workspace | trigger: org_purchase_history rows queue trade.status (+ auction.closed) facts for ClickHouse org_purchase_monthly |
+| 00024_listing_attachment_uploads | listings | uploads purpose `listing_attachment`; listing_attachments.object_key / content_type / size_bytes / position (files are uploads; legacy name-only rows keep a NULL key) |
 | 00025_trade_uploads | settlement | uploads purposes `trade_proof`, `dispute_evidence`; delivery proofs (trade_documents.object_key) and dispute evidence (dispute_evidence.file_key) are verified uploads, served as 1 h presigned URLs to the trade's sides and admins |
 
 ## Key decisions
@@ -66,4 +67,7 @@ as SHA-256 hashes. Passwords: `password_hash` (argon2id in the app).
 - Withdrawals lock the party's `ledger_accounts` row `FOR UPDATE` before checking the available balance.
 - Identity PUT upserts `capacity_items` (deleting them cascades to the user's smart-match state).
 - `POST /orgs` inserts the five built-in `org_roles` rows in the same transaction.
+- Listing attachments: save the whole ordered set (`setAttachments`: claim new uploads, renumber kept rows, delete the
+  rest) and delete removed objects from storage only after the commit. Presign GET URLs only for the owner or for a
+  listing in a public status.
 - Do not put a NIK into any jsonb column (forms, OCR fields); the admin view decrypts it from `kyc_submissions`.

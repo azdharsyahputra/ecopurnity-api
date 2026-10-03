@@ -1959,8 +1959,8 @@ components:
         attachments:
           type: array
           items:
-            type: string
-          description: File names; real uploads arrive with the BE.
+            $ref: "#/components/schemas/ListingAttachment"
+          description: Photos and documents in the owner's order.
         marketId:
           type: string
         createdAt:
@@ -2010,8 +2010,8 @@ components:
         attachments:
           type: array
           items:
-            type: string
-          description: File names; real uploads arrive with the BE.
+            $ref: "#/components/schemas/ListingAttachmentInput"
+          description: The complete ordered set (at most 8); see ListingAttachmentInput.
         kind:
           const: demand
         budgetIdr:
@@ -2963,6 +2963,36 @@ components:
         mapping:
           supply: "#/components/schemas/SupplyListing"
           demand: "#/components/schemas/DemandListing"
+    ListingAttachment:
+      type: object
+      required:
+        - id
+        - fileName
+        - contentType
+      properties:
+        id:
+          type: string
+        fileName:
+          type: string
+        contentType:
+          type: string
+          description: image/jpeg, image/png, image/webp or application/pdf (legacy rows may have another type).
+        sizeBytes:
+          type: integer
+        url:
+          type: string
+          description: Presigned GET URL, valid for 1 hour. Absent for legacy name-only attachments (no stored file).
+      description: A photo or document attached to a listing.
+    ListingAttachmentInput:
+      type: object
+      properties:
+        uploadId:
+          type: string
+          description: A new file (POST /uploads, purpose listing_attachment); each upload can be used once.
+        id:
+          type: string
+          description: An attachment the listing already has, kept.
+      description: Exactly one of uploadId (add a file) or id (keep an existing attachment).
     ListingDetail:
       allOf:
         - $ref: "#/components/schemas/Listing"
@@ -5762,7 +5792,8 @@ components:
         attachments:
           type: array
           items:
-            type: string
+            $ref: "#/components/schemas/ListingAttachmentInput"
+          description: The complete ordered set; attachments not listed are removed.
         priceIdr:
           type: integer
           description: Supply only.
@@ -6207,6 +6238,7 @@ components:
         - createdAt
         - unitPriceIdr
         - owner
+        - attachments
       properties:
         id:
           type: string
@@ -6251,6 +6283,11 @@ components:
               type: string
             verified:
               type: boolean
+        attachments:
+          type: array
+          items:
+            $ref: "#/components/schemas/ListingAttachment"
+          description: The listing's photos and documents in the owner's order (the card shows the first image).
       description: "A listing in the public catalog (PRD F6): who posted it, never their contact details."
     PublicProfile:
       type: object
@@ -7451,8 +7488,8 @@ components:
         attachments:
           type: array
           items:
-            type: string
-          description: File names; real uploads arrive with the BE.
+            $ref: "#/components/schemas/ListingAttachment"
+          description: Photos and documents in the owner's order.
         marketId:
           type: string
         createdAt:
@@ -7503,8 +7540,8 @@ components:
         attachments:
           type: array
           items:
-            type: string
-          description: File names; real uploads arrive with the BE.
+            $ref: "#/components/schemas/ListingAttachmentInput"
+          description: The complete ordered set (at most 8); see ListingAttachmentInput.
         kind:
           const: supply
         priceIdr:
@@ -7961,6 +7998,7 @@ components:
         - kyc_ktp
         - kyc_selfie
         - org_document
+        - listing_attachment
         - trade_proof
         - dispute_evidence
       description: |-
@@ -9824,7 +9862,8 @@ paths:
         Supply and demand listings that are public (status available, in_market, open or matched) from active users
         (restricted and suspended owners are hidden). Newest first. (The frontend mock also fabricates demo listings from
         markets; the API serves real listings only.) `q` matches
-        item, code and owner name. Owner contact details are never exposed.
+        item, code and owner name. Owner contact details are never exposed. `attachments` carry presigned GET URLs
+        (1 hour) only because the listing is public; other listings never reach this endpoint.
       tags:
         - Public
       x-access: public
@@ -10613,7 +10652,13 @@ paths:
 
         Validation (422, per field): item (non-blank, max 200), quantity (value > 0, unit non-blank), location
         (non-blank), priceIdr (supply, >= 0), budgetIdr (demand, >= 0), deadline (demand, not in the past),
-        expiresAt (supply, after availableFrom), attachments (at most 10 names).
+        expiresAt (supply, after availableFrom), attachments (see below).
+
+        `attachments` is the complete ordered set: `{uploadId}` adds a verified upload of purpose `listing_attachment`
+        (claimed: each upload is used once), `{id}` keeps one of the listing's attachments. At most 8. Errors are on
+        field `attachments`: more than 8, an entry without exactly one of uploadId/id, an unknown id, and the upload
+        errors (not found or someone else's, other purpose, already used, not uploaded, size or content mismatch).
+        Responses list `attachments` with a presigned GET `url` (1 hour) for each stored file.
       tags:
         - Personal
       x-access: session
@@ -10672,6 +10717,8 @@ paths:
         sets `updatedAt` and adds history entry `Diperbarui`. `kind`, `status`, `code` and ids cannot be changed here.
         Fields of the other kind (`priceIdr` on a demand, `budgetIdr` on a supply, ...) are rejected. A listing that is
         finished (sold, expired, fulfilled, cancelled) cannot be edited (`409 not_editable`).
+        `attachments`, when sent, replaces the set like on create: attachments not listed are removed and their files
+        deleted from storage after the change commits.
       tags:
         - Personal
       x-access: session
@@ -13918,7 +13965,10 @@ paths:
         - `kyc_ktp`, `kyc_selfie`: image/jpeg, image/png, image/webp; up to 8 MB.
         - `org_document` (business verification documents, `POST /orgs/{orgId}/profile/documents`): application/pdf,
           image/jpeg, image/png, image/webp; up to 10 MB.
-        The bucket is private; files are read back through short-lived presigned GET URLs (admin review).
+        - `listing_attachment` (listing photos and documents, `attachments` of `POST/PATCH /me/listings`):
+          image/jpeg, image/png, image/webp, application/pdf; up to 10 MB.
+        The bucket is private; files are read back through short-lived presigned GET URLs (admin review, listing
+        attachments).
       tags:
         - Uploads
       x-access: session
