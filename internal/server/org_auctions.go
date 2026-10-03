@@ -153,7 +153,7 @@ func loadOrgAuctions(ctx context.Context, q dbtx, orgID, cond string, args ...an
 	rows.Close()
 	rows, err = q.Query(ctx, `
 		SELECT a.org_auction_id::text, a.role, a.decision, a.note, a.decided_at,
-		       u.name || ' (' || coalesce((SELECT ro.label FROM org_roles ro WHERE ro.org_id = oa.org_id AND ro.key = a.role), a.role) || ')'
+		       `+approvalBySQL("oa.org_id")+`
 		FROM org_auction_approvals a JOIN org_auctions oa ON oa.id = a.org_auction_id JOIN users u ON u.id = a.decided_by
 		WHERE a.org_auction_id::text = ANY($1) ORDER BY a.decided_at, a.id`, ids)
 	if err != nil {
@@ -247,6 +247,10 @@ func (s *Server) ListOrgAuctions(ctx context.Context, req api.ListOrgAuctionsReq
 	}
 	return api.ListOrgAuctions200JSONResponse(out), nil
 }
+
+// withdrawRuleLabel: src/domain/org.ts WITHDRAW_RULES (the lot's "Penarikan bid" rule; enforced by withdrawBlock).
+var withdrawRuleLabel = map[string]string{"anytime": "Boleh tarik kapan saja", "before_last_30": "Boleh tarik sampai 30 menit terakhir",
+	"never": "Bid mengikat, tidak bisa ditarik"}
 
 var auctionTypeLabel = map[string]string{"reverse": "Reverse", "forward": "Forward", "sealed": "Sealed bid", "dutch": "Dutch"}
 
@@ -455,6 +459,7 @@ func goLive(ctx context.Context, tx pgx.Tx, c *orgCtx, id string) error {
 			qual += ", wilayah: " + strings.Join(a.Qualification.Regions, ", ")
 		}
 		rules = append(rules, api.LabeledValue{Label: "Perpanjangan otomatis", Value: extLabel}, api.LabeledValue{Label: "Kualifikasi", Value: qual},
+			api.LabeledValue{Label: "Penarikan bid", Value: withdrawRuleLabel[string(a.Rules.Withdraw)]},
 			api.LabeledValue{Label: "Penetapan pemenang", Value: awardRuleLabel(string(a.Rules.Award), higher)})
 		var auctionID string
 		if err := tx.QueryRow(ctx, `
@@ -492,7 +497,12 @@ func (s *Server) DecideOrgAuction(ctx context.Context, req api.DecideOrgAuctionR
 			return conflict("invalid_action", "Auction ini tidak menunggu approval")
 		}
 		approvals := apiApprovals(a.Approvals)
-		if !canApprove(c.Role, a.RequiredApprovers, approvals) {
+		active, err := activeRoles(ctx, tx, c.OrgID)
+		if err != nil {
+			return err
+		}
+		roles := signingRoles(c.Role, a.RequiredApprovers, approvals, active)
+		if len(roles) == 0 {
 			return &Error{Status: http.StatusForbidden, Code: "forbidden", Message: "Approval ini tidak menunggu peran " + c.RoleLabel}
 		}
 		decision := "approved"
@@ -503,11 +513,11 @@ func (s *Server) DecideOrgAuction(ctx context.Context, req api.DecideOrgAuctionR
 				return invalid("Tulis alasan penolakan", map[string]string{"note": "Alasan wajib diisi saat menolak"})
 			}
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO org_auction_approvals (org_auction_id, role, decision, note, decided_by) VALUES ($1, $2, $3, nullif($4, ''), $5)`,
-			id, c.Role, decision, note, c.sess.UserID); err != nil {
+		signed, err := sign(ctx, tx, "org_auction_approvals", "org_auction_id", id, c, roles, decision, note)
+		if err != nil {
 			return err
 		}
-		_, rejected, approved := approvalState(a.RequiredApprovers, append(approvals, approval{c.Role, decision}))
+		_, rejected, approved := approvalState(a.RequiredApprovers, append(approvals, signed...))
 		switch {
 		case approved:
 			if err := goLive(ctx, tx, c, id); err != nil {
@@ -539,6 +549,68 @@ func (s *Server) DecideOrgAuction(ctx context.Context, req api.DecideOrgAuctionR
 		return nil, err
 	}
 	return api.DecideOrgAuction200JSONResponse(out), nil
+}
+
+// notifyOrgLotsClosed tells the org's members who can view auctions (owner always) that a business auction is ready to
+// evaluate: once, in the transaction that closes its last lot, with one line per lot. Lots close in separate clock
+// transactions (possibly on different instances); the advisory lock serialises them per business auction, so exactly
+// one sees every sibling closed (each statement reads the latest commits). Not the header row lock: award holds that
+// while it locks the lots, which would deadlock with a closing lot.
+func notifyOrgLotsClosed(ctx context.Context, tx pgx.Tx, orgID, orgAuctionID string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('org_auction_close:' || $1, 0))`, orgAuctionID); err != nil {
+		return err
+	}
+	var title string
+	if err := tx.QueryRow(ctx, `SELECT title FROM org_auctions WHERE id = $1`, orgAuctionID).Scan(&title); err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT l.position, l.item, e.status IN ('live','extended','scheduled','qualification'),
+		       (SELECT count(DISTINCT b.bidder_party_id) FROM bids b WHERE b.auction_id = e.id AND b.status <> 'withdrawn')
+		FROM org_auction_lots l JOIN auctions e ON e.id = l.auction_id WHERE l.org_auction_id = $1 ORDER BY l.position`, orgAuctionID)
+	if err != nil {
+		return err
+	}
+	type lot struct {
+		pos    int
+		item   string
+		open   bool
+		offers int
+	}
+	lots, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (lot, error) {
+		var l lot
+		return l, r.Scan(&l.pos, &l.item, &l.open, &l.offers)
+	})
+	if err != nil || slices.ContainsFunc(lots, func(l lot) bool { return l.open }) {
+		return err
+	}
+	var lines []string
+	for _, l := range lots {
+		name := l.item
+		if len(lots) > 1 {
+			name = fmt.Sprintf("%d %s", l.pos, l.item)
+		}
+		lines = append(lines, fmt.Sprintf("Lot %s ditutup, %d penawaran.", name, l.offers))
+	}
+	rows, err = tx.Query(ctx, `
+		SELECT m.user_id::text FROM org_members m JOIN org_roles ro ON ro.org_id = m.org_id AND ro.key = m.role
+		WHERE m.org_id = $1 AND m.status = 'active' AND m.user_id IS NOT NULL AND (m.role = 'owner' OR 'auctions.view' = ANY(ro.permissions))
+		ORDER BY m.created_at`, orgID)
+	if err != nil {
+		return err
+	}
+	users, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	n := notification{Type: "auction_ending", Title: title + " ditutup", Body: strings.Join(lines, " ") + " Evaluasi dan tetapkan pemenang.",
+		Href: "/org/" + orgID + "/auctions/" + orgAuctionID + "/evaluate"}
+	for _, u := range users {
+		if err := notify(ctx, tx, u, n); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // lotOffer is an evaluated offer plus what award and PO need.
@@ -598,7 +670,7 @@ func evalOffers(ctx context.Context, q dbtx, r auctionRow, higher bool) ([]lotOf
 		lo := lotOffer{PartyID: o.PartyID, UserID: o.UserID}
 		lo.Id, lo.PriceIdr, lo.SubmittedAt, lo.SupplierId = o.BidID, int(o.Price), o.At, o.PartyID
 		lo.Supplier.Name, lo.Supplier.Kind, lo.Supplier.Verified, lo.Supplier.Reputation = o.Name, api.LotOfferSupplierKind(o.Kind), o.Verified, 80
-		lo.Capacity = api.Quantity{Value: r.Quantity, Unit: r.Unit}
+		lo.Capacity = api.Quantity{Value: o.Capacity, Unit: r.Unit}
 		lo.Quality, lo.Delivery, lo.Reliability = 80, 80, 80
 		if d, ok := byParty[o.PartyID]; ok {
 			lo.SupplierId, lo.SupplierID, lo.Supplier.Name, lo.Supplier.Verified = d.id, &d.id, d.name, d.verified
@@ -733,7 +805,7 @@ func (s *Server) AwardOrgAuction(ctx context.Context, req api.AwardOrgAuctionReq
 			seen := map[string]bool{}
 			for j, ln := range in.Lines[i] {
 				key := fmt.Sprintf("lines.%d.%d", i, j)
-				_, ok := offersByLot[i][ln.OfferId]
+				o, ok := offersByLot[i][ln.OfferId]
 				switch {
 				case !ok:
 					f[key] = "Penawaran tidak ditemukan"
@@ -741,6 +813,8 @@ func (s *Server) AwardOrgAuction(ctx context.Context, req api.AwardOrgAuctionReq
 					f[key] = "Penawaran dipilih dua kali"
 				case !(ln.Quantity > 0):
 					f[key] = "Jumlah harus lebih dari 0"
+				case ln.Quantity > o.Capacity.Value+1e-9:
+					f[key] = "Melebihi kapasitas penawaran"
 				}
 				seen[ln.OfferId] = true
 				sum += ln.Quantity
@@ -933,7 +1007,7 @@ func (s *Server) IssueOrgPurchaseOrder(ctx context.Context, req api.IssueOrgPurc
 		for _, l := range lines {
 			t := newTrade{Title: fmt.Sprintf("%s · %s %s", l.Item, qtyLabel(l.Qty), l.Unit), BuyerParty: party, SupplierParty: l.Party, Quantity: l.Qty,
 				Unit: l.Unit, UnitPriceIdr: l.Price, AuctionID: l.AuctionID, DeliveryAddress: nonEmpty(location, "-"), Via: "auction", Category: category,
-				Region: region, ActorUserID: &c.sess.UserID, BuyerOrgID: &c.OrgID,
+				Region: region, ActorUserID: &c.sess.UserID, BuyerOrgID: &c.OrgID, Item: l.Item,
 				// ponytail: the lot's target price stands in for budget and market until awards carry a market reference.
 				BudgetUnitIdr: l.Reserve, MarketUnitIdr: l.Reserve}
 			if objective == "selling" {

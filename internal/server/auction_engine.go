@@ -113,7 +113,8 @@ func (s *Server) dutchOne(ctx context.Context) (bool, error) {
 }
 
 // closeOne closes one auction whose time is up.
-//   - Buyer auctions (owned): bids stay as they are until the owner awards; the owner is told to evaluate.
+//   - Buyer auctions (owned): bids stay as they are until the owner awards; the owner is told to evaluate. Lots of a
+//     business auction: the org's members who can view auctions are told once, when the last lot closes.
 //   - Market rounds: the best bidder is marked won and everyone else lost; trades are created by the market maker's
 //     collective settlement (market maker area), so bidders are told the result, not handed a trade.
 //   - Sealed auctions reveal ranks only now (bid.status frames).
@@ -180,9 +181,14 @@ func (s *Server) closeOne(ctx context.Context) (bool, error) {
 				return err
 			}
 		}
-		if r.OwnerUserID != nil {
+		switch {
+		case r.OwnerUserID != nil:
 			if err := notify(ctx, tx, *r.OwnerUserID, notification{Type: "auction_ending", Title: r.Title + " sudah ditutup",
 				Body: fmt.Sprintf("%d bid masuk. Bandingkan penawaran dan tetapkan pemenang.", r.BidCount), Href: "/app/auctions/" + id + "/evaluate"}); err != nil {
+				return err
+			}
+		case r.OwnerOrgID != nil && r.OrgAuctionID != nil:
+			if err := notifyOrgLotsClosed(ctx, tx, *r.OwnerOrgID, *r.OrgAuctionID); err != nil {
 				return err
 			}
 		}

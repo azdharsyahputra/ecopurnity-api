@@ -492,7 +492,7 @@
       | Action | Available when | Role needs | Effect |
       |---|---|---|---|
       | submit | status `draft` | procurement.manage or procurement.create | Recomputes `requiredApprovers` from the approval rules, status becomes `approved` (no approver needed) or `pending_approval` (approvers notified as in create). |
-      | approve | `pending_approval` | caller's role is a still-pending required approver | Records an approval; status becomes `approved` when every required role has approved. |
+      | approve | `pending_approval` | caller's role is a still-pending required approver, or the caller is an owner and a pending required role has no active member (`signingRoles`) | Records an approval for each role the caller signs (an owner's on-behalf approvals read "Name · Owner (atas nama Finance)"); status becomes `approved` when every required role has approved. |
       | reject | `pending_approval` | same as approve | Requires `note`. A single rejection sets status `rejected`. |
       | publish | `approved` | procurement.manage or procurement.create | Status `published`. |
       | collective | `approved` or `published` | collective.create | Joins (or creates) the open collective pool with the same category and unit; status `in_collective`, `poolId` set, `visibility` forced to `aggregate`. |
@@ -766,7 +766,7 @@
       - Organization
     operationId: decideOrgAuction
     summary: Approve or reject an auction
-    description: Records the caller's approval for the role it holds. Allowed only while the auction is `pending_approval` and the caller's role is still a pending required approver (the org's approval rules, not the `auctions.approve` permission). When every required role has approved the auction opens as in create (lots go live, status `scheduled` or `live`). One rejection sets status `rejected` and returns a linked procurement request (`in_auction`) to `approved`. A rejection requires `note`, which is stored on the approval and as the audit `reason`.
+    description: Records the caller's approval for the role it holds. Allowed only while the auction is `pending_approval` and the caller's role is still a pending required approver (the org's approval rules, not the `auctions.approve` permission). Deadlock rule (`signingRoles`, src/domain/org.ts) - a pending required role with no active member is signed by an owner on its behalf - the owner's decision is recorded for its own pending role and for each such role (approval `by` "Name · Owner (atas nama Finance)"); a rejection is recorded once. When every required role has approved the auction opens as in create (lots go live, status `scheduled` or `live`). One rejection sets status `rejected` and returns a linked procurement request (`in_auction`) to `approved`. A rejection requires `note`, which is stored on the approval and as the audit `reason`.
     x-access: org:member
     x-audit: true
     x-note: Approvers are notified once, at creation. Audit labels "Approve auction" / "Tolak auction".
@@ -810,7 +810,7 @@
       - Organization
     operationId: getOrgAuctionEvaluation
     summary: Evaluate offers per lot
-    description: "For each lot: its live status and one offer per bidder (their best active bid: lowest when buying, highest for forward/Dutch selling auctions; hidden bids included, the org owns the auction), sorted best price first. `id` is the bid id (use it as `offerId` in the award). A bidder whose party is in the supplier directory gets that `supplierId` and its latest scorecard (quality, delivery, reliability; reputation = the scorecard average); other bidders get their party id as `supplierId` and an 80 baseline. `capacity` is the whole lot (bids carry no capacity yet). Used by the award simulation (weights, award rule, split)."
+    description: "For each lot: its live status and one offer per bidder (their best active bid: lowest when buying, highest for forward/Dutch selling auctions; hidden bids included, the org owns the auction), sorted best price first. `id` is the bid id (use it as `offerId` in the award). A bidder whose party is in the supplier directory gets that `supplierId` and its latest scorecard (quality, delivery, reliability; reputation = the scorecard average); other bidders get their party id as `supplierId` and an 80 baseline. `capacity` is the capacity the bidder stated with that bid (`PersonalBidInput.quantity`), else the whole lot. Used by the award simulation (weights, award rule, split)."
     x-access: org:member
     responses:
       "200":
@@ -840,7 +840,7 @@
       - Organization
     operationId: awardOrgAuction
     summary: Award an auction
-    description: "Records the winners per lot, marks every lot auction `awarded` (winning bids `won`, the rest `lost`, bidders notified) and the linked procurement request `awarded`. Allowed only after all lot auctions are `closed` and no award exists yet. `lines` has one array per lot (same order as `lots`), each with at least one allocation. Every allocation must name an offer of that lot (`offerId` from the evaluation), once, with quantity > 0; a lot's allocations may not exceed its quantity. Price and supplier name are taken from the offer, not the body. The `reason` is stored on the award and as the audit `reason`; the audit entry lists the allocation per lot. Issuing the PO is a separate step."
+    description: "Records the winners per lot, marks every lot auction `awarded` (winning bids `won`, the rest `lost`, bidders notified) and the linked procurement request `awarded`. Allowed only after all lot auctions are `closed` and no award exists yet. `lines` has one array per lot (same order as `lots`), each with at least one allocation. Every allocation must name an offer of that lot (`offerId` from the evaluation), once, with quantity > 0 and at most the offer's `capacity`; a lot's allocations may not exceed its quantity. Price and supplier name are taken from the offer, not the body. The `reason` is stored on the award and as the audit `reason`; the audit entry lists the allocation per lot. Issuing the PO is a separate step."
     x-access: org:auctions.manage
     x-audit: true
     x-note: "Check order: 404, awarded, not_closed, reason, lines."
@@ -869,7 +869,7 @@
         description: "awarded: a winner was already set. not_closed: not all lots are closed (also when the auction has no live lots yet, e.g. pending approval)."
       "422":
         $ref: "#/components/responses/Validation"
-        description: 'fields: reason (required); lines (one array per lot), lines.{lot} ("Setiap lot harus punya pemenang", allocations exceed the lot quantity), lines.{lot}.{index} (unknown offer, offer chosen twice, quantity <= 0).'
+        description: 'fields: reason (required); lines (one array per lot), lines.{lot} ("Setiap lot harus punya pemenang", allocations exceed the lot quantity), lines.{lot}.{index} (unknown offer, offer chosen twice, quantity <= 0, quantity above the offer capacity "Melebihi kapasitas penawaran").'
 /orgs/{orgId}/auctions/{aid}/po:
   parameters:
     - *a1

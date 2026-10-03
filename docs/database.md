@@ -16,6 +16,9 @@ Authoring rules: [migrations/CONVENTIONS.md](../migrations/CONVENTIONS.md).
 | 00005_org | business workspace | org_profiles, org_roles, approval rules, inventory, procurement_requests, collective_pools, org_auctions, purchase_orders, suppliers |
 | 00014_org_uploads | business workspace | uploads purpose `org_document`; org_documents.object_key (verification files are uploads) |
 | 00020_payments | payments | payments (gateway attempts per invoice: Midtrans order id, instructions, status; one pending per invoice) |
+| 00021_bid_capacity | auctions | bids.capacity (quantity a supplier can deliver with a reverse/sealed bid; NULL = whole lot; owner and bidder only) |
+| 00022_org_approval_on_behalf | business workspace | procurement_approvals / org_auction_approvals.on_behalf (owner signed for a required role with no active member) |
+| 00023_org_purchase_history_outbox | business workspace | trigger: org_purchase_history rows queue trade.status (+ auction.closed) facts for ClickHouse org_purchase_monthly |
 
 ## Key decisions
 

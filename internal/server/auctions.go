@@ -187,7 +187,7 @@ func (s *Server) QualifyForAuction(ctx context.Context, req api.QualifyForAuctio
 	return api.QualifyForAuction200JSONResponse(out), nil
 }
 
-// isOwner: the caller created the auction as a buyer, or belongs to the org that owns it.
+// isOwner: the caller created the auction as a buyer, or belongs to the org that owns it (neither may bid).
 func isOwner(ctx context.Context, q dbtx, r auctionRow, userID string) (bool, error) {
 	if r.OwnerUserID != nil && *r.OwnerUserID == userID {
 		return true, nil
@@ -221,17 +221,23 @@ func (s *Server) GetMyAuctionState(ctx context.Context, req api.GetMyAuctionStat
 	if err != nil {
 		return nil, err
 	}
-	owner, err := isOwner(ctx, q, r, sess.UserID)
-	if err != nil {
-		return nil, err
-	}
-	out := myAuctionState{Qualification: qual, Bid: bid, Owner: owner}
-	if owner {
-		href := "/app/auctions/" + r.ID + "/evaluate"
-		if r.OwnerOrgID != nil {
-			href = "/org/" + *r.OwnerOrgID + "/auctions/" + r.ID + "/evaluate"
+	out := myAuctionState{Qualification: qual, Bid: bid}
+	switch {
+	case r.OwnerUserID != nil && *r.OwnerUserID == sess.UserID:
+		out.Owner, out.EvaluateHref = true, ptr("/app/auctions/"+r.ID+"/evaluate")
+	case r.OwnerOrgID != nil:
+		// Members who can see the org's auctions evaluate the business auction (all lots), not this lot.
+		var view bool
+		if err := q.QueryRow(ctx, `
+			SELECT m.role = 'owner' OR 'auctions.view' = ANY(ro.permissions)
+			FROM org_members m JOIN org_roles ro ON ro.org_id = m.org_id AND ro.key = m.role
+			WHERE m.org_id::text = $1 AND m.user_id = $2 AND m.status = 'active'`, *r.OwnerOrgID, sess.UserID).Scan(&view); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
 		}
-		out.EvaluateHref = &href
+		if view {
+			// Org-owned auctions are always lots of a business auction (goLive).
+			out.Owner, out.EvaluateHref = true, ptr("/org/"+*r.OwnerOrgID+"/auctions/"+deref(r.OrgAuctionID)+"/evaluate")
+		}
 	}
 	return out, nil
 }
@@ -255,11 +261,12 @@ func (m myAuctionState) VisitGetMyAuctionStateResponse(w http.ResponseWriter) er
 func myBid(ctx context.Context, q dbtx, r auctionRow, userID string) (*api.MyBid, error) {
 	var id, status string
 	var price int64
+	var capacity *float64
 	var submitted, updated time.Time
 	err := q.QueryRow(ctx, `
-		SELECT id, price_idr, status, (SELECT min(created_at) FROM bids f WHERE f.auction_id = b.auction_id AND f.bidder_user_id = b.bidder_user_id), updated_at
+		SELECT id, price_idr, status, (SELECT min(created_at) FROM bids f WHERE f.auction_id = b.auction_id AND f.bidder_user_id = b.bidder_user_id), updated_at, capacity::float8
 		FROM bids b WHERE auction_id = $1 AND bidder_user_id = $2
-		ORDER BY (status = 'withdrawn'), seq DESC LIMIT 1`, r.ID, userID).Scan(&id, &price, &status, &submitted, &updated)
+		ORDER BY (status = 'withdrawn'), seq DESC LIMIT 1`, r.ID, userID).Scan(&id, &price, &status, &submitted, &updated, &capacity)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -268,7 +275,13 @@ func myBid(ctx context.Context, q dbtx, r auctionRow, userID string) (*api.MyBid
 	}
 	live := r.Status == "live" || r.Status == "extended"
 	b := &api.MyBid{Auction: r.api(), PriceIdr: int(price), Status: api.BidStatus(status), SubmittedAt: submitted, UpdatedAt: updated,
-		CanWithdraw: live && status != "leading" && status != "withdrawn" && time.Until(r.EndsAt) > 30*time.Minute}
+		CanWithdraw: withdrawBlock(r, status, time.Now()) == ""}
+	if r.Type == "reverse" || r.Type == "sealed" {
+		b.Capacity = &api.Quantity{Value: r.Quantity, Unit: r.Unit}
+		if capacity != nil {
+			b.Capacity.Value = *capacity
+		}
+	}
 	if !(r.Type == "sealed" && live) && status != "withdrawn" {
 		rank, err := rankOf(ctx, q, r, userID, price)
 		if err != nil {
@@ -277,6 +290,29 @@ func myBid(ctx context.Context, q dbtx, r auctionRow, userID string) (*api.MyBid
 		b.Rank = &rank
 	}
 	return b, nil
+}
+
+// withdrawBlock is why the caller's bid cannot be withdrawn now, "" when it can (src/domain/auction.ts withdrawBlock).
+// Lots of a business auction follow its withdraw rule; every other auction allows it until 30 minutes before the close.
+// A leading bid never: it is the auction's best price.
+func withdrawBlock(r auctionRow, status string, now time.Time) string {
+	rule := "before_last_30"
+	if r.WithdrawRule != nil {
+		rule = *r.WithdrawRule
+	}
+	switch {
+	case r.Status != "live" && r.Status != "extended":
+		return "Auction tidak sedang berjalan"
+	case status == "withdrawn":
+		return "Bid sudah ditarik"
+	case rule == "never":
+		return "Bid di auction ini mengikat, tidak bisa ditarik"
+	case rule == "anytime" && status == "leading":
+		return "Bid terdepan tidak bisa ditarik"
+	case rule == "before_last_30" && (status == "leading" || r.EndsAt.Sub(now) <= 30*time.Minute):
+		return "Bid terdepan atau 30 menit terakhir tidak bisa ditarik"
+	}
+	return ""
 }
 
 // rankOf: 1 + the number of other bidders whose best active price is at least as good (ties favour the earlier bid).

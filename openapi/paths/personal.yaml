@@ -447,7 +447,7 @@
   get:
     operationId: getMyAuctionState
     summary: Get my qualification, bid and ownership for an auction
-    description: '`evaluateHref` is only present for the owner: the organization evaluate URL when the auction belongs to an org workspace, otherwise `/app/auctions/{id}/evaluate`.'
+    description: '`owner` is true for the buyer who created the auction and, for a lot of a business auction, for active members of the owning organization whose role can view auctions (owner role always); other members get the bidder view. `evaluateHref` is only present for owners: `/org/{orgId}/auctions/{orgAuctionId}/evaluate` (the business auction) for an organization lot, otherwise `/app/auctions/{id}/evaluate`. `bid.capacity` is the caller''s own stated capacity.'
     tags: [Personal]
     x-access: session
     parameters:
@@ -501,7 +501,9 @@
       Checks in order: caller not restricted, auction exists, auction `live` or `extended`, caller `qualified`,
       caller is not the owner, KYC commitment limit (`priceIdr * lot quantity`), then bid rules (reverse/sealed: price must be
       <= limit, forward: >= limit, where limit follows the current best price minus the minimum step; sealed ignores the best price).
-      The bid status is `submitted` for sealed auctions, `leading` otherwise. Increments `participants` on the first bid and
+      The bid status is `submitted` for sealed auctions, `leading` otherwise. Reverse and sealed bids may state a capacity
+      (`quantity`, > 0 and at most the lot quantity, the lot's unit; default the whole lot): the owner's evaluation offers
+      it as `capacity` and an award line may not exceed it. Capacity never appears in public bids or frames. Increments `participants` on the first bid and
       `bidCount` always; with `visibility: full` the public bid list and `currentPriceIdr` update.
       Publishes a realtime `auction.bid` event on `auction:{id}` (price masked as 0 unless visibility is full).
     tags: [Personal]
@@ -526,15 +528,17 @@
       '403': { $ref: '#/components/responses/Forbidden', description: 'account_restricted | not_qualified: finish qualification first | owner: auction creator cannot bid | kyc_limit.' }
       '404': { $ref: '#/components/responses/NotFound', description: 'not_found: auction.' }
       '409': { $ref: '#/components/responses/Conflict', description: 'auction_closed: auction is not live/extended.' }
-      '422': { $ref: '#/components/responses/Validation', description: 'invalid_bid: price not a positive number or violates the limit; fields: price.' }
+      '422': { $ref: '#/components/responses/Validation', description: 'invalid_bid: price not a positive number or violates the limit; fields: price. validation: fields: quantity (capacity must be > 0 and at most the lot quantity).' }
 
 /auctions/{id}/bids/mine:
   delete:
     operationId: withdrawMyBid
     summary: Withdraw my bid
     description: |
-      Allowed only when the auction is live/extended, the bid is not `leading` and not already withdrawn, and more than
-      30 minutes remain (`MyBid.canWithdraw`). Sets the bid status `withdrawn`.
+      Allowed only when the auction is live/extended, the bid is not `leading` and not already withdrawn, and the withdraw
+      rule allows it (`MyBid.canWithdraw`): lots of a business auction follow its `rules.withdraw` (`anytime`,
+      `before_last_30`, `never`); every other auction allows it until 30 minutes before the close. Sets the bid status
+      `withdrawn`.
     tags: [Personal]
     x-access: session
     parameters:
@@ -550,7 +554,7 @@
             schema: { $ref: '#/components/schemas/MyBid' }
       '401': { $ref: '#/components/responses/Unauthenticated' }
       '404': { $ref: '#/components/responses/NotFound', description: 'not_found: auction does not exist or the caller has no bid.' }
-      '409': { $ref: '#/components/responses/Conflict', description: 'cannot_withdraw: leading bid, last 30 minutes, not live, or already withdrawn.' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'cannot_withdraw: not live or already withdrawn, leading bid ("Bid terdepan tidak bisa ditarik"), last 30 minutes ("Bid terdepan atau 30 menit terakhir tidak bisa ditarik"), or a binding rule `never` ("Bid di auction ini mengikat, tidak bisa ditarik").' }
 
 /auctions/{id}/accept:
   post:
@@ -583,8 +587,8 @@
     operationId: getAuctionEvaluation
     summary: Get the bid comparison and suggested allocation (buyer)
     description: |
-      Owner only. One offer per bidder (the bidder's lowest price; capacity and reputation are synthesized in the mock,
-      the BE should use real supplier data). `suggestion` is Smart Allocation: cheapest offers first (reputation breaks ties),
+      Owner only. One offer per bidder (the bidder's lowest price, with the capacity stated on that bid, else the whole
+      lot; reputation is the bidder's platform reputation). `suggestion` is Smart Allocation: cheapest offers first (reputation breaks ties),
       each up to its capacity, until the lot is covered. `savingsIdr` = opening price * covered quantity - total.
     tags: [Personal]
     x-access: session
@@ -635,8 +639,8 @@
       '401': { $ref: '#/components/responses/Unauthenticated' }
       '404': { $ref: '#/components/responses/NotFound', description: 'not_found: auction missing or the caller is not its owner.' }
       '409': { $ref: '#/components/responses/Conflict', description: 'not_closed: award is only possible after the auction closed.' }
-      '422': { $ref: '#/components/responses/Validation', description: 'validation: lines must contain at least one entry.' }
-    x-note: The mock does not validate that lines reference real offers, do not exceed offer capacity or the lot quantity, and does not apply the KYC limit or the account_restricted check on award. The BE should validate these.
+      '422': { $ref: '#/components/responses/Validation', description: 'validation: lines must contain at least one entry; fields lines.{i}.offerId (unknown offer, chosen twice), lines.{i}.quantity (<= 0, or above the offer''s capacity: "Melebihi kapasitas penawaran"), lines (total above the lot quantity).' }
+    x-note: The mock does not validate that lines reference real offers, offer capacity or the lot quantity, and does not apply the KYC limit or the account_restricted check on award. The BE validates these.
 
 /me/transactions:
   get:

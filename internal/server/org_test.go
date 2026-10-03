@@ -92,9 +92,18 @@ func TestOrgApprovalRules(t *testing.T) {
 		statusAfterApproval(req, []approval{{"finance", "rejected"}}) != "rejected" || statusAfterApproval(nil, nil) != "approved" {
 		t.Fatal("statusAfterApproval")
 	}
-	if !canApprove("owner", req, []approval{ok("finance")}) || canApprove("finance", req, []approval{ok("finance")}) {
+	staffed := []string{"finance", "owner", "procurement"}
+	if !canApprove("owner", req, []approval{ok("finance")}, staffed) || canApprove("finance", req, []approval{ok("finance")}, staffed) {
 		t.Fatal("canApprove")
 	}
+	// Deadlock rule: no active Finance member, so the owner signs for Finance too (own role first); nobody else may.
+	eq(signingRoles("owner", req, nil, []string{"owner", "sales"}), []string{"owner", "finance"})
+	eq(signingRoles("owner", req, nil, staffed), []string{"owner"})
+	eq(signingRoles("owner", req, nil, nil), []string{"owner"})
+	eq(signingRoles("owner", []string{"finance"}, nil, []string{"owner"}), []string{"finance"})
+	eq(signingRoles("sales", req, nil, []string{"owner", "sales"}), []string{})
+	eq(signingRoles("owner", req, []approval{{"owner", "rejected"}}, []string{"owner"}), []string{})
+	eq(approverUserIDs([]string{"finance"}, nil, []orgMemberRole{{"ajar", "owner"}, {"fajar", "sales"}}, ""), []string{"ajar"})
 
 	members := []orgMemberRole{{"ajar", "owner"}, {"maya", "finance"}, {"bima", "procurement"}}
 	eq(approverUserIDs(req, nil, members, "bima"), []string{"ajar", "maya"})
@@ -103,9 +112,9 @@ func TestOrgApprovalRules(t *testing.T) {
 	eq(approverUserIDs(req, []approval{{"finance", "rejected"}}, members, ""), []string{})
 
 	pending := []approval{ok("finance")}
-	eq(procurementActions("pending_approval", req, pending, "owner", nil), []string{"approve", "reject", "cancel"})
-	eq(procurementActions("pending_approval", req, pending, "sales", perms("sales")), []string{})
-	eq(procurementActions("draft", req, pending, "procurement", perms("procurement")), []string{"submit", "cancel"})
+	eq(procurementActions("pending_approval", req, pending, "owner", nil, staffed), []string{"approve", "reject", "cancel"})
+	eq(procurementActions("pending_approval", req, pending, "sales", perms("sales"), staffed), []string{})
+	eq(procurementActions("draft", req, pending, "procurement", perms("procurement"), staffed), []string{"submit", "cancel"})
 
 	got := pipelineCounts([]string{"draft", "pending_approval", "approved", "published", "in_auction", "po_issued", "rejected"})
 	want := map[string]int{"draft": 1, "approval": 1, "published": 2, "auction": 1, "awarded": 0, "po": 1}
@@ -856,14 +865,304 @@ func TestOrgAnalyticsSources(t *testing.T) {
 	if r.Status != 200 || len(r.Body["history"].([]any)) != 1 {
 		t.Fatalf("fallback: %v", r.Body)
 	}
-	// ClickHouse up (docker compose): queries run; this org has no facts there.
-	up, err := analytics.Open("localhost:9000", "ecopurnity", "default", "")
-	if err != nil || up.Ping(t0()) != nil {
+
+	// ClickHouse up (a throwaway database): a completed org purchase (auction -> award -> PO) and the imported history
+	// both reach org_purchase_monthly through the outbox, and the page reads them from there.
+	ch, _ := chSchema(t)
+	if ch == nil {
 		t.Skip("no clickhouse")
 	}
-	e.server.Analytics = up
-	r = e.call(owner, "GET", "/orgs/"+orgID+"/analytics", nil)
-	if r.Status != 200 || len(r.Body["history"].([]any)) != 0 || r.Body["spend"] == nil {
-		t.Fatalf("clickhouse: %v", r.Body)
+	r = e.call(owner, "POST", "/orgs/"+orgID+"/auctions", orgAuctionBody("Lem PVAc", "anytime", [3]any{"Lem PVAc", 200, 5000}))
+	want(t, r, 201, "")
+	aid, lot := r.Body["id"].(string), r.Body["live"].([]any)[0].(map[string]any)["auctionId"].(string)
+	b, _ := e.bidder("Supplier Lem")
+	e.qualify(b, lot)
+	want(t, e.call(b, "POST", "/auctions/"+lot+"/bids", map[string]any{"priceIdr": 4500}), 200, "")
+	e.closeAuction(lot)
+	offer := e.call(owner, "GET", "/orgs/"+orgID+"/auctions/"+aid+"/evaluation", nil).Body["lots"].([]any)[0].(map[string]any)["offers"].([]any)[0].(map[string]any)["id"]
+	want(t, e.call(owner, "POST", "/orgs/"+orgID+"/auctions/"+aid+"/award", map[string]any{"reason": "Termurah",
+		"lines": []any{[]any{map[string]any{"offerId": offer, "supplier": "x", "quantity": 200, "priceIdr": 1}}}}), 200, "")
+	want(t, e.call(owner, "POST", "/orgs/"+orgID+"/auctions/"+aid+"/po", nil), 200, "")
+	e.exec(`INSERT INTO org_purchase_history (org_id, code, month, item, category_id, supplier_id, quantity, unit, unit_price_idr, budget_unit_idr, market_unit_idr, via, bidders, opening_idr)
+		VALUES ($1, 'HST-10', (date_trunc('month', now()) - interval '1 month')::date, 'Lem', 'packaging', $2, 4, 'kg', 1000, 1100, 1050, 'auction', 6, 1200)`, orgID, supID)
+
+	// The publisher's ClickHouse step for this org's facts (others in the shared test database are left alone).
+	rows, err := e.db.Primary().Query(t0(), `SELECT id, topic, aggregate_id, created_at, payload::text FROM outbox
+		WHERE topic <> 'rt' AND (payload->>'buyerOrgId' = $1 OR payload->>'orgId' = $1 OR aggregate_id = ANY(SELECT auction_id::text FROM org_auction_lots WHERE org_auction_id = $2))
+		ORDER BY id`, orgID, aid)
+	if err != nil {
+		t.Fatal(err)
 	}
+	evs, err := pgx.CollectRows(rows, pgx.RowToStructByPos[analytics.Event])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ch.InsertEvents(t0(), evs); err != nil {
+		t.Fatal(err)
+	}
+	e.server.Analytics = ch
+	r = e.call(owner, "GET", "/orgs/"+orgID+"/analytics", nil)
+	hist := r.Body["history"].([]any)
+	codes := map[string]map[string]any{}
+	for _, h := range hist {
+		codes[h.(map[string]any)["code"].(string)] = h.(map[string]any)
+	}
+	var po map[string]any
+	for c, h := range codes {
+		if strings.HasPrefix(c, "TRX-") {
+			po = h
+		}
+	}
+	// HST-9 was inserted before ClickHouse existed in this test, but its outbox row is replayed too.
+	if r.Status != 200 || len(hist) != 3 || po == nil || po["item"] != "Lem PVAc" || po["totalIdr"] != float64(900_000) || po["via"] != "auction" ||
+		codes["HST-10"]["supplier"] != "CV Analitik" || codes["HST-10"]["totalIdr"] != float64(4000) || codes["HST-9"] == nil ||
+		codes["HST-10"]["month"] != time.Date(time.Now().UTC().Year(), time.Now().UTC().Month()-1, 1, 0, 0, 0, 0, time.UTC).Format("2006-01") {
+		t.Fatalf("clickhouse history: %v", hist)
+	}
+	auctions := r.Body["auctions"].([]any)
+	var hst map[string]any
+	for _, a := range auctions {
+		if a.(map[string]any)["code"] == "HST-10" {
+			hst = a.(map[string]any)
+		}
+	}
+	if hst == nil || hst["bidders"] != float64(6) || hst["openingIdr"] != float64(1200) || hst["clearingIdr"] != float64(1000) {
+		t.Fatalf("clickhouse auctions: %v", auctions)
+	}
+	var spend float64
+	for _, m := range r.Body["savings"].([]any) {
+		spend += m.(map[string]any)["spendIdr"].(float64)
+	}
+	if spend != 900_000+4000+3000 {
+		t.Fatalf("clickhouse spend: %v", r.Body["savings"])
+	}
+}
+
+// orgAuctionBody: a reverse procurement auction with the given lots ([item, quantity, reserve]) and withdraw rule.
+func orgAuctionBody(title, withdraw string, lots ...[3]any) map[string]any {
+	ls := []any{}
+	for _, l := range lots {
+		ls = append(ls, map[string]any{"item": l[0], "quantity": map[string]any{"value": l[1], "unit": "pcs"}, "spec": "", "reservePriceIdr": l[2]})
+	}
+	return map[string]any{"title": title, "categoryId": "packaging", "type": "reverse", "objective": "procurement", "multiLot": len(lots) > 1, "lots": ls,
+		"rules": map[string]any{"minStepIdr": 10, "visibility": "full", "autoExtension": false, "withdraw": withdraw, "award": "lowest",
+			"weights": map[string]any{"price": 60, "quality": 20, "delivery": 10, "reliability": 10}},
+		"qualification": map[string]any{"documents": []string{}, "minRating": 0, "regions": []string{}}, "invited": []string{},
+		"schedule": map[string]any{"durationMinutes": 120}}
+}
+
+func TestWithdrawBlock(t *testing.T) {
+	now := time.Now()
+	lot := func(rule string, left time.Duration) auctionRow {
+		r := auctionRow{Status: "live", EndsAt: now.Add(left)}
+		if rule != "" {
+			r.WithdrawRule = &rule
+		}
+		return r
+	}
+	for _, c := range []struct {
+		r      auctionRow
+		status string
+		want   string
+	}{
+		{lot("", time.Hour), "outbid", ""},
+		{lot("", 20*time.Minute), "outbid", "Bid terdepan atau 30 menit terakhir tidak bisa ditarik"},
+		{lot("", time.Hour), "leading", "Bid terdepan atau 30 menit terakhir tidak bisa ditarik"},
+		{lot("before_last_30", 20*time.Minute), "submitted", "Bid terdepan atau 30 menit terakhir tidak bisa ditarik"},
+		{lot("anytime", time.Minute), "outbid", ""},
+		{lot("anytime", time.Hour), "leading", "Bid terdepan tidak bisa ditarik"},
+		{lot("never", time.Hour), "outbid", "Bid di auction ini mengikat, tidak bisa ditarik"},
+		{lot("anytime", time.Hour), "withdrawn", "Bid sudah ditarik"},
+		{auctionRow{Status: "closed", EndsAt: now}, "outbid", "Auction tidak sedang berjalan"},
+	} {
+		if got := withdrawBlock(c.r, c.status, now); got != c.want {
+			t.Errorf("%v %s: %q want %q", deref(c.r.WithdrawRule), c.status, got, c.want)
+		}
+	}
+}
+
+// Lot close notifications (once, when the last lot closes), the org owner view of a lot, the per-auction withdraw rule
+// and bid capacity end to end.
+func TestOrgLotRoomWithdrawCapacityAndClose(t *testing.T) {
+	e := newEnv(t)
+	owner, ownerID, orgID := e.workspace("Kapasitas")
+	base := "/orgs/" + orgID
+	proc, _ := e.member(orgID, "procurement")
+	sales, salesID := e.member(orgID, "sales")
+	e.exec(`INSERT INTO org_roles (org_id, key, label, permissions) VALUES ($1, 'custom-gudang', 'Gudang', '{inventory.view}')`, orgID)
+	gudang, gudangID := e.member(orgID, "custom-gudang")
+
+	r := e.call(proc, "POST", base+"/auctions", orgAuctionBody("Box mengikat", "never", [3]any{"Box A", 1000, 1000}, [3]any{"Box B", 500, 1000}))
+	want(t, r, 201, "")
+	aid := r.Body["id"].(string)
+	lot1 := r.Body["live"].([]any)[0].(map[string]any)["auctionId"].(string)
+	lot2 := r.Body["live"].([]any)[1].(map[string]any)["auctionId"].(string)
+
+	// Gap 2: members who can view auctions are owners of the lot and evaluate the business auction; others bid view.
+	evaluate := "/org/" + orgID + "/auctions/" + aid + "/evaluate"
+	for _, c := range []*http.Client{owner, sales} {
+		if me := e.call(c, "GET", "/auctions/"+lot1+"/me", nil).Body; me["owner"] != true || me["evaluateHref"] != evaluate {
+			t.Fatalf("org member view: %v", me)
+		}
+	}
+	b1, b1ID := e.bidder("Supplier Kapasitas")
+	b2, _ := e.bidder("Supplier Penuh")
+	for _, c := range []*http.Client{gudang, b1} {
+		if me := e.call(c, "GET", "/auctions/"+lot1+"/me", nil).Body; me["owner"] != false || me["evaluateHref"] != nil {
+			t.Fatalf("bidder view: %v", me)
+		}
+	}
+	// A member cannot reach the lot through the personal buyer evaluation either.
+	want(t, e.call(owner, "GET", "/auctions/"+lot1+"/evaluation", nil), 404, "not_found")
+
+	// Gap 3: the rule is listed in the room and enforced.
+	rules := e.call(e.client(), "GET", "/auctions/"+lot1, nil).Body["rules"].([]any)
+	if !slices.ContainsFunc(rules, func(x any) bool {
+		m := x.(map[string]any)
+		return m["label"] == "Penarikan bid" && m["value"] == "Bid mengikat, tidak bisa ditarik"
+	}) {
+		t.Fatalf("rules: %v", rules)
+	}
+
+	// Gap 4: capacity on reverse bids, validated, own view only.
+	for _, c := range []*http.Client{b1, b2} {
+		e.qualify(c, lot1)
+		e.qualify(c, lot2)
+	}
+	r = e.call(b1, "POST", "/auctions/"+lot1+"/bids", map[string]any{"priceIdr": 950, "quantity": 1500})
+	if r.Status != 422 || r.field("quantity") == "" {
+		t.Fatalf("capacity above lot: %v", r.Body)
+	}
+	want(t, e.call(b1, "POST", "/auctions/"+lot1+"/bids", map[string]any{"priceIdr": 950, "quantity": 0}), 422, "validation")
+	r = e.call(b1, "POST", "/auctions/"+lot1+"/bids", map[string]any{"priceIdr": 950, "quantity": 600})
+	if r.Status != 200 || r.Body["capacity"].(map[string]any)["value"] != float64(600) || r.Body["capacity"].(map[string]any)["unit"] != "pcs" {
+		t.Fatalf("bid with capacity: %v", r.Body)
+	}
+	r = e.call(b2, "POST", "/auctions/"+lot1+"/bids", map[string]any{"priceIdr": 900})
+	if r.Status != 200 || r.Body["capacity"].(map[string]any)["value"] != float64(1000) {
+		t.Fatalf("default capacity: %v", r.Body)
+	}
+	want(t, e.call(b1, "POST", "/auctions/"+lot2+"/bids", map[string]any{"priceIdr": 990}), 200, "")
+	pub, _ := json.Marshal(e.call(b2, "GET", "/auctions/"+lot1, nil).Body)
+	frames, _ := json.Marshal(e.frames("auction:" + lot1))
+	if strings.Contains(string(pub), "capacity") || strings.Contains(string(frames), "capacity") || strings.Contains(string(frames), "600") {
+		t.Fatalf("capacity leaked to the room: %s %s", pub, frames)
+	}
+	// Outbid, more than 30 minutes left, but this auction's bids are binding.
+	me := e.call(b1, "GET", "/auctions/"+lot1+"/me", nil).Body["bid"].(map[string]any)
+	if me["status"] != "outbid" || me["canWithdraw"] != false {
+		t.Fatalf("binding bid: %v", me)
+	}
+	r = e.call(b1, "DELETE", "/auctions/"+lot1+"/bids/mine", nil)
+	if r.Status != 409 || r.code() != "cannot_withdraw" || r.message() != "Bid di auction ini mengikat, tidak bisa ditarik" {
+		t.Fatalf("withdraw never: %d %v", r.Status, r.Body)
+	}
+
+	// Gap 1: nothing while a lot still runs; one notification per viewer when the last lot closes.
+	title := "Box mengikat ditutup"
+	count := func(userID string) int {
+		return len(slices.DeleteFunc(e.notifications(userID), func(s string) bool { return s != title }))
+	}
+	e.closeAuction(lot1)
+	if count(ownerID) != 0 {
+		t.Fatal("notified before the last lot closed")
+	}
+	e.closeAuction(lot2)
+	if err := e.server.AuctionTick(t0()); err != nil {
+		t.Fatal(err)
+	}
+	if count(ownerID) != 1 || count(salesID) != 1 || count(gudangID) != 0 || count(b1ID) != 0 {
+		t.Fatalf("close notifications: owner %d sales %d gudang %d bidder %d", count(ownerID), count(salesID), count(gudangID), count(b1ID))
+	}
+	var body, href string
+	if err := e.db.Primary().QueryRow(t0(), `SELECT body, href FROM notifications WHERE user_id = $1 AND title = $2`, ownerID, title).Scan(&body, &href); err != nil {
+		t.Fatal(err)
+	}
+	if href != evaluate || body != "Lot 1 Box A ditutup, 2 penawaran. Lot 2 Box B ditutup, 1 penawaran. Evaluasi dan tetapkan pemenang." {
+		t.Fatalf("notification: %q %q", body, href)
+	}
+
+	// Evaluation offers the stated capacity; an award line above it is refused.
+	lots := e.call(owner, "GET", base+"/auctions/"+aid+"/evaluation", nil).Body["lots"].([]any)
+	offers := lots[0].(map[string]any)["offers"].([]any)
+	var capped, full map[string]any
+	for _, o := range offers {
+		if m := o.(map[string]any); m["priceIdr"] == float64(950) {
+			capped = m
+		} else {
+			full = m
+		}
+	}
+	if capped["capacity"].(map[string]any)["value"] != float64(600) || full["capacity"].(map[string]any)["value"] != float64(1000) {
+		t.Fatalf("offers capacity: %v", offers)
+	}
+	lot2Offer := lots[1].(map[string]any)["offers"].([]any)[0].(map[string]any)["id"]
+	line := func(id any, q float64) map[string]any {
+		return map[string]any{"offerId": id, "supplier": "x", "quantity": q, "priceIdr": 1}
+	}
+	r = e.call(owner, "POST", base+"/auctions/"+aid+"/award", map[string]any{"reason": "Split", "lines": []any{
+		[]any{line(full["id"], 300), line(capped["id"], 700)}, []any{line(lot2Offer, 500)}}})
+	if r.Status != 422 || r.field("lines.0.1") != "Melebihi kapasitas penawaran" {
+		t.Fatalf("award above capacity: %v", r.Body)
+	}
+	r = e.call(owner, "POST", base+"/auctions/"+aid+"/award", map[string]any{"reason": "Split", "lines": []any{
+		[]any{line(full["id"], 400), line(capped["id"], 600)}, []any{line(lot2Offer, 500)}}})
+	want(t, r, 200, "")
+}
+
+// Gap 6: "above Rp 50 jt: Finance + Owner" in an org without an active Finance member: the owner signs for Finance.
+func TestOrgApprovalOwnerSignsForMissingRole(t *testing.T) {
+	e := newEnv(t)
+	owner, _, orgID := e.workspace("Tanpa Finance")
+	base := "/orgs/" + orgID
+	if a := e.call(owner, "GET", base, nil).Body["activeRoles"].([]any); len(a) != 1 || a[0] != "owner" {
+		t.Fatalf("activeRoles: %v", a)
+	}
+	r := e.call(owner, "POST", base+"/auctions", orgAuctionBody("Kraft besar", "before_last_30", [3]any{"Kraft", 1000, 100_000}))
+	want(t, r, 201, "")
+	aid := r.Body["id"].(string)
+	if r.Body["status"] != "pending_approval" || fmt.Sprint(r.Body["requiredApprovers"]) != "[finance owner]" {
+		t.Fatalf("pending: %v", r.Body)
+	}
+	if w := e.call(owner, "GET", base+"/overview", nil).Body["waiting"].([]any); len(w) != 1 {
+		t.Fatalf("waiting: %v", w)
+	}
+	r = e.call(owner, "POST", base+"/auctions/"+aid+"/actions", map[string]any{"action": "approve"})
+	if r.Status != 200 || r.Body["status"] != "live" {
+		t.Fatalf("owner approves for both: %v", r.Body)
+	}
+	byRole := map[string]string{}
+	for _, a := range r.Body["approvals"].([]any) {
+		m := a.(map[string]any)
+		byRole[m["role"].(string)] = m["by"].(string)
+	}
+	if !strings.HasSuffix(byRole["finance"], " · Owner (atas nama Finance)") || !strings.HasSuffix(byRole["owner"], " (Owner)") {
+		t.Fatalf("approval history: %v", byRole)
+	}
+
+	// Procurement too; a rejection is recorded once, for the owner's own role.
+	newReq := func() string {
+		return e.call(owner, "POST", base+"/procurement", map[string]any{"need": "Kraft", "categoryId": "packaging", "quantity": map[string]any{"value": 10, "unit": "ton"},
+			"budgetIdr": 60_000_000, "deadline": time.Now().Add(240 * time.Hour), "spec": "", "deliveryLocation": "", "visibility": "public",
+			"invitedSupplierIds": []string{}, "submit": true}).Body["id"].(string)
+	}
+	pr := newReq()
+	r = e.call(owner, "POST", base+"/procurement/"+pr+"/actions", map[string]any{"action": "approve"})
+	if r.Status != 200 || r.Body["status"] != "approved" || len(r.Body["approvals"].([]any)) != 2 {
+		t.Fatalf("procurement: %v", r.Body)
+	}
+	pr = newReq()
+	r = e.call(owner, "POST", base+"/procurement/"+pr+"/actions", map[string]any{"action": "reject", "note": "Tunda"})
+	if r.Status != 200 || r.Body["status"] != "rejected" || len(r.Body["approvals"].([]any)) != 1 || r.Body["approvals"].([]any)[0].(map[string]any)["role"] != "owner" {
+		t.Fatalf("reject: %v", r.Body)
+	}
+
+	// With a Finance member the owner signs only for itself.
+	finance, _ := e.member(orgID, "finance")
+	pr = newReq()
+	r = e.call(owner, "POST", base+"/procurement/"+pr+"/actions", map[string]any{"action": "approve"})
+	if r.Status != 200 || r.Body["status"] != "pending_approval" || len(r.Body["approvals"].([]any)) != 1 {
+		t.Fatalf("staffed finance: %v", r.Body)
+	}
+	want(t, e.call(finance, "POST", base+"/procurement/"+pr+"/actions", map[string]any{"action": "approve"}), 200, "")
 }

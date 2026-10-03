@@ -46,8 +46,8 @@ Approval:
   type: object
   required: [role, by, at, decision]
   properties:
-    role: { type: string }
-    by: { type: string }
+    role: { type: string, description: The required role this decision counts for. }
+    by: { type: string, description: '"Name (Role)", or "Name · Owner (atas nama Finance)" when an owner signed for a required role that had no active member.' }
     at: { type: string, format: date-time }
     decision: { type: string, enum: [approved, rejected] }
     note: { type: string }
@@ -254,6 +254,7 @@ AuctionObjective:
   enum: [procurement, selling]
 WithdrawRule:
   type: string
+  description: 'When a supplier may withdraw a (non-leading) bid on the lots: anytime ("Boleh tarik kapan saja"), before_last_30 ("Boleh tarik sampai 30 menit terakhir", the economy default), never ("Bid mengikat, tidak bisa ditarik"). Enforced by `DELETE /auctions/{id}/bids/mine` and listed in the lot''s rules as "Penarikan bid".'
   enum: [anytime, before_last_30, never]
 OrgAuctionStatus:
   type: string
@@ -534,8 +535,12 @@ OrgMember:
     joinedAt: { type: string, format: date-time }
 OrgSettings:
   type: object
-  required: [profile, roles, permissions, departments, approvalRules]
+  required: [profile, roles, permissions, departments, approvalRules, activeRoles]
   properties:
+    activeRoles:
+      type: array
+      items: { type: string }
+      description: Role ids held by at least one active member. A required approver role missing here is signed by the owner on its behalf (`signingRoles` in src/domain/org.ts).
     profile: { $ref: '#/components/schemas/OrgProfile' }
     roles: { type: array, items: { $ref: '#/components/schemas/OrgRoleDef' } }
     permissions: { $ref: '#/components/schemas/Permissions' }

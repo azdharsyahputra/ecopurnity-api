@@ -95,8 +95,18 @@ The same recipe rebuilds everything after a schema change.
 | `audit` | `audit_log.id` | AuditEntry: `actorUserId?, actor, action, entity{type,id,label}, orgId?, marketId?, reason?, changes[]` |
 | `user.signup`, `chat.message` | user / conversation id | metadata only, never message bodies. Stays in `events` |
 
-Imported org purchase history is published as `trade.status` events with status `agreement`, so it lands in
-`org_purchase_monthly` like live purchases. Party ids are hashed (`cityHash64`) in `bids`, `listings` and
+Org purchases reach `org_purchase_monthly` through `trade.status` with status `agreement` and a `buyerOrgId`:
+
+- Live purchases: the trades a business auction PO creates (`IssueOrgPurchaseOrder`; `item` is the lot item, not the
+  trade title, and `budgetUnitIdr` / `marketUnitIdr` are the lot's target price).
+- Imported history: every row inserted into Postgres `org_purchase_history` (by any importer) queues the same fact from
+  a trigger (`migrations/postgres/00023_org_purchase_history_outbox.sql`), `aggregate_id` = the history row id, the outbox
+  row dated at the purchase month so `at` / `month` are the purchase month. `supplierPartyId` is the directory
+  supplier's party, or `s:<supplier id>` when it has none (the API resolves both). An auction row also queues an
+  `auction.closed` with the same id (`bidders`, `openingIdr`, `clearingIdr` = the paid unit price, `orgId`), which the
+  trade's `auctionId` joins for the org's auction list.
+
+When ClickHouse is down the API computes the same page from Postgres (history plus award lines). Party ids are hashed (`cityHash64`) in `bids`, `listings` and
 `participants_daily`. That makes them pseudonymous, not anonymous, which is fine because only the server reads these
 tables.
 

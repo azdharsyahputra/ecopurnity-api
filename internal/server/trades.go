@@ -29,6 +29,7 @@ type newTrade struct {
 	// Org sides and price references for org purchase analytics (ClickHouse org_purchase_monthly); optional.
 	BuyerOrgID, SupplierOrgID    *string
 	BudgetUnitIdr, MarketUnitIdr int64
+	Item                         string // the analytics item (groups unit prices and trends); default Title
 }
 
 type createdTrade struct{ ID, Code string }
@@ -61,7 +62,7 @@ func createTrade(ctx context.Context, q dbtx, t newTrade) (createdTrade, error) 
 		return out, err
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"code": out.Code, "status": "agreement", "via": t.Via, "item": t.Title, "categoryId": t.Category, "region": t.Region,
+		"code": out.Code, "status": "agreement", "via": t.Via, "item": nonEmpty(t.Item, t.Title), "categoryId": t.Category, "region": t.Region,
 		"marketId": t.MarketID, "auctionId": t.AuctionID, "buyerPartyId": t.BuyerParty, "supplierPartyId": t.SupplierParty,
 		"quantity": t.Quantity, "unit": t.Unit, "unitPriceIdr": t.UnitPriceIdr, "valueIdr": total,
 		"buyerOrgId": t.BuyerOrgID, "supplierOrgId": t.SupplierOrgID, "budgetUnitIdr": t.BudgetUnitIdr, "marketUnitIdr": t.MarketUnitIdr,
