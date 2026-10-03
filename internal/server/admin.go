@@ -614,7 +614,8 @@ func (s *Server) ListAdminVerifications(ctx context.Context, _ api.ListAdminVeri
 const reviewURLTTL = 5 * time.Minute
 
 func (s *Server) GetAdminVerification(ctx context.Context, req api.GetAdminVerificationRequestObject) (api.GetAdminVerificationResponseObject, error) {
-	if _, err := s.requireAdmin(ctx); err != nil {
+	admin, err := s.requireAdmin(ctx)
+	if err != nil {
 		return nil, err
 	}
 	q := s.DB.Reader()
@@ -647,6 +648,11 @@ func (s *Server) GetAdminVerification(ctx context.Context, req api.GetAdminVerif
 				return nil, err
 			}
 			v.Nik = ptr(string(nik))
+			// Every view of a decrypted NIK is on the record.
+			if err := admin.record(ctx, s.DB.Primary(), audit{Action: "Melihat NIK", EntityType: "user", EntityID: v.UserID,
+				EntityLabel: v.Business}); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return api.GetAdminVerification200JSONResponse(v.VerificationRequest), nil

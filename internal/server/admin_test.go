@@ -207,6 +207,9 @@ func TestAdminVerifications(t *testing.T) {
 	if d.Body["nik"] != nik || d.Body["kind"] != "personal" || len(docs) != 2 || !strings.HasPrefix(docs[0].(map[string]any)["url"].(string), "http") {
 		t.Fatalf("personal detail: %v", d.Body)
 	}
+	if e.scalar(`SELECT count(*) FROM audit_log WHERE action = 'Melihat NIK' AND entity_id = $1`, userID) != int64(1) {
+		t.Fatal("viewing a decrypted NIK must be audited")
+	}
 	res, err := http.Get(docs[0].(map[string]any)["url"].(string))
 	if err != nil || res.StatusCode != 200 {
 		t.Fatalf("presigned GET: %v %v", err, res)
