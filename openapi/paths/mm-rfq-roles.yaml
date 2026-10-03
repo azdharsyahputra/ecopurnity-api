@@ -643,7 +643,7 @@
     tags: [Roles]
     x-access: capability:admin
     x-audit: true
-    x-note: The reason error code is `reason_required` (not `validation`), same shape as other admin punitive actions. Any `action` other than `approve` is treated as a rejection, but without the reason check unless it is exactly `reject`.
+    x-note: The reason error code is `reason_required` (not `validation`), same shape as other admin punitive actions. The mock treats any `action` other than `approve` as a rejection; the API answers 422 `validation` for unknown values.
     requestBody:
       required: true
       content: { application/json: { schema: { $ref: '#/components/schemas/RolesMmDecisionInput' } } }
@@ -683,7 +683,7 @@
     tags: [Roles]
     x-access: session
     x-audit: true
-    x-note: Any `action` other than `accept` behaves as decline (no 422 for unknown values). The role is stored in the OrgRole slot even when it is a custom org role id.
+    x-note: The mock treats any `action` other than `accept` as decline; the API answers 422 `validation` for unknown values. The role is stored in the OrgRole slot even when it is a custom org role id.
     requestBody:
       required: true
       content: { application/json: { schema: { $ref: '#/components/schemas/RolesInvitationAnswerInput' } } }

@@ -132,8 +132,7 @@ RolesMmDecisionInput:
     action: { type: string, enum: [approve, reject] }
     reason:
       type: string
-      minLength: 10
-      description: Required (min 10 chars after trim) for `reject`; optional note for `approve`.
+      description: Required (min 10 chars after trim, else 422 `reason_required`) for `reject`; optional note for `approve`.
 
 RolesCreateOrgResult:
   type: object

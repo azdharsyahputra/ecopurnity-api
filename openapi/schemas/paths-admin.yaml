@@ -10,13 +10,12 @@ AdminCaseOpened:
     caseId: { type: string, description: Id of the new manual FraudAlert (investigating). }
 AdminUserActionRequest:
   type: object
-  required: [action, reason]
+  required: [action]
   properties:
     action: { $ref: '#/components/schemas/UserAction' }
     reason:
       type: string
-      minLength: 10
-      description: 'Trimmed length at least 10; recorded in the audit trail (and as the appeal decision note when an appeal is decided).'
+      description: 'Required: trimmed length at least 10 (checked by the handler: 422 `reason_required`); recorded in the audit trail (and as the appeal decision note when an appeal is decided).'
 AdminVerificationActionRequest:
   type: object
   required: [action]
@@ -24,7 +23,6 @@ AdminVerificationActionRequest:
     action: { $ref: '#/components/schemas/VerificationAction' }
     reason:
       type: string
-      minLength: 10
       description: 'Required for `reject` and `reupload` (trimmed length at least 10). Optional for `approve` (decision note defaults to "Dokumen sesuai").'
 AdminMarketActionRequest:
   type: object
@@ -33,17 +31,15 @@ AdminMarketActionRequest:
     action: { $ref: '#/components/schemas/MarketAction' }
     reason:
       type: string
-      minLength: 10
       description: 'Required for `flag`, `suspend`, `restore` (trimmed length at least 10); optional for `review`. For `flag` it becomes the flag label.'
 AdminAuctionActionRequest:
   type: object
-  required: [action, reason]
+  required: [action]
   properties:
     action: { $ref: '#/components/schemas/AuctionAction' }
     reason:
       type: string
-      minLength: 10
-      description: 'Required for every action (trimmed length at least 10). For `open_case` it becomes the first investigation note.'
+      description: 'Required for every action (trimmed length at least 10, else 422 `reason_required`). For `open_case` it becomes the first investigation note.'
     type:
       allOf: [{ $ref: '#/components/schemas/AlertType' }]
       description: Only for `open_case`; the fraud type of the new case. Defaults to `bid_manipulation`.
