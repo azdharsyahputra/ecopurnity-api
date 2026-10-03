@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,9 @@ import (
 
 	"github.com/azdharsyahputra/ecopurnity-api/internal/db"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
+	"github.com/azdharsyahputra/ecopurnity-api/internal/secure"
+	"github.com/azdharsyahputra/ecopurnity-api/internal/sms"
+	"github.com/azdharsyahputra/ecopurnity-api/internal/storage"
 	"github.com/azdharsyahputra/ecopurnity-api/migrations"
 )
 
@@ -97,8 +101,12 @@ func newEnv(t *testing.T) *testEnv {
 	}
 	t.Cleanup(cluster.Close)
 	mem := &mail.Memory{}
-	s := &Server{DB: cluster, Mail: mem, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		AppURL: "http://app.test", SessionTTL: 24 * time.Hour, GoogleDevLogin: true, Secret: []byte("test-secret-test-secret-test-secret!!")}
+	keys, err := secure.Derive([]byte("test-secret-test-secret-test-secret!!"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{DB: cluster, Mail: mem, SMS: &sms.Memory{}, Keys: keys, Storage: testStorage(),
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), AppURL: "http://app.test", SessionTTL: 24 * time.Hour, GoogleDevLogin: true}
 	h, err := s.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -187,3 +195,29 @@ func (e *testEnv) lastMail(to string) (mail.Message, bool) {
 	e.server.WaitMail()
 	return e.mail.Last(to)
 }
+
+var (
+	storeOnce sync.Once
+	store     *storage.Store
+)
+
+// testStorage is the docker-compose SeaweedFS (TEST_S3_ENDPOINT to override) with a test bucket, or nil when it is not
+// running (upload tests then skip).
+func testStorage() *storage.Store {
+	storeOnce.Do(func() {
+		endpoint := os.Getenv("TEST_S3_ENDPOINT")
+		if endpoint == "" {
+			endpoint = "http://localhost:8333"
+		}
+		st := storage.New(storage.Config{Endpoint: endpoint, Region: "auto", Bucket: "ecopurnity-test",
+			AccessKeyID: "dev-access-key", SecretAccessKey: "dev-secret-key", PathStyle: true})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if st.EnsureBucket(ctx) == nil {
+			store = st
+		}
+	})
+	return store
+}
+
+func (e *testEnv) sms() *sms.Memory { return e.server.SMS.(*sms.Memory) }

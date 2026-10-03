@@ -29,7 +29,7 @@ scripts/                  openapi bundler, coverage check
 
 ```bash
 cp .env.example .env
-make up            # postgres primary :5432, replica :5433, clickhouse :9000/:8123, mailpit :1025 (UI :8025)
+make up            # postgres :5432 (replica :5433), clickhouse :9000/:8123, mailpit :1025 (UI :8025), seaweedfs S3 :8333
 make run           # API on :8080  ->  GET /healthz, GET /readyz
 make reset         # stop and wipe volumes
 ```
@@ -91,3 +91,34 @@ records at the provider or mail lands in spam.
 
 Email verification is a 6-digit code: 10 minutes, 5 attempts, one resend per minute; only an HMAC of the code (keyed by
 `APP_SECRET`) is stored.
+
+## File uploads (Cloudflare R2)
+
+Uploads never pass through the API: `POST /uploads` returns a presigned PUT URL, the browser sends the file straight to
+the bucket, and the endpoint that uses the file verifies it (owner, purpose, size, sniffed content type) before
+attaching it. The bucket is private; files are read back with short-lived presigned GET URLs.
+
+Locally `docker compose` runs SeaweedFS (S3-compatible) and the API creates the bucket and its CORS rule at startup.
+
+For R2, in `.env` (never commit it):
+
+```
+S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+S3_REGION=auto
+S3_BUCKET=<bucket>
+S3_ACCESS_KEY_ID=<R2 API token access key>
+S3_SECRET_ACCESS_KEY=<R2 API token secret>
+S3_PATH_STYLE=false
+S3_CREATE_BUCKET=false
+S3_CORS_ORIGINS=https://<your frontend origin>
+```
+
+The R2 API token needs **Object Read & Write** on the bucket. Such a token cannot change bucket settings, so add the CORS
+rule once in the dashboard (R2 → bucket → Settings → CORS policy), otherwise browsers can't PUT:
+
+```json
+[{ "AllowedOrigins": ["https://<your frontend origin>"], "AllowedMethods": ["PUT", "GET", "HEAD"],
+   "AllowedHeaders": ["content-type"], "ExposeHeaders": ["etag"], "MaxAgeSeconds": 3600 }]
+```
+
+Keep the bucket private (no public r2.dev access); KTP and selfie photos are personal data.

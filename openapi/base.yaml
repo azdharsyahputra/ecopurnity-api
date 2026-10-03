@@ -42,6 +42,7 @@ tags:
   - { name: Matching, description: 'Smart matching and reputation' }
   - { name: RFQ, description: 'Requests for quotation, quotes, counter-offers, conversations' }
   - { name: Verification, description: 'Phone OTP and KTP verification, commitment limits' }
+  - { name: Uploads, description: 'Presigned uploads to object storage (S3-compatible / Cloudflare R2)' }
   - { name: Roles, description: 'Market maker applications, organization invitations, creating organizations' }
   - { name: Organization, description: 'Business workspace under /orgs/{orgId}' }
   - { name: MarketMaker, description: 'Market operations under /mm' }

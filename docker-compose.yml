@@ -1,4 +1,5 @@
-# Local infrastructure: PostgreSQL primary + streaming replica, ClickHouse, and Mailpit (catches outgoing email).
+# Local infrastructure: PostgreSQL primary + streaming replica, ClickHouse, Mailpit (catches outgoing email) and
+# SeaweedFS (S3-compatible object storage standing in for Cloudflare R2).
 #   make up      start everything       make down    stop (keeps data)       make reset   stop and wipe volumes
 name: ecopurnity
 
@@ -67,7 +68,24 @@ services:
       - "1025:1025"
       - "8025:8025"
 
+  # S3-compatible object storage standing in for Cloudflare R2 (presigned PUT/GET, SigV4). S3 API on :8333.
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.99
+    command: server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -master.volumeSizeLimitMB=256
+    ports:
+      - "8333:8333"
+    volumes:
+      - seaweed-data:/data
+      - ./deploy/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+    healthcheck:
+      # Any HTTP answer from the S3 port means it is up (anonymous requests get 403).
+      test: ["CMD-SHELL", "wget -S -O /dev/null http://127.0.0.1:8333/ 2>&1 | grep -q 'HTTP/'"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
 volumes:
   pg-primary:
   pg-replica:
   ch-data:
+  seaweed-data:

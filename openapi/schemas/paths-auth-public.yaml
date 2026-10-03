@@ -89,12 +89,12 @@ AuthPublicKycPhoneVerifyRequest:
     code: { type: string, description: The OTP sent to the phone. The mock accepts the fixed code `246810`. }
 AuthPublicKycIdentityRequest:
   type: object
-  required: [nik, fullName, ktpFile, selfieFile]
+  required: [nik, fullName, ktpUploadId, selfieUploadId]
   properties:
     nik: { type: string, pattern: '^\d{16}$' }
     fullName: { type: string, minLength: 1, description: As on the KTP; trimmed. }
-    ktpFile: { type: string, description: KTP photo file name (real uploads arrive with the BE). }
-    selfieFile: { type: string, description: Selfie-with-KTP file name. }
+    ktpUploadId: { type: string, description: 'Upload id (POST /uploads, purpose kyc_ktp) of the KTP photo.' }
+    selfieUploadId: { type: string, description: 'Upload id (POST /uploads, purpose kyc_selfie) of the selfie holding the KTP.' }
 AuthPublicPriceSuggestion:
   description: The suggestion plus the unit it was computed for and the markets whose price history fed it.
   allOf:
@@ -122,3 +122,27 @@ AuthPublicDirectOrderResponse:
   required: [transactionId]
   properties:
     transactionId: { type: string, description: The buyer's side of the created transaction. }
+UploadPurpose:
+  type: string
+  enum: [kyc_ktp, kyc_selfie]
+  description: What the file is for; decides the allowed types, the size limit and who may read it. More purposes are added with the features that need them.
+UploadRequest:
+  type: object
+  required: [purpose, fileName, contentType, sizeBytes]
+  properties:
+    purpose: { $ref: '#/components/schemas/UploadPurpose' }
+    fileName: { type: string, minLength: 1, maxLength: 200, description: Original file name; shown to reviewers. }
+    contentType: { type: string, description: MIME type the file will be uploaded with. }
+    sizeBytes: { type: integer, minimum: 1 }
+UploadTicket:
+  type: object
+  required: [uploadId, method, url, headers, expiresAt]
+  properties:
+    uploadId: { type: string, description: Pass this to the endpoint that uses the file. }
+    method: { type: string, enum: [PUT] }
+    url: { type: string, description: Presigned URL; PUT the raw file bytes here. }
+    headers:
+      type: object
+      additionalProperties: { type: string }
+      description: Headers the PUT must send exactly (Content-Type, Content-Length).
+    expiresAt: { type: string, format: date-time }

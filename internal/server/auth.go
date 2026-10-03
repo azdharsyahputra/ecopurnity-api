@@ -272,7 +272,7 @@ func (s *Server) issueEmailCode(ctx context.Context, q dbtx, userID string) (str
 	}
 	code := auth.NewOTP()
 	_, err := q.Exec(ctx, `INSERT INTO auth_tokens (token_hash, user_id, purpose, expires_at) VALUES ($1, $2, 'verify_email', now() + $3)`,
-		auth.OTPHash(s.Secret, "verify_email", userID, code), userID, emailCodeTTL)
+		auth.OTPHash(s.Keys.OTP, "verify_email", userID, code), userID, emailCodeTTL)
 	return code, err
 }
 
@@ -322,7 +322,7 @@ func (s *Server) VerifyEmail(ctx context.Context, req api.VerifyEmailRequestObje
 			if err != nil {
 				return err
 			}
-			if !hmac.Equal(hash, auth.OTPHash(s.Secret, "verify_email", sess.UserID, req.Body.Code)) {
+			if !hmac.Equal(hash, auth.OTPHash(s.Keys.OTP, "verify_email", sess.UserID, req.Body.Code)) {
 				attempts++
 				// The wrong guess is committed (not rolled back) so attempts really count.
 				if attempts >= emailCodeAttempts {

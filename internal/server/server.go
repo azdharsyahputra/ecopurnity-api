@@ -18,6 +18,9 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/db"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
+	"github.com/azdharsyahputra/ecopurnity-api/internal/secure"
+	"github.com/azdharsyahputra/ecopurnity-api/internal/sms"
+	"github.com/azdharsyahputra/ecopurnity-api/internal/storage"
 )
 
 const BasePath = "/api/v1"
@@ -32,11 +35,13 @@ type Server struct {
 	Log       *slog.Logger
 	Mail      mail.Mailer
 
-	AppURL         string        // frontend origin for email links
-	CookieSecure   bool          // Secure flag on the session cookie
-	SessionTTL     time.Duration // sliding session lifetime
-	GoogleDevLogin bool          // mock-compatible POST /auth/google (dev only)
-	Secret         []byte        // HMAC key for one-time codes
+	AppURL         string         // frontend origin for email links
+	CookieSecure   bool           // Secure flag on the session cookie
+	SessionTTL     time.Duration  // sliding session lifetime
+	GoogleDevLogin bool           // mock-compatible POST /auth/google (dev only)
+	Keys           secure.Keys    // derived from APP_SECRET: OTP HMAC, NIK hash/cipher
+	Storage        *storage.Store // object storage (nil: uploads answer 503)
+	SMS            sms.Sender     // phone OTP delivery
 
 	mailWG sync.WaitGroup
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -43,6 +44,17 @@ type Config struct {
 	SMTPPassword string
 	SMTPFrom     string
 	SMTPTLS      string // tls | starttls | none (default from the port: 465 tls, 25/1025 none, else starttls)
+
+	// Object storage (S3-compatible; Cloudflare R2 in production). Empty S3Bucket disables uploads (503).
+	S3Endpoint        string
+	S3PublicEndpoint  string
+	S3Region          string
+	S3Bucket          string
+	S3AccessKeyID     string
+	S3SecretAccessKey string
+	S3PathStyle       bool
+	S3CreateBucket    bool     // create the bucket at startup if missing (local only)
+	S3CORSOrigins     []string // when set, apply a CORS rule for these browser origins at startup
 
 	// GoogleDevLogin enables the mock-compatible POST /auth/google (fixed test account). Never in production;
 	// the real OAuth flow replaces it.
@@ -84,6 +96,22 @@ func Load() (Config, error) {
 		if c.SMTPTLS != "tls" && c.SMTPTLS != "starttls" && c.SMTPTLS != "none" {
 			return c, fmt.Errorf("SMTP_TLS must be tls, starttls or none")
 		}
+	}
+	c.S3Endpoint = os.Getenv("S3_ENDPOINT")
+	c.S3PublicEndpoint = os.Getenv("S3_PUBLIC_ENDPOINT")
+	c.S3Region = env("S3_REGION", "auto")
+	c.S3Bucket = os.Getenv("S3_BUCKET")
+	c.S3AccessKeyID = os.Getenv("S3_ACCESS_KEY_ID")
+	c.S3SecretAccessKey = os.Getenv("S3_SECRET_ACCESS_KEY")
+	c.S3PathStyle = env("S3_PATH_STYLE", "false") == "true"
+	c.S3CreateBucket = env("S3_CREATE_BUCKET", "false") == "true"
+	for _, o := range strings.Split(os.Getenv("S3_CORS_ORIGINS"), ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			c.S3CORSOrigins = append(c.S3CORSOrigins, o)
+		}
+	}
+	if c.S3Bucket != "" && (c.S3Endpoint == "" || c.S3AccessKeyID == "" || c.S3SecretAccessKey == "") {
+		return c, fmt.Errorf("S3_BUCKET is set: S3_ENDPOINT, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are required")
 	}
 	c.AppURL = env("APP_URL", "http://localhost:5173")
 	c.CookieSecure = env("COOKIE_SECURE", "true") == "true"

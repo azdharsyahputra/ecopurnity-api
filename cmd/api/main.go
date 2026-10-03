@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,7 +17,10 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/config"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/db"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
+	"github.com/azdharsyahputra/ecopurnity-api/internal/secure"
 	"github.com/azdharsyahputra/ecopurnity-api/internal/server"
+	"github.com/azdharsyahputra/ecopurnity-api/internal/sms"
+	"github.com/azdharsyahputra/ecopurnity-api/internal/storage"
 )
 
 func main() {
@@ -53,8 +57,30 @@ func run(log *slog.Logger) error {
 		mailer = mail.SMTP{Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername, Password: cfg.SMTPPassword, From: cfg.SMTPFrom, TLS: cfg.SMTPTLS}
 		log.Info("smtp", "host", cfg.SMTPHost, "port", cfg.SMTPPort, "tls", cfg.SMTPTLS)
 	}
+	keys, err := secure.Derive(cfg.Secret)
+	if err != nil {
+		return err
+	}
+	var store *storage.Store
+	if cfg.S3Bucket != "" {
+		store = storage.New(storage.Config{Endpoint: cfg.S3Endpoint, PublicEndpoint: cfg.S3PublicEndpoint, Region: cfg.S3Region,
+			Bucket: cfg.S3Bucket, AccessKeyID: cfg.S3AccessKeyID, SecretAccessKey: cfg.S3SecretAccessKey, PathStyle: cfg.S3PathStyle})
+		if cfg.S3CreateBucket {
+			if err := store.EnsureBucket(ctx); err != nil {
+				return fmt.Errorf("create bucket: %w", err)
+			}
+		}
+		if err := store.Ping(ctx); err != nil {
+			log.Warn("object storage unreachable; uploads will fail", "err", err)
+		}
+		if len(cfg.S3CORSOrigins) > 0 {
+			if err := store.SetCORS(ctx, cfg.S3CORSOrigins); err != nil {
+				log.Warn("could not set bucket CORS; set it at the provider (see README)", "err", err)
+			}
+		}
+	}
 	api := &server.Server{
-		DB: pg, Analytics: ch, Log: log, Mail: mailer, Secret: cfg.Secret,
+		DB: pg, Analytics: ch, Log: log, Mail: mailer, Keys: keys, Storage: store, SMS: sms.Log{Logger: log},
 		AppURL: cfg.AppURL, CookieSecure: cfg.CookieSecure, SessionTTL: cfg.SessionTTL, GoogleDevLogin: cfg.GoogleDevLogin,
 	}
 	defer api.WaitMail() // let queued emails go out on shutdown

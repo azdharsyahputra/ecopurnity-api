@@ -159,6 +159,10 @@ func (Unimplemented) CreateRfq(context.Context, CreateRfqRequestObject) (CreateR
 	return nil, ErrNotImplemented
 }
 
+func (Unimplemented) CreateUpload(context.Context, CreateUploadRequestObject) (CreateUploadResponseObject, error) {
+	return nil, ErrNotImplemented
+}
+
 func (Unimplemented) DecideAdminVerification(context.Context, DecideAdminVerificationRequestObject) (DecideAdminVerificationResponseObject, error) {
 	return nil, ErrNotImplemented
 }
