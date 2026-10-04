@@ -1,0 +1,68 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: Start services (Postgres 15 like the servers, ClickHouse, SeaweedFS)
+        run: |
+          printf 'services:\n  postgres-primary:\n    image: postgres:15\n' > "$RUNNER_TEMP/ci-compose.yml"
+          docker compose -f docker-compose.yml -f "$RUNNER_TEMP/ci-compose.yml" up -d --wait postgres-primary clickhouse seaweedfs
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - name: Generated code matches the spec
+        run: |
+          go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0
+          make check-gen
+      - name: Lint OpenAPI
+        run: npm run --silent openapi:lint
+
+      - name: Tests
+        run: |
+          go test ./... -count=1 2>&1 | tee "$RUNNER_TEMP/test.log"
+          # TestMain skips the integration tests when Postgres is unreachable; that must not pass as green.
+          if grep -q "integration tests skipped" "$RUNNER_TEMP/test.log"; then echo "integration tests were skipped"; exit 1; fi
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: deploy-dev-api
+      cancel-in-progress: false
+    steps:
+      - name: Deploy to the dev server
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_TARGET: ${{ secrets.DEPLOY_TARGET }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # The key's forced command on the gateway only accepts: deploy api|web <sha>
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes "$DEPLOY_TARGET" deploy api "$GITHUB_SHA"
