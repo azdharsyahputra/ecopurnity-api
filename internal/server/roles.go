@@ -15,12 +15,8 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Role activation (spec tag Roles, PRD F6): market maker applications, org invitations, creating an organization.
-// Rules ported from the frontend's src/domain/roles.ts (tests in roles_test.go).
-
 const minExperience = 30
 
-// mmApplicationErrors: field errors of a market maker application (categories are enum-checked by the spec).
 func mmApplicationErrors(in api.MmApplicationInput) map[string]string {
 	f := map[string]string{}
 	if utf8.RuneCountInString(strings.TrimSpace(in.Organization)) < 3 {
@@ -35,7 +31,6 @@ func mmApplicationErrors(in api.MmApplicationInput) map[string]string {
 	return f
 }
 
-// mmApplyBlocked is why this user can't apply now, or "" (a rejected applicant may apply again).
 func mmApplyBlocked(isMarketMaker bool, latestStatus string) string {
 	switch {
 	case isMarketMaker:
@@ -48,7 +43,6 @@ func mmApplyBlocked(isMarketMaker bool, latestStatus string) string {
 
 var orgTypes = []string{"PT", "CV", "Koperasi", "UMKM", "Asosiasi", "Kelompok tani", "Yayasan"}
 
-// newOrgErrors: field errors for "Buat organisasi"; taken = names of orgs the user already belongs to.
 func newOrgErrors(in api.NewOrgInput, taken []string) map[string]string {
 	f := map[string]string{}
 	name := strings.TrimSpace(in.Name)
@@ -85,11 +79,8 @@ func npwpDigits(p *string) string {
 	}, *p)
 }
 
-// categoryLabels: frontend src/domain/catalog.ts CATEGORIES labels.
 var categoryLabels = map[string]string{"agri": "Pertanian", "food": "Pangan", "packaging": "Kemasan", "manufacturing": "Manufaktur",
 	"logistics": "Logistik", "it": "Jasa IT", "energy": "Energi"}
-
-// ── Market maker applications ────────────────────────────────────
 
 const mmApplicationSelect = `
 	SELECT a.id, a.user_id, u.name, u.email, a.organization, a.categories::text[], a.experience, a.documents, a.status, a.created_at,
@@ -129,7 +120,6 @@ func loadMmApplications(ctx context.Context, q dbtx, where string, args ...any) 
 	return out, rows.Err()
 }
 
-// mmApplicationResponse is GET /me/mm-application: the latest application or a JSON null.
 type mmApplicationResponse struct{ a *api.MmApplication }
 
 func (r mmApplicationResponse) VisitGetMyMmApplicationResponse(w http.ResponseWriter) error {
@@ -291,8 +281,6 @@ func (s *Server) DecideMmApplication(ctx context.Context, req api.DecideMmApplic
 	return api.DecideMmApplication200JSONResponse(out), nil
 }
 
-// ── Organization invitations ─────────────────────────────────────
-
 const invitationSelect = `
 	SELECT m.id, m.org_id, o.name, m.role, coalesce(r.label, m.role), coalesce(m.department, ''), m.created_at
 	FROM org_members m JOIN orgs o ON o.id = m.org_id LEFT JOIN org_roles r ON r.org_id = m.org_id AND r.key = m.role
@@ -387,8 +375,6 @@ func (s *Server) AnswerInvitation(ctx context.Context, req api.AnswerInvitationR
 	}
 	return api.AnswerInvitation200JSONResponse(out), nil
 }
-
-// ── Create organization ──────────────────────────────────────────
 
 func (s *Server) CreateOrganization(ctx context.Context, req api.CreateOrganizationRequestObject) (api.CreateOrganizationResponseObject, error) {
 	sess, err := requireUser(ctx)

@@ -1,5 +1,3 @@
-// Package secure derives purpose-specific keys from the one server secret (HKDF) and provides app-level encryption
-// for sensitive values (NIK, bank account numbers) and keyed hashes for looking them up.
 package secure
 
 import (
@@ -12,12 +10,11 @@ import (
 	"errors"
 )
 
-// Keys are independent 32-byte keys derived from APP_SECRET, one per use, so a key can't be reused across purposes.
 type Keys struct {
-	OTP        []byte // HMAC of one-time codes
-	NIKHash    []byte // HMAC of NIKs (uniqueness)
-	NIKCipher  []byte // AES-256-GCM of NIKs
-	BankCipher []byte // AES-256-GCM of payout bank account numbers
+	OTP        []byte
+	NIKHash    []byte
+	NIKCipher  []byte
+	BankCipher []byte
 }
 
 func Derive(secret []byte) (Keys, error) {
@@ -40,7 +37,6 @@ func Derive(secret []byte) (Keys, error) {
 	return out, err
 }
 
-// MAC is HMAC-SHA256.
 func MAC(key []byte, parts ...string) []byte {
 	m := hmac.New(sha256.New, key)
 	for i, p := range parts {
@@ -52,8 +48,6 @@ func MAC(key []byte, parts ...string) []byte {
 	return m.Sum(nil)
 }
 
-// Encrypt seals plaintext with AES-256-GCM; output is nonce || ciphertext. `aad` binds the value to its context
-// (e.g. the user id), so a ciphertext copied onto another row does not decrypt.
 func Encrypt(key, plaintext, aad []byte) ([]byte, error) {
 	gcm, err := newGCM(key)
 	if err != nil {

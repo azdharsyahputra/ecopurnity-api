@@ -1,6 +1,3 @@
-// Command stubgen writes internal/api/unimplemented.gen.go: an Unimplemented type with every StrictServerInterface
-// method returning ErrNotImplemented. The real server embeds it, so each operation answers 501 until a method with the
-// same name is defined on the server (Go method promotion lets the real one win).
 package main
 
 import (
@@ -12,6 +9,7 @@ import (
 	"go/token"
 	"os"
 	"sort"
+	"strings"
 )
 
 func main() {
@@ -44,10 +42,8 @@ import (
 	"errors"
 )
 
-// ErrNotImplemented is returned by every Unimplemented method; the server maps it to 501 not_implemented.
 var ErrNotImplemented = errors.New("not implemented")
 
-// Unimplemented answers every operation with ErrNotImplemented. Embed it and define the operations you implement.
 type Unimplemented struct{}
 
 var _ StrictServerInterface = Unimplemented{}
@@ -66,6 +62,60 @@ var _ StrictServerInterface = Unimplemented{}
 		fail(err)
 	}
 	fmt.Printf("internal/api/unimplemented.gen.go: %d operations\n", len(methods))
+	if err := stripComments("internal/api/api.gen.go"); err != nil {
+		fail(err)
+	}
+}
+
+func keepComment(text string) bool {
+	return strings.HasPrefix(text, "//go:") || strings.HasPrefix(text, "// Code generated ")
+}
+
+func stripComments(path string) error {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		return err
+	}
+	var kept []*ast.CommentGroup
+	for _, g := range f.Comments {
+		var list []*ast.Comment
+		for _, c := range g.List {
+			if keepComment(c.Text) {
+				list = append(list, c)
+			}
+		}
+		if len(list) > 0 {
+			kept = append(kept, &ast.CommentGroup{List: list})
+		}
+	}
+	f.Comments, f.Doc = kept, nil
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.Field:
+			x.Doc, x.Comment = nil, nil
+		case *ast.GenDecl:
+			x.Doc = nil
+		case *ast.FuncDecl:
+			x.Doc = nil
+		case *ast.ImportSpec:
+			x.Doc, x.Comment = nil, nil
+		case *ast.ValueSpec:
+			x.Doc, x.Comment = nil, nil
+		case *ast.TypeSpec:
+			x.Doc, x.Comment = nil, nil
+		}
+		return true
+	})
+	var b bytes.Buffer
+	if err := format.Node(&b, fset, f); err != nil {
+		return err
+	}
+	out, err := format.Source(b.Bytes())
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o644)
 }
 
 func fail(err error) {

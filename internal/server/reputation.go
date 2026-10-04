@@ -9,20 +9,16 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Reputation (PRD §8.10): port of the frontend's src/domain/reputation.ts (same weights, so scores match across
-// clients), computed from a party's trades with their status timeline, disputes and the reviews the other side wrote.
-
-// repTx is one trade as seen from the party being scored.
 type repTx struct {
 	ID, Title, Status string
-	Counterparty      string // counterparty party id (the mock keys repeat partners by name)
+	Counterparty      string
 	TotalIdr          int64
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	DueAt             time.Time
 	Timeline          []repStep
-	Dispute           string   // status of the latest dispute, "" when none
-	Rating            *float64 // the review the other side wrote, if any
+	Dispute           string
+	Rating            *float64
 }
 
 type repStep struct {
@@ -30,12 +26,10 @@ type repStep struct {
 	At     time.Time
 }
 
-// baselineScore is the score of an account with no finished transactions yet.
 const baselineScore = 80
 
 var finishedStatus = map[string]bool{"completed": true, "cancelled": true, "disputed": true}
 
-// jsRound is Math.round (half up), so scores match the frontend at .5.
 func jsRound(x float64) float64 { return math.Floor(x + 0.5) }
 
 func ratio(n, d int) *float64 {
@@ -126,7 +120,7 @@ func reputationScore(txs []repTx) (int, api.ReputationBreakdown, api.ReputationC
 		raw = 40*or0(b.FulfillmentRate) + 20*or0(b.OnTimeRate) + 15*(1-or0(b.CancellationRate)) + 15*(1-or0(b.DisputeRate)) +
 			5*or0(b.RepeatRate) + 5*math.Min(1, float64(completed)/20)
 	}
-	// Reviews weigh 10%: 1 star -> 0, 5 stars -> 10 points.
+
 	if b.RatingAvg != nil {
 		raw = 0.9*raw + 10*((*b.RatingAvg-1)/4)
 	}
@@ -136,7 +130,6 @@ func reputationScore(txs []repTx) (int, api.ReputationBreakdown, api.ReputationC
 
 var reputationEventTitle = map[string]string{"completed": "Transaksi selesai", "cancelled": "Transaksi dibatalkan", "disputed": "Dispute dibuka"}
 
-// reputationReport is the full report; `now` decides which 12 months the trend covers.
 func reputationReport(txs []repTx, now time.Time) api.ReputationReport {
 	byTime := slices.Clone(txs)
 	slices.SortStableFunc(byTime, func(a, b repTx) int { return a.UpdatedAt.Compare(b.UpdatedAt) })
@@ -180,7 +173,6 @@ func reputationReport(txs []repTx, now time.Time) api.ReputationReport {
 	return r
 }
 
-// loadRepTxs reads every trade where one of the parties is buyer or supplier, from that side's point of view.
 func loadRepTxs(ctx context.Context, q dbtx, partyIDs []string) ([]repTx, error) {
 	if len(partyIDs) == 0 {
 		return nil, nil
@@ -216,7 +208,6 @@ func loadRepTxs(ctx context.Context, q dbtx, partyIDs []string) ([]repTx, error)
 	return out, rows.Err()
 }
 
-// partyReputation is the public summary (score + counts) of a set of parties (a user's party, or an org's).
 func partyReputation(ctx context.Context, q dbtx, partyIDs []string) (api.ProfileReputation, error) {
 	txs, err := loadRepTxs(ctx, q, partyIDs)
 	if err != nil {
@@ -226,7 +217,6 @@ func partyReputation(ctx context.Context, q dbtx, partyIDs []string) (api.Profil
 	return api.ProfileReputation{Score: score, Counts: counts}, nil
 }
 
-// userPartyIDs is the user's party (no row yet = no trades).
 func userPartyIDs(ctx context.Context, q dbtx, userID string) ([]string, error) {
 	var ids []string
 	rows, err := q.Query(ctx, `SELECT id::text FROM parties WHERE user_id = $1`, userID)
@@ -261,13 +251,11 @@ func (s *Server) GetMyReputation(ctx context.Context, _ api.GetMyReputationReque
 	return api.GetMyReputation200JSONResponse(reputationReport(txs, time.Now())), nil
 }
 
-// reputationOf is the score of a set of parties and how many trades it rests on (0 = new account, baseline score).
 func reputationOf(ctx context.Context, q dbtx, partyIDs ...string) (score, trades int, err error) {
 	r, err := partyReputation(ctx, q, partyIDs)
 	return r.Score, r.Counts.Transactions, err
 }
 
-// userReputation is reputationOf the user's own party.
 func userReputation(ctx context.Context, q dbtx, userID string) (score, trades int, err error) {
 	ids, err := userPartyIDs(ctx, q, userID)
 	if err != nil {

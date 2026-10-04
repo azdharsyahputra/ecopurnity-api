@@ -28,7 +28,6 @@ func TestMarketsPublic(t *testing.T) {
 	e.exec(`UPDATE markets SET region = 'Jawa Tengah' WHERE id = $1`, c)
 	anon := e.client()
 
-	// Filters, sort by 30-day volume, pagination; drafts are never listed.
 	r := e.call(anon, "GET", "/markets?q="+tag, nil)
 	if got := fmt.Sprint(names(r)); r.Status != 200 || got != fmt.Sprint([]string{"Karton " + tag, "Kopi " + tag, "Pupuk " + tag}) || r.Body["meta"].(map[string]any)["total"] != float64(3) {
 		t.Fatalf("list: %d %v %v", r.Status, got, r.Body["meta"])
@@ -46,14 +45,12 @@ func TestMarketsPublic(t *testing.T) {
 		t.Fatalf("maker name: %v", r.Body)
 	}
 
-	// Detail: 404s.
 	for _, id := range []string{"00000000-0000-0000-0000-000000000000", "nope", draft} {
 		if r := e.call(anon, "GET", "/markets/"+id, nil); r.Status != 404 || r.code() != "not_found" {
 			t.Fatalf("404 %s: %d %v", id, r.Status, r.Body)
 		}
 	}
 
-	// Rules: v1 until round 3 has started, then v2.
 	rules := `{"eligibility":"verified_docs","visibility":"full","minStepPct":%s,"minQuantity":1250.5,"maxQuantity":400,
 	           "windowStart":"2026-03-02","windowEnd":"","region":"Garut","radiusKm":75,"award":"%s"}`
 	e.exec(`INSERT INTO market_rule_versions (market_id, version, rules, effective_from_round, author) VALUES
@@ -96,7 +93,6 @@ func TestMarketsPublic(t *testing.T) {
 		t.Fatalf("auctions: %v active %v", titles, r.Body["activeAuctions"])
 	}
 
-	// Analytics reachable (no rows for this market) or down: empty lists, never an error.
 	for _, addr := range []string{"localhost:9000", "localhost:1"} {
 		ch, err := analytics.Open(addr, "ecopurnity", "default", "")
 		if err != nil {
@@ -166,7 +162,6 @@ func TestMarketMembership(t *testing.T) {
 		t.Fatalf("before join: %v", m)
 	}
 
-	// Auto approval: active buyer right away, no operator notification.
 	if r := e.call(c, "POST", "/me/markets/"+auto+"/join", nil); r.Status != 204 {
 		t.Fatalf("join auto: %d %v", r.Status, r.Body)
 	}
@@ -177,7 +172,6 @@ func TestMarketMembership(t *testing.T) {
 		t.Fatalf("after join: %v", m)
 	}
 
-	// Manual approval: pending, operators notified once; joining again changes nothing.
 	for range 2 {
 		if r := e.call(c, "POST", "/me/markets/"+manual+"/join", nil); r.Status != 204 {
 			t.Fatalf("join manual: %d %v", r.Status, r.Body)
@@ -190,7 +184,6 @@ func TestMarketMembership(t *testing.T) {
 		t.Fatalf("manual state: %v", m)
 	}
 
-	// Closed / missing markets.
 	if r := e.call(c, "POST", "/me/markets/"+closed+"/join", nil); r.Status != 409 || r.code() != "market_closed" {
 		t.Fatalf("closed: %d %v", r.Status, r.Body)
 	}
@@ -200,7 +193,6 @@ func TestMarketMembership(t *testing.T) {
 		}
 	}
 
-	// Watch: validated, kept separately from joined, 0 clears.
 	if r := e.call(c, "PUT", "/me/markets/"+auto+"/watch", map[string]any{"priceIdr": 90000}); r.Status != 204 {
 		t.Fatalf("watch: %d %v", r.Status, r.Body)
 	}
@@ -217,13 +209,12 @@ func TestMarketMembership(t *testing.T) {
 	if m := myMarket(auto); m["watchPriceIdr"] != nil {
 		t.Fatalf("watch cleared: %v", m)
 	}
-	// Watching a market not joined does not join it.
+
 	e.call(c, "PUT", "/me/markets/"+closed+"/watch", map[string]any{"priceIdr": 5000})
 	if m := myMarket(closed); m["joined"] != false || m["watchPriceIdr"] != float64(5000) {
 		t.Fatalf("watch only: %v", m)
 	}
 
-	// Leave: pending request withdrawn, active participation kept; joined and watch cleared.
 	e.call(c, "PUT", "/me/markets/"+manual+"/watch", map[string]any{"priceIdr": 1000})
 	if r := e.call(c, "POST", "/me/markets/"+manual+"/leave", nil); r.Status != 204 {
 		t.Fatalf("leave: %d %v", r.Status, r.Body)
@@ -236,14 +227,12 @@ func TestMarketMembership(t *testing.T) {
 		t.Fatalf("active kept: %v", p)
 	}
 
-	// myListings counts the caller's listings in the market.
 	id := e.call(c, "POST", "/me/listings", supplyBody("Kopi "+tag, 80000, 10, "kg")).Body["id"].(string)
 	e.call(c, "POST", "/me/listings/"+id+"/market", map[string]any{"marketId": auto})
 	if m := myMarket(auto); m["myListings"] != float64(1) || m["joined"] != true {
 		t.Fatalf("myListings: %v", m)
 	}
 
-	// Restricted accounts cannot join; operators get nothing for their own request.
 	e.exec(`UPDATE users SET status = 'restricted' WHERE name = $1`, "Rani "+tag)
 	if r := e.call(c, "POST", "/me/markets/"+manual+"/join", nil); r.Status != 403 || r.code() != "account_restricted" {
 		t.Fatalf("restricted: %d %v", r.Status, r.Body)

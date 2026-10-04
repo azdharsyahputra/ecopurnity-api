@@ -16,11 +16,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Market maker: forming markets (wizard and collective pools), the operations view, participants, rounds, rules,
-// status and disputes.
-
-// ── Rule versions ────────────────────────────────────────────────
-
 type storedRuleVersion struct {
 	ruleVersion
 	CreatedAt time.Time
@@ -51,7 +46,6 @@ func loadRuleVersions(ctx context.Context, q dbtx, marketID string) ([]storedRul
 	return out, rows.Err()
 }
 
-// ensureRuleVersions gives a market that predates versioned rules its v1 (the mock's "migrasi aturan awal").
 func ensureRuleVersions(ctx context.Context, q dbtx, m mmMarket) ([]storedRuleVersion, error) {
 	vs, err := loadRuleVersions(ctx, q, m.ID)
 	if err != nil || len(vs) > 0 {
@@ -83,17 +77,12 @@ func rulesFromAPI(r api.MarketRules) marketRules {
 		Region: strings.TrimSpace(r.Region), RadiusKm: r.RadiusKm, Award: string(r.Award)}
 }
 
-// roundsOpened is the highest round number of a market (scheduled rounds count: their number and rules are fixed).
 func roundsOpened(ctx context.Context, q dbtx, marketID string) (int, error) {
 	var n int
 	err := q.QueryRow(ctx, `SELECT coalesce(max(round_no), 0) FROM auctions WHERE market_id = $1`, marketID).Scan(&n)
 	return n, err
 }
 
-// ── Round results ────────────────────────────────────────────────
-
-// roundResults: recorded prices of the started rounds matching `where` (over auctions a), by round. Live sealed rounds
-// hide their prices; closed rounds show the clearing price (RoundResult).
 func roundResults(ctx context.Context, q dbtx, where string, args ...any) ([]api.RoundResult, error) {
 	rows, err := q.Query(ctx, `
 		SELECT a.id::text, a.round_no, a.title, a.status, a.type, a.starts_at, a.opening_price_idr, a.current_price_idr,
@@ -125,7 +114,7 @@ func roundResults(ctx context.Context, q dbtx, where string, args ...any) ([]api
 		r := api.RoundResult{Round: round, AuctionId: &id, Title: title, Status: "closed", At: at, OpeningIdr: int(opening)}
 		if live {
 			r.Status = "live"
-			if typ == "sealed" { // hidden until it closes
+			if typ == "sealed" {
 				out = append(out, r)
 				continue
 			}
@@ -151,8 +140,6 @@ func roundResults(ctx context.Context, q dbtx, where string, args ...any) ([]api
 	return out, rows.Err()
 }
 
-// emitRoundResult publishes a market round's RoundResult (`market.round_result`, newest wins in ClickHouse). Called
-// when a round opens live, closes (auction clock) and is settled.
 func emitRoundResult(ctx context.Context, q dbtx, auctionID string) error {
 	var marketID *string
 	if err := q.QueryRow(ctx, `SELECT market_id::text FROM auctions WHERE id = $1 AND round_no IS NOT NULL`, auctionID).Scan(&marketID); err != nil {
@@ -169,8 +156,6 @@ func emitRoundResult(ctx context.Context, q dbtx, auctionID string) error {
 	return emit(ctx, q, "market.round_result", *marketID, b)
 }
 
-// ── Forming a market ─────────────────────────────────────────────
-
 type marketForm struct {
 	OpportunityID                              *string
 	Name, Objective, Mechanism, Category, Unit string
@@ -179,11 +164,9 @@ type marketForm struct {
 	Rules                                      marketRules
 	AutoInvite                                 bool
 	Approval, Verification                     string
-	Invite                                     []string // party ids added as buyers (collective pool members)
+	Invite                                     []string
 }
 
-// formMarket publishes a validated market for the caller (wizard or collective pool): the caller operates it, the
-// maker is the caller's org (else the caller), rule version 1 governs from round 1.
 func formMarket(ctx context.Context, tx pgx.Tx, sess *session, f marketForm) (mmMarket, error) {
 	var oppID, oppCode, oppTitle string
 	if f.OpportunityID != nil {
@@ -270,9 +253,6 @@ func formMarket(ctx context.Context, tx pgx.Tx, sess *session, f marketForm) (mm
 		Changes: changes}, "Market terbentuk: "+m.Name, nil)
 }
 
-// carryOverOpportunity: the opportunity goes live with the new market; contributors' listings (joined contributions and
-// the listings the engine counted in it) move into it (PRD F6) and everyone holding a relation to the opportunity
-// hears about it.
 func carryOverOpportunity(ctx context.Context, tx pgx.Tx, m mmMarket, oppID, oppCode, oppTitle string) error {
 	if _, err := tx.Exec(ctx, `UPDATE opportunities SET status = 'market_live' WHERE id = $1`, oppID); err != nil {
 		return err
@@ -385,15 +365,13 @@ func (s *Server) CreateMmMarket(ctx context.Context, req api.CreateMmMarketReque
 	return api.CreateMmMarket201JSONResponse{Id: m.ID}, nil
 }
 
-// ── Rounds ───────────────────────────────────────────────────────
-
 type roundForm struct {
 	Title           string
 	Quantity        float64
 	OpeningIdr      int64
 	DurationMinutes int
 	StartsAt        *time.Time
-	Spec            *string // pool rounds carry the pool's spec
+	Spec            *string
 }
 
 type openedRound struct {
@@ -401,7 +379,6 @@ type openedRound struct {
 	Round    int
 }
 
-// openRound opens the next round of a locked market under the rule version governing that round.
 func openRound(ctx context.Context, tx pgx.Tx, sess *session, m mmMarket, in roundForm) (openedRound, error) {
 	var out openedRound
 	n, err := roundsOpened(ctx, tx, m.ID)
@@ -537,9 +514,6 @@ func (s *Server) OpenMmRound(ctx context.Context, req api.OpenMmRoundRequestObje
 	return api.OpenMmRound201JSONResponse{Id: out.ID}, nil
 }
 
-// ── Operations view ──────────────────────────────────────────────
-
-// loadParticipants: a market's participants. Collective pool members that did not opt in stay masked ("Bisnis lain #n").
 func loadParticipants(ctx context.Context, q dbtx, where string, args ...any) ([]api.MmParticipant, error) {
 	rows, err := q.Query(ctx, `
 		SELECT mp.id::text, CASE WHEN pm.opt_in = false THEN 'Bisnis lain #' || pm.n ELSE p.name END, p.display_kind, mp.verified,
@@ -665,7 +639,7 @@ func (s *Server) ListMmMarketAudit(ctx context.Context, req api.ListMmMarketAudi
 	if err != nil {
 		return nil, err
 	}
-	// ponytail: the whole log of one market, newest first; page it when markets collect thousands of entries.
+
 	rows, err := q.Query(ctx, `
 		SELECT id, actor_label, action, entity_type, entity_id, entity_label, at, reason, changes
 		FROM audit_log WHERE entity_type = 'market' AND entity_id = $1 ORDER BY at DESC, id DESC`, m.ID)
@@ -689,8 +663,6 @@ func (s *Server) ListMmMarketAudit(ctx context.Context, req api.ListMmMarketAudi
 	}
 	return out, rows.Err()
 }
-
-// ── Participants ─────────────────────────────────────────────────
 
 var participantVerb = map[string]string{"approve": "Approve", "reject": "Tolak", "verify": "Verifikasi supplier", "suspend": "Suspend"}
 
@@ -768,8 +740,6 @@ func (s *Server) ActOnMmParticipant(ctx context.Context, req api.ActOnMmParticip
 	return api.ActOnMmParticipant200JSONResponse(out), nil
 }
 
-// ── Rules ────────────────────────────────────────────────────────
-
 func (s *Server) UpdateMmMarketRules(ctx context.Context, req api.UpdateMmMarketRulesRequestObject) (api.UpdateMmMarketRulesResponseObject, error) {
 	sess, err := s.requireMaker(ctx)
 	if err != nil {
@@ -833,8 +803,6 @@ func (s *Server) UpdateMmMarketRules(ctx context.Context, req api.UpdateMmMarket
 	return out, nil
 }
 
-// ── Status ───────────────────────────────────────────────────────
-
 var marketTransitions = map[string]struct {
 	from       []string
 	to, verb   string
@@ -850,7 +818,7 @@ func (s *Server) SetMmMarketStatus(ctx context.Context, req api.SetMmMarketStatu
 	if err != nil {
 		return nil, err
 	}
-	t := marketTransitions[string(req.Body.Action)] // the enum is checked by request validation
+	t := marketTransitions[string(req.Body.Action)]
 	reason := strings.TrimSpace(req.Body.Reason)
 	var out api.Market
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
@@ -895,8 +863,6 @@ func (s *Server) SetMmMarketStatus(ctx context.Context, req api.SetMmMarketStatu
 	}
 	return api.SetMmMarketStatus200JSONResponse(out), nil
 }
-
-// ── Disputes ─────────────────────────────────────────────────────
 
 func (s *Server) ActOnMmDispute(ctx context.Context, req api.ActOnMmDisputeRequestObject) (api.ActOnMmDisputeResponseObject, error) {
 	sess, err := s.requireMaker(ctx)
@@ -972,10 +938,6 @@ func (s *Server) ActOnMmDispute(ctx context.Context, req api.ActOnMmDisputeReque
 	return api.ActOnMmDispute200JSONResponse(out), nil
 }
 
-// escalateDispute hands a market dispute to admin governance. Market disputes are not tied to a trade, and an admin
-// case is (disputes.trade_id), so — as the mock decided — the case gets a placeholder trade between the two named
-// parties: 1 lot at the market's max price, status disputed. It is inserted directly (no trade.status fact), so it
-// never counts as a deal in analytics.
 func escalateDispute(ctx context.Context, tx pgx.Tx, sess *session, m mmMarket, id, title, parties string, openedAt time.Time, note string) error {
 	buyer, supplier, ok := strings.Cut(parties, " vs ")
 	if !ok || strings.TrimSpace(buyer) == "" {
@@ -1026,8 +988,6 @@ func escalateDispute(ctx context.Context, tx pgx.Tx, sess *session, m mmMarket, 
 	}
 	return notifyAdmins(ctx, tx, notification{Type: "transaction_update", Title: "Eskalasi dispute dari " + m.Name, Body: title, Href: "/admin/disputes/" + caseID})
 }
-
-// ── Collective pools ─────────────────────────────────────────────
 
 func (s *Server) ListMmPools(ctx context.Context, _ api.ListMmPoolsRequestObject) (api.ListMmPoolsResponseObject, error) {
 	sess, err := s.requireMaker(ctx)
@@ -1185,7 +1145,7 @@ func (s *Server) FormMmPoolMarket(ctx context.Context, req api.FormMmPoolMarketR
 		if err := rows.Err(); err != nil {
 			return err
 		}
-		// One lot = the whole pool; unit, category and spec come from the pool; suppliers compete down from today's price.
+
 		m, err := formMarket(ctx, tx, sess, marketForm{Name: fmt.Sprintf("Kolektif %s · %s", title, region), Objective: "procurement",
 			Mechanism: "collective_procurement", Category: category, Unit: unit, Demand: total, RefPrice: price, Approval: "auto",
 			Verification: "documents", Rules: defaultRules(total, total, region, "collective_procurement", time.Now()), Invite: parties})
@@ -1224,7 +1184,6 @@ func (s *Server) FormMmPoolMarket(ctx context.Context, req api.FormMmPoolMarketR
 	return out, nil
 }
 
-// notifyOrg notifies every active member account of an organization.
 func notifyOrg(ctx context.Context, q dbtx, orgID string, n notification) error {
 	rows, err := q.Query(ctx, `SELECT user_id::text FROM org_members WHERE org_id = $1 AND status = 'active' AND user_id IS NOT NULL`, orgID)
 	if err != nil {

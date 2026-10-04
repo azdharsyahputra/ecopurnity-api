@@ -16,15 +16,10 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Bidding, Dutch accept, buyer-created auctions and awards. Every write locks the auction row first, so bids on one
-// auction are serialised and the realtime seq is gapless (see docs/database.md).
-
 const maxExtensions = 3
 
 var errAuctionClosed = &Error{Status: http.StatusConflict, Code: "auction_closed", Message: "Auction tidak sedang berjalan"}
 
-// bumpSeq takes the next realtime seq of an auction channel for an event that is not a bid (bids take theirs in the
-// insert trigger).
 func bumpSeq(ctx context.Context, q dbtx, auctionID string) (int64, error) {
 	var seq int64
 	err := q.QueryRow(ctx, `UPDATE auctions SET last_seq = last_seq + 1 WHERE id = $1 RETURNING last_seq`, auctionID).Scan(&seq)
@@ -39,7 +34,6 @@ func emitAuction(ctx context.Context, q dbtx, auctionID, typ string, payload any
 	return emitFrame(ctx, q, "auction:"+auctionID, typ, &seq, payload)
 }
 
-// emitAuctionState sends the auction.state snapshot (start, freeze, award, cancel...).
 func emitAuctionState(ctx context.Context, q dbtx, auctionID string) error {
 	r, err := loadAuction(ctx, q, auctionID, false)
 	if err != nil {
@@ -53,7 +47,6 @@ func emitAuctionState(ctx context.Context, q dbtx, auctionID string) error {
 	return emitAuction(ctx, q, auctionID, "auction.state", p)
 }
 
-// emitBidStatus tells a bidder (on user:{id}) where their bid stands now.
 func emitBidStatus(ctx context.Context, q dbtx, r auctionRow, userID string) error {
 	b, err := myBid(ctx, q, r, userID)
 	if err != nil || b == nil {
@@ -74,7 +67,6 @@ func emitBidStatus(ctx context.Context, q dbtx, r auctionRow, userID string) err
 	return emitFrame(ctx, q, "user:"+userID, "bid.status", nil, p)
 }
 
-// bidLimit is the price a new bid must reach (inclusive): the opening price, or the best price minus/plus the step.
 func bidLimit(r auctionRow) int64 {
 	if r.Type == "sealed" || r.Current == nil {
 		return r.Opening
@@ -121,7 +113,7 @@ func (s *Server) PlaceBid(ctx context.Context, req api.PlaceBidRequestObject) (a
 		if err := s.commitGuard(ctx, tx, sess.UserID, int64(math.Round(float64(price)*r.Quantity))); err != nil {
 			return err
 		}
-		var capacity *float64 // reverse/sealed: how much of the lot this bidder can supply; NULL = the whole lot
+		var capacity *float64
 		if q := req.Body.Quantity; q != nil && (r.Type == "reverse" || r.Type == "sealed") {
 			if !(*q > 0) || *q > r.Quantity {
 				msg := fmt.Sprintf("Kapasitas harus lebih dari 0 dan maksimal %s %s", qtyLabel(r.Quantity), r.Unit)
@@ -146,7 +138,7 @@ func (s *Server) PlaceBid(ctx context.Context, req api.PlaceBidRequestObject) (a
 		if sealed {
 			status = "submitted"
 		}
-		// The bidder's earlier bids are superseded; the previous leader (someone else) is outbid.
+
 		var outbid []string
 		if !sealed {
 			rows, err := tx.Query(ctx, `
@@ -174,7 +166,7 @@ func (s *Server) PlaceBid(ctx context.Context, req api.PlaceBidRequestObject) (a
 		var seq int64
 		var no int32
 		var at time.Time
-		// seq and bidder_no come from the insert trigger (it also bumps bid_count / participant_count).
+
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO bids (auction_id, bidder_party_id, bidder_user_id, price_idr, status, capacity, seq, bidder_no) VALUES ($1, $2, $3, $4, $5, $6, 0, 0)
 			RETURNING id, seq, bidder_no, created_at`, r.ID, party, sess.UserID, price, status, capacity).Scan(&bidID, &seq, &no, &at); err != nil {
@@ -182,12 +174,12 @@ func (s *Server) PlaceBid(ctx context.Context, req api.PlaceBidRequestObject) (a
 		}
 		best := price
 		if sealed {
-			// Keep the hidden best (lowest) for the record; never published while live.
+
 			if r.Current != nil && *r.Current < best {
 				best = *r.Current
 			}
 		}
-		// Anti-sniping: a bid inside the window pushes the close out, at most maxExtensions times.
+
 		extended := false
 		if time.Until(r.EndsAt) < time.Duration(r.ExtWindow)*time.Minute && r.Extensions < maxExtensions {
 			extended = true
@@ -203,7 +195,7 @@ func (s *Server) PlaceBid(ctx context.Context, req api.PlaceBidRequestObject) (a
 			return err
 		}
 		r.Current = &best
-		// Public frame, masked for the audience: real price only with visibility full.
+
 		pubPrice := int64(0)
 		if r.Visibility == "full" {
 			pubPrice = price
@@ -226,7 +218,7 @@ func (s *Server) PlaceBid(ctx context.Context, req api.PlaceBidRequestObject) (a
 		if err := emit(ctx, tx, "auction.bid", r.ID, fact); err != nil {
 			return err
 		}
-		var bidValue *int64 // public feed: the lot value at the bid price, only where prices are public
+		var bidValue *int64
 		if r.Visibility == "full" {
 			bidValue = ptr(round(float64(price) * r.Quantity))
 		}
@@ -305,7 +297,6 @@ func (s *Server) WithdrawMyBid(ctx context.Context, req api.WithdrawMyBidRequest
 	return api.WithdrawMyBid200JSONResponse(*out), nil
 }
 
-// AcceptDutchPrice buys the whole lot at the current ask; the counterparty is the market's maker.
 func (s *Server) AcceptDutchPrice(ctx context.Context, req api.AcceptDutchPriceRequestObject) (api.AcceptDutchPriceResponseObject, error) {
 	sess, err := requireActive(ctx)
 	if err != nil {
@@ -378,8 +369,6 @@ func qtyLabel(v float64) string {
 	return fmt.Sprintf("%g", v)
 }
 
-// ── Buyer auctions ───────────────────────────────────────────────
-
 func (s *Server) CreateBuyerAuction(ctx context.Context, req api.CreateBuyerAuctionRequestObject) (api.CreateBuyerAuctionResponseObject, error) {
 	sess, err := requireActive(ctx)
 	if err != nil {
@@ -441,7 +430,7 @@ func (s *Server) CreateBuyerAuction(ctx context.Context, req api.CreateBuyerAuct
 			RETURNING id, code`,
 			fmt.Sprintf("%s %s %s", d.Item, qtyLabel(d.Quantity), d.Unit), d.MarketID, sess.UserID, d.Category, in.Type, visibility, d.Item,
 			nonEmpty(d.Spec, "Sesuai deskripsi demand"), d.Quantity, d.Unit, in.OpeningPriceIdr, in.MinStepIdr, in.DurationMinutes, rules,
-			nonNil(in.Invite), // invitees are free-text names, as the UI sends them
+			nonNil(in.Invite),
 		).Scan(&id, &code); err != nil {
 			return err
 		}
@@ -482,8 +471,7 @@ func (s *Server) ListMyAuctions(ctx context.Context, _ api.ListMyAuctionsRequest
 	}
 	q := s.DB.Primary()
 	out := api.ListMyAuctions200JSONResponse{}
-	// Eligible: open auctions the caller has not bid on and does not own; forward auctions sell to buyers, so they
-	// are not offered here (they show in public lists).
+
 	rows, err := q.Query(ctx, auctionSelect+`
 		WHERE a.status IN ('live','extended','qualification','scheduled') AND a.type <> 'forward'
 		  AND a.owner_user_id IS DISTINCT FROM $1
@@ -507,7 +495,7 @@ func (s *Server) ListMyAuctions(ctx context.Context, _ api.ListMyAuctionsRequest
 		if err != nil {
 			return nil, err
 		}
-		// The generated element type flattens allOf(Auction, {qualification}); fill it through JSON.
+
 		var item = struct {
 			api.Auction
 			Qualification api.QualificationStatus `json:"qualification"`
@@ -543,7 +531,7 @@ func (s *Server) ListMyAuctions(ctx context.Context, _ api.ListMyAuctionsRequest
 		return nil, err
 	}
 	if out.Eligible == nil {
-		_ = json.Unmarshal([]byte("[]"), &out.Eligible) // empty list, not null (the element type is anonymous)
+		_ = json.Unmarshal([]byte("[]"), &out.Eligible)
 	}
 	if out.Bids == nil {
 		out.Bids = []api.MyBid{}
@@ -551,7 +539,6 @@ func (s *Server) ListMyAuctions(ctx context.Context, _ api.ListMyAuctionsRequest
 	return out, nil
 }
 
-// convertJSON appends src (marshalled) to the slice dst points at, or decodes it into dst when dst is not a slice.
 func convertJSON[T any](src any, dst *[]T) error {
 	b, err := json.Marshal(src)
 	if err != nil {
@@ -565,18 +552,15 @@ func convertJSON[T any](src any, dst *[]T) error {
 	return nil
 }
 
-// ── Evaluation and award (owner) ─────────────────────────────────
-
 type offer struct {
 	BidID, PartyID, Name, Kind string
 	UserID                     *string
 	Price                      int64
-	Capacity                   float64 // stated with the bid, else the whole lot
+	Capacity                   float64
 	At                         time.Time
 	Verified                   bool
 }
 
-// offers: each bidder's best active bid.
 func offers(ctx context.Context, q dbtx, r auctionRow) ([]offer, error) {
 	order := "price_idr ASC"
 	if r.Type == "forward" {
@@ -619,8 +603,7 @@ func ownedAuction(ctx context.Context, q dbtx, s *session, id string, forUpdate 
 	if err != nil {
 		return r, err
 	}
-	// Personal buyer auctions only: org lots are evaluated and awarded in the org workspace (org_auctions.go), never as a
-	// member's personal purchase.
+
 	if r.OwnerUserID == nil || *r.OwnerUserID != s.UserID {
 		return r, errAuctionNotFound
 	}
@@ -728,7 +711,7 @@ func (s *Server) AwardAuction(ctx context.Context, req api.AwardAuctionRequestOb
 		if err := validationFields(f); err != nil {
 			return err
 		}
-		// The price is the offer's, never the client's.
+
 		var total float64
 		for _, l := range req.Body.Lines {
 			total += l.Quantity * float64(byID[l.OfferId].Price)
@@ -809,7 +792,6 @@ func (s *Server) AwardAuction(ctx context.Context, req api.AwardAuctionRequestOb
 	return api.AwardAuction200JSONResponse{TransactionIds: ids}, nil
 }
 
-// makerFee: 0.5% when a market maker runs the market, none for direct procurement.
 func makerFee(r auctionRow) float64 {
 	if r.MarketID != nil {
 		return 0.005

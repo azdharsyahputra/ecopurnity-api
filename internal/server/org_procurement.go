@@ -14,8 +14,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Procurement requests (PRD 9.4) and collective pools (PRD 9.5).
-
 var errProcurementNotFound = notFound("Procurement tidak ditemukan")
 
 func loadProcurements(ctx context.Context, q dbtx, where string, args ...any) ([]api.ProcurementRequest, error) {
@@ -333,7 +331,6 @@ func finishProcurement(ctx context.Context, tx pgx.Tx, c *orgCtx, id string, out
 	return err
 }
 
-// orgRegion: the org's public region, else the last part of its location ("Bandung, Jawa Barat"), else Jawa Barat.
 func orgRegion(ctx context.Context, q dbtx, orgID string) (string, error) {
 	var region string
 	err := q.QueryRow(ctx, `SELECT coalesce(nullif(region, ''), location) FROM org_profiles WHERE org_id = $1`, orgID).Scan(&region)
@@ -344,12 +341,8 @@ func orgRegion(ctx context.Context, q dbtx, orgID string) (string, error) {
 	return "Jawa Barat", err
 }
 
-// ── Collective pools ─────────────────────────────────────────────
-
 var errPoolNotFound = notFound("Pool tidak ditemukan")
 
-// joinPool adds the org's demand to the pool or updates it; returns the previous quantity (0 when new). The member's
-// drop point is the request's delivery location, else the org's first warehouse, else its profile location.
 func joinPool(ctx context.Context, tx pgx.Tx, orgID, poolID string, qty float64, optIn bool, dropPoint string) (float64, error) {
 	var prev float64
 	err := tx.QueryRow(ctx, `SELECT coalesce((SELECT quantity FROM pool_members WHERE pool_id = $1 AND org_id = $2), 0)`, poolID, orgID).Scan(&prev)
@@ -365,8 +358,6 @@ func joinPool(ctx context.Context, tx pgx.Tx, orgID, poolID string, qty float64,
 	return prev, err
 }
 
-// loadPools: pools as orgID sees them. Other businesses are "Bisnis lain #n" (join order) unless they opted in; the
-// org's own row is `mine`. Settlement lines are masked the same way and only the own line carries its transaction.
 func loadPools(ctx context.Context, q dbtx, orgID, where string, args ...any) ([]api.PoolView, error) {
 	rows, err := q.Query(ctx, `
 		SELECT p.id::text, p.title, p.category_id, p.spec, p.region, p.deadline, p.unit, p.base_unit_price_idr, p.ref_qty, p.threshold_qty, p.status,
@@ -470,14 +461,12 @@ func poolOf(ctx context.Context, tx pgx.Tx, orgID, poolID string) (api.Collectiv
 	return poolOnly(ps[0]), nil
 }
 
-// poolOnly drops PoolView.match.
 func poolOnly(p api.PoolView) api.CollectivePool {
 	return api.CollectivePool{AuctionId: p.AuctionId, BaseUnitPriceIdr: p.BaseUnitPriceIdr, CategoryId: p.CategoryId, Deadline: p.Deadline, Id: p.Id,
 		MarketId: p.MarketId, MarketRequestedAt: p.MarketRequestedAt, Members: p.Members, RefQty: p.RefQty, Region: p.Region, Round: p.Round,
 		Settlement: p.Settlement, Spec: p.Spec, Status: p.Status, ThresholdQty: p.ThresholdQty, Title: p.Title, Unit: p.Unit}
 }
 
-// poolLine is the element type of PoolSettlement.lines.
 type poolLine = struct {
 	AmountIdr     int     `json:"amountIdr"`
 	Mine          *bool   `json:"mine,omitempty"`
@@ -488,7 +477,6 @@ type poolLine = struct {
 	TransactionId *string `json:"transactionId,omitempty"`
 }
 
-// lockPool locks the pool row and returns its status (404 when missing).
 func lockPool(ctx context.Context, tx pgx.Tx, poolID string) (id, title, unit, status string, err error) {
 	err = tx.QueryRow(ctx, `SELECT id::text, title, unit, status FROM collective_pools WHERE id::text = $1 FOR UPDATE`, poolID).Scan(&id, &title, &unit, &status)
 	if errors.Is(err, pgx.ErrNoRows) {

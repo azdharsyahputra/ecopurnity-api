@@ -15,10 +15,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Personal transactions: one trades row seen from the caller's side (role = the side whose party is the caller's,
-// counterparty = the other party, peer = the same trade id when the other side is a user). The settlement flow is
-// trade_engine.go; money is finance.go.
-
 const txSelect = `
 	SELECT t.id::text, t.code, t.title, (t.buyer_party_id = $1), cp.name, cp.display_kind, cp.verified, cp.user_id::text,
 	       t.status, t.quantity::float8, t.unit, t.unit_price_idr, t.total_idr, t.created_at, t.updated_at, t.due_at,
@@ -35,7 +31,6 @@ const txSelect = `
 	LEFT JOIN settlement_lines sl ON sl.trade_id = t.id
 	WHERE (t.buyer_party_id = $1 OR t.supplier_party_id = $1)`
 
-// scanTx reads one txSelect row into the summary fields of a TransactionDetail.
 func scanTx(row pgx.Row) (api.TransactionDetail, error) {
 	var d api.TransactionDetail
 	var isBuyer bool
@@ -95,20 +90,17 @@ func scanTx(row pgx.Row) (api.TransactionDetail, error) {
 	return d, nil
 }
 
-// fileURL presigns object keys for the read models; nil gives no URLs (storage off, or a viewer who may not open the
-// trade's files).
 type fileURL func(key string) *string
 
 const fileURLTTL = time.Hour
 
-// fileURLs signs for viewers who may open a trade's files: its two sides and admins on its dispute case.
 func (s *Server) fileURLs(ctx context.Context) fileURL {
 	if s.Storage == nil {
 		return nil
 	}
 	return func(key string) *string {
 		url, err := s.Storage.PresignGet(ctx, key, fileURLTTL)
-		if err != nil { // ponytail: presigning is a local HMAC and does not fail in practice; the file just shows unlinked
+		if err != nil {
 			return nil
 		}
 		return &url
@@ -122,8 +114,6 @@ func (f fileURL) of(key *string) *string {
 	return f(*key)
 }
 
-// loadTransaction is the full TransactionDetail of trade `id` as seen by `party` (not_found when not a party), with
-// uploaded files signed by `files` (nil: no URLs).
 func loadTransaction(ctx context.Context, q dbtx, party, id string, files fileURL) (api.TransactionDetail, error) {
 	if party == "" || !isUUID(id) {
 		return api.TransactionDetail{}, errTradeNotFound
@@ -136,8 +126,6 @@ func loadTransaction(ctx context.Context, q dbtx, party, id string, files fileUR
 		return d, err
 	}
 
-	// Timeline: the happy path of the terms with when/why each step was reached (latest event per status); off-path
-	// statuses (cancelled, disputed) go right after the last step reached before them.
 	type ev struct {
 		status string
 		at     time.Time
@@ -270,7 +258,6 @@ func loadTransaction(ctx context.Context, q dbtx, party, id string, files fileUR
 		return d, err
 	}
 
-	// The latest dispute (open, or the decided one) with the parties' evidence.
 	var disputeID, dStatus, reason string
 	var openedAt time.Time
 	err = q.QueryRow(ctx, `SELECT id::text, status, reason, opened_at FROM disputes WHERE trade_id = $1 ORDER BY opened_at DESC LIMIT 1`, id).
@@ -318,7 +305,6 @@ func loadTransaction(ctx context.Context, q dbtx, party, id string, files fileUR
 	return d, nil
 }
 
-// txSummary is the list shape: TransactionDetail without the detail-only fields (shadowed by nil fields).
 type txSummary struct {
 	api.TransactionDetail
 	Timeline  *struct{} `json:"timeline,omitempty"`
@@ -330,8 +316,6 @@ type txSummary struct {
 	Reviews   *struct{} `json:"reviews,omitempty"`
 }
 
-// txList: the summary carries F6 fields (agreement, invoice, qc, makerFeeRate, group) that the Transaction schema
-// does not declare, so it is written by hand.
 type txList []txSummary
 
 func (l txList) VisitListMyTransactionsResponse(w http.ResponseWriter) error {
@@ -359,7 +343,7 @@ func (s *Server) ListMyTransactions(ctx context.Context, req api.ListMyTransacti
 		args = append(args, strings.Split(*st, ","))
 		sql += fmt.Sprintf(` AND t.status = ANY($%d)`, len(args))
 	}
-	// ponytail: not paginated (contract); newest 500.
+
 	rows, err := q.Query(ctx, sql+` ORDER BY t.created_at DESC LIMIT 500`, args...)
 	if err != nil {
 		return nil, err
@@ -393,7 +377,6 @@ func (s *Server) GetMyTransaction(ctx context.Context, req api.GetMyTransactionR
 	return api.GetMyTransaction200JSONResponse(d), nil
 }
 
-// ApplyMyTransactionAction: the caller acts for the side their own party holds on the trade.
 func (s *Server) ApplyMyTransactionAction(ctx context.Context, req api.ApplyMyTransactionActionRequestObject) (api.ApplyMyTransactionActionResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -428,10 +411,6 @@ func (s *Server) ApplyMyTransactionAction(ctx context.Context, req api.ApplyMyTr
 	return api.ApplyMyTransactionAction200JSONResponse(d), nil
 }
 
-// ── Direct market order ──────────────────────────────────────────
-
-// CreateDirectMarketOrder buys from a posted supply listing of a direct_market market at its price (escrow, 0.5% maker
-// fee). The listing row is locked, so concurrent orders never oversell it.
 func (s *Server) CreateDirectMarketOrder(ctx context.Context, req api.CreateDirectMarketOrderRequestObject) (api.CreateDirectMarketOrderResponseObject, error) {
 	sess, err := requireActive(ctx)
 	if err != nil {
@@ -513,7 +492,6 @@ func (s *Server) CreateDirectMarketOrder(ctx context.Context, req api.CreateDire
 	return api.CreateDirectMarketOrder201JSONResponse{TransactionId: tradeID}, nil
 }
 
-// nilIfNotUUID turns a malformed id into NULL so `id = $1` simply matches nothing.
 func nilIfNotUUID(id string) *string {
 	if !isUUID(id) {
 		return nil

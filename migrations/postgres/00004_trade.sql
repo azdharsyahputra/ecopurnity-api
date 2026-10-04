@@ -1,12 +1,4 @@
 -- +goose Up
--- Trade: two-sided trades (PRD F6) and their invoices, shipments, QC, reviews and disputes; the money ledger, payout
--- accounts and withdrawals; collective round settlements; RFQ and quotes; conversations (realtime chat); standing
--- supply contracts. See migrations/CONVENTIONS.md.
---
--- One trade = one row with both parties. Each side's `Transaction` is a projection (role = the caller's side,
--- counterparty = the other party, peer.txId = the same id). Per-side state lives in child tables keyed by `side`.
-
--- ── Trades ───────────────────────────────────────────────────────
 
 CREATE TABLE trades (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -14,7 +6,6 @@ CREATE TABLE trades (
   title             text NOT NULL CHECK (length(btrim(title)) > 0),
   buyer_party_id    uuid NOT NULL REFERENCES parties(id),
   supplier_party_id uuid NOT NULL REFERENCES parties(id),
-  -- Shrinks to the accepted quantity on a partial QC (the invoice keeps the original amounts).
   quantity          qty NOT NULL CHECK (quantity > 0),
   unit              text NOT NULL,
   unit_price_idr    idr NOT NULL,
@@ -22,19 +13,16 @@ CREATE TABLE trades (
   terms             text NOT NULL DEFAULT 'escrow' CHECK (terms IN ('escrow','net14','net30')),
   status            text NOT NULL DEFAULT 'agreement'
                     CHECK (status IN ('agreement','invoiced','paid','fulfilling','delivered','accepted','completed','cancelled','disputed')),
-  maker_fee_rate    numeric(6,5) NOT NULL DEFAULT 0 CHECK (maker_fee_rate >= 0 AND maker_fee_rate < 1),     -- 0.005 in a market, else 0
+  maker_fee_rate    numeric(6,5) NOT NULL DEFAULT 0 CHECK (maker_fee_rate >= 0 AND maker_fee_rate < 1),
   platform_fee_rate numeric(6,5) NOT NULL DEFAULT 0.01 CHECK (platform_fee_rate >= 0 AND platform_fee_rate < 1),
-  -- Where the trade came from (all optional). Contract runs and settlement lines point at their trade instead
-  -- (contract_orders.trade_id, settlement_lines.trade_id), so the link is stored once.
-  market_id         uuid REFERENCES markets(id),        -- market whose maker earns maker_fee_rate
+  market_id         uuid REFERENCES markets(id),
   auction_id        uuid REFERENCES auctions(id),
-  source_listing_id uuid REFERENCES listings(id),       -- direct order at a posted price (direct_market)
-  source_quote_id   uuid,                               -- accepted RFQ quote; FK added below, after quotes
-  -- Part of a collective settlement: TransactionDetail.group (label "Kolektif AUC-…", share of the lot).
+  source_listing_id uuid REFERENCES listings(id),
+  source_quote_id   uuid,
   group_label       text,
   group_share       numeric(6,5) CHECK (group_share > 0 AND group_share <= 1),
   delivery_address  text NOT NULL,
-  due_at            timestamptz NOT NULL,               -- invoice due date, then the net-terms payment due date
+  due_at            timestamptz NOT NULL,
   created_at        timestamptz NOT NULL DEFAULT now(),
   updated_at        timestamptz NOT NULL DEFAULT now(),
   CHECK (buyer_party_id <> supplier_party_id),
@@ -50,17 +38,15 @@ CREATE INDEX trades_listing_idx ON trades (source_listing_id) WHERE source_listi
 CREATE UNIQUE INDEX trades_quote_key ON trades (source_quote_id) WHERE source_quote_id IS NOT NULL;
 COMMENT ON TABLE trades IS 'One two-sided trade (buyer party, supplier party); each side''s Transaction is a projection of this row.';
 
--- Agreement acceptance per side (TradeState.agreement, TransactionDetail.agreement.*AcceptedAt).
 CREATE TABLE trade_acceptances (
   trade_id     uuid NOT NULL REFERENCES trades(id) ON DELETE CASCADE,
   side         text NOT NULL CHECK (side IN ('buyer','supplier')),
   accepted_at  timestamptz NOT NULL DEFAULT now(),
-  accepted_by  uuid REFERENCES users(id),               -- null when an external party accepted
+  accepted_by  uuid REFERENCES users(id),
   PRIMARY KEY (trade_id, side)
 );
 COMMENT ON TABLE trade_acceptances IS 'One side''s acceptance of a trade agreement.';
 
--- Status timeline: one row per reached status. Future steps of the happy path are added by the API (timelineFor).
 CREATE TABLE trade_events (
   id        bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   trade_id  uuid NOT NULL REFERENCES trades(id) ON DELETE CASCADE,
@@ -77,21 +63,18 @@ CREATE TABLE trade_documents (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   trade_id    uuid NOT NULL REFERENCES trades(id) ON DELETE CASCADE,
   kind        text NOT NULL CHECK (kind IN ('order','agreement','invoice','proof','other')),
-  name        text NOT NULL,                            -- file name shown to users
-  object_key  text,                                     -- object storage key; null for generated PDFs rendered on demand
+  name        text NOT NULL,
+  object_key  text,
   uploaded_by uuid REFERENCES users(id),
   created_at  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX trade_documents_trade_idx ON trade_documents (trade_id, created_at);
 COMMENT ON TABLE trade_documents IS 'A document attached to a trade: purchase order, agreement, invoice, delivery proof.';
 
--- One invoice per trade. The money breakdown is computed once at issue (domain/trade.ts breakdown) and stored, so a
--- later partial QC or fee change never rewrites it: buyer pays subtotal + PPN 11%; the platform fee (1%) and the maker
--- fee come out of the supplier's side. `status` is the trade's payment state (TransactionDetail.payment).
 CREATE TABLE invoices (
   id                    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   trade_id              uuid NOT NULL UNIQUE REFERENCES trades(id) ON DELETE CASCADE,
-  number                text NOT NULL UNIQUE,           -- INV-<trade code suffix>
+  number                text NOT NULL UNIQUE,
   issued_at             timestamptz NOT NULL DEFAULT now(),
   due_at                timestamptz NOT NULL,
   subtotal_idr          idr NOT NULL,
@@ -111,7 +94,6 @@ CREATE TABLE invoices (
 CREATE TRIGGER invoices_updated_at BEFORE UPDATE ON invoices FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 COMMENT ON TABLE invoices IS 'The invoice of a trade with its frozen money breakdown and payment state.';
 
--- Receipt QC by the buyer (confirm_receipt). At most one per trade.
 CREATE TABLE qc_results (
   trade_id          uuid PRIMARY KEY REFERENCES trades(id) ON DELETE CASCADE,
   outcome           text NOT NULL CHECK (outcome IN ('accepted','partial','rejected')),
@@ -125,7 +107,6 @@ CREATE TABLE qc_results (
 );
 COMMENT ON TABLE qc_results IS 'The buyer''s receipt inspection of a trade.';
 
--- One review per side per trade; `side` is the reviewer's side.
 CREATE TABLE reviews (
   trade_id      uuid NOT NULL REFERENCES trades(id) ON DELETE CASCADE,
   side          text NOT NULL CHECK (side IN ('buyer','supplier')),
@@ -134,13 +115,11 @@ CREATE TABLE reviews (
   timeliness    numeric(2,1) NOT NULL CHECK (timeliness BETWEEN 1 AND 5),
   communication numeric(2,1) NOT NULL CHECK (communication BETWEEN 1 AND 5),
   text          text NOT NULL,
-  reviewed_by   uuid REFERENCES users(id),               -- null for an external party
+  reviewed_by   uuid REFERENCES users(id),
   created_at    timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (trade_id, side)
 );
 COMMENT ON TABLE reviews IS 'One side''s review of the other after a completed trade.';
-
--- ── Disputes ─────────────────────────────────────────────────────
 
 CREATE TABLE disputes (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -148,10 +127,10 @@ CREATE TABLE disputes (
   trade_id          uuid NOT NULL REFERENCES trades(id),
   status            text NOT NULL DEFAULT 'open' CHECK (status IN ('open','evidence','review','resolved')),
   reason            text NOT NULL CHECK (length(btrim(reason)) > 0),
-  opened_by_side    text CHECK (opened_by_side IN ('buyer','supplier')),  -- null when escalated by a market maker
+  opened_by_side    text CHECK (opened_by_side IN ('buyer','supplier')),
   opened_by         uuid REFERENCES users(id),
   opened_at         timestamptz NOT NULL DEFAULT now(),
-  market_id         uuid REFERENCES markets(id),         -- market the trade belongs to (admin/MM scoping)
+  market_id         uuid REFERENCES markets(id),
   resolution_kind   text CHECK (resolution_kind IN ('refund','release','partial')),
   refund_idr        idr,
   release_idr       idr,
@@ -160,7 +139,6 @@ CREATE TABLE disputes (
   resolved_by       uuid REFERENCES users(id),
   created_at        timestamptz NOT NULL DEFAULT now(),
   updated_at        timestamptz NOT NULL DEFAULT now(),
-  -- Resolution is all-or-nothing and only on resolved cases (domain/dispute.ts resolveOutcome).
   CHECK ((status = 'resolved') = (resolution_kind IS NOT NULL)),
   CHECK (resolution_kind IS NULL OR (refund_idr IS NOT NULL AND release_idr IS NOT NULL AND resolved_at IS NOT NULL
                                      AND length(btrim(coalesce(resolution_reason, ''))) > 0)),
@@ -182,10 +160,10 @@ CREATE TABLE dispute_evidence (
   dispute_id  uuid NOT NULL REFERENCES disputes(id) ON DELETE CASCADE,
   side        text NOT NULL CHECK (side IN ('buyer','supplier','admin')),
   author_user_id uuid REFERENCES users(id),
-  author_name text NOT NULL,                             -- Evidence.by snapshot ("Rina Wulandari", "Sari (Admin)")
+  author_name text NOT NULL,
   text        text NOT NULL CHECK (length(btrim(text)) > 0),
   file_name   text,
-  file_key    text,                                      -- object storage key of file_name
+  file_key    text,
   created_at  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX dispute_evidence_dispute_idx ON dispute_evidence (dispute_id, created_at);
@@ -202,15 +180,12 @@ CREATE TABLE dispute_events (
 CREATE INDEX dispute_events_dispute_idx ON dispute_events (dispute_id, at);
 COMMENT ON TABLE dispute_events IS 'One step of a dispute case timeline (opened, evidence requested, review, decision).';
 
--- ── Money ────────────────────────────────────────────────────────
-
--- Payout account. Changing it closes the old row (replaced_at) and inserts a new one.
 CREATE TABLE bank_accounts (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   party_id       uuid NOT NULL REFERENCES parties(id),
   bank           text NOT NULL CHECK (length(btrim(bank)) > 0),
   holder         text NOT NULL CHECK (length(btrim(holder)) > 0),
-  account_no_enc bytea NOT NULL,                         -- account number encrypted by the API (key outside the DB)
+  account_no_enc bytea NOT NULL,
   account_last4  text NOT NULL CHECK (account_last4 ~ '^[0-9]{4}$'),
   created_by     uuid REFERENCES users(id),
   created_at     timestamptz NOT NULL DEFAULT now(),
@@ -237,13 +212,6 @@ CREATE INDEX withdrawals_party_idx ON withdrawals (party_id, created_at DESC);
 CREATE INDEX withdrawals_queue_idx ON withdrawals (created_at) WHERE status = 'processing';
 COMMENT ON TABLE withdrawals IS 'A payout of available funds to a party''s bank account.';
 
--- Double-entry ledger. Party accounts: wallet_available, escrow (buyer funds held), receivable (supplier's claim),
--- maker_commission (market maker). Platform accounts have no owner: platform_revenue, bank_clearing (money at the
--- bank). ppn_payable may be the platform's (it remits) or a supplier's (it collects); the owner says which.
--- Signs: amount > 0 is a debit, < 0 a credit. Balance = sum(amount); liability-type accounts (wallet, escrow, revenue,
--- ppn, commission) carry negative balances and are shown negated. Lock the ledger_accounts row (FOR UPDATE) before
--- checking a balance you are about to spend (withdrawals).
--- ponytail: balances are SUM over entries (indexed by account); add a balance snapshot when an account grows large.
 CREATE TABLE ledger_accounts (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   owner_party_id uuid REFERENCES parties(id),
@@ -257,14 +225,13 @@ CREATE TABLE ledger_accounts (
 );
 COMMENT ON TABLE ledger_accounts IS 'A ledger account: one per owner party and kind, or a platform account (no owner).';
 
--- Append-only. A journal (journal_id) is the set of entries written together; it must sum to zero (checked at commit).
 CREATE TABLE ledger_entries (
   id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   journal_id    uuid NOT NULL,
   account_id    uuid NOT NULL REFERENCES ledger_accounts(id),
-  amount        bigint NOT NULL CHECK (amount <> 0),     -- signed Rupiah: debit > 0, credit < 0
-  kind          text NOT NULL CHECK (kind IN ('escrow','payout','refund','payment','withdrawal','fee')),  -- Finance.entries kind
-  label         text NOT NULL,                           -- "Bayar TRX-4F2A · Green bean 50 kg"
+  amount        bigint NOT NULL CHECK (amount <> 0),
+  kind          text NOT NULL CHECK (kind IN ('escrow','payout','refund','payment','withdrawal','fee')),
+  label         text NOT NULL,
   trade_id      uuid REFERENCES trades(id),
   withdrawal_id uuid REFERENCES withdrawals(id),
   created_by    uuid REFERENCES users(id),
@@ -296,15 +263,12 @@ END $$;
 -- +goose StatementEnd
 CREATE TRIGGER ledger_entries_no_update BEFORE UPDATE OR DELETE ON ledger_entries FOR EACH ROW EXECUTE FUNCTION ledger_immutable();
 
--- ── Collective settlement ────────────────────────────────────────
-
--- Recorded when a market maker settles a closed round; the preview before that is computed, not stored.
 CREATE TABLE settlements (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   auction_id      uuid NOT NULL UNIQUE REFERENCES auctions(id),
   side            text NOT NULL CHECK (side IN ('procurement','selling')),
   winner_party_id uuid NOT NULL REFERENCES parties(id),
-  price_idr       idr NOT NULL,                          -- winning unit price
+  price_idr       idr NOT NULL,
   settled_by      uuid NOT NULL REFERENCES users(id),
   settled_at      timestamptz NOT NULL DEFAULT now()
 );
@@ -317,25 +281,20 @@ CREATE TABLE settlement_lines (
   quantity        qty NOT NULL CHECK (quantity > 0),
   share           numeric(6,5) NOT NULL CHECK (share > 0 AND share <= 1),
   amount_idr      idr NOT NULL,
-  trade_id        uuid UNIQUE REFERENCES trades(id),     -- the member's trade; null when none was created (masked pool member)
+  trade_id        uuid UNIQUE REFERENCES trades(id),
   created_at      timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX settlement_lines_settlement_idx ON settlement_lines (settlement_id);
 CREATE INDEX settlement_lines_member_idx ON settlement_lines (member_party_id);
 COMMENT ON TABLE settlement_lines IS 'One member''s pro-rata share of a settled collective round.';
 
--- ── Conversations (realtime chat) ────────────────────────────────
-
 CREATE TABLE conversations (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   subject         text NOT NULL CHECK (length(btrim(subject)) > 0),
-  -- Optional link (Conversation.link): polymorphic, so no FK; href is built by the API.
   link_type       text CHECK (link_type IN ('rfq','match','transaction')),
   link_id         uuid,
-  -- Last assigned messages.seq. Bumped by the messages insert trigger, which also row-locks the conversation, so seq
-  -- is gapless and in commit order per conversation.
   message_seq     bigint NOT NULL DEFAULT 0,
-  last_message_at timestamptz NOT NULL DEFAULT now(),   -- Conversation.updatedAt; inbox sort key
+  last_message_at timestamptz NOT NULL DEFAULT now(),
   created_by      uuid REFERENCES users(id),
   created_at      timestamptz NOT NULL DEFAULT now(),
   CHECK ((link_type IS NULL) = (link_id IS NULL))
@@ -343,22 +302,17 @@ CREATE TABLE conversations (
 CREATE INDEX conversations_link_idx ON conversations (link_type, link_id) WHERE link_id IS NOT NULL;
 COMMENT ON TABLE conversations IS 'A chat thread between parties, optionally about an RFQ, match or trade.';
 
--- One row per party and, for platform accounts, per user behind it (each user has their own read state).
--- External parties have a row with user_id null.
 CREATE TABLE conversation_participants (
   id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   conversation_id  uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
   party_id         uuid NOT NULL REFERENCES parties(id),
   user_id          uuid REFERENCES users(id) ON DELETE CASCADE,
   joined_at        timestamptz NOT NULL DEFAULT now(),
-  -- Read receipt: unread = conversations.message_seq - last_read_seq (O(1)). The sender's own row is advanced on send.
   last_read_seq    bigint NOT NULL DEFAULT 0,
   last_read_at     timestamptz,
   muted            boolean NOT NULL DEFAULT false,
   UNIQUE NULLS NOT DISTINCT (conversation_id, party_id, user_id)
 );
--- Inbox: the user's conversations, then sorted by conversations.last_message_at.
--- ponytail: sort happens after the join; denormalise last_message_at here if a user ever has thousands of threads.
 CREATE INDEX conversation_participants_user_idx ON conversation_participants (user_id, conversation_id) WHERE user_id IS NOT NULL;
 CREATE INDEX conversation_participants_party_idx ON conversation_participants (party_id, conversation_id);
 CREATE INDEX conversations_last_message_idx ON conversations (last_message_at DESC);
@@ -367,19 +321,17 @@ COMMENT ON TABLE conversation_participants IS 'A party (and the user behind it) 
 CREATE TABLE messages (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   conversation_id uuid NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-  seq             bigint NOT NULL,                       -- assigned by trigger; clients resume with "after seq N"
+  seq             bigint NOT NULL,
   kind            text NOT NULL DEFAULT 'text' CHECK (kind IN ('text','system','attachment')),
-  author_party_id uuid REFERENCES parties(id),           -- null for system messages
-  author_user_id  uuid REFERENCES users(id),             -- null for external parties and system messages
+  author_party_id uuid REFERENCES parties(id),
+  author_user_id  uuid REFERENCES users(id),
   body            text NOT NULL DEFAULT '',
-  attachment_key  text,                                  -- object storage key
+  attachment_key  text,
   attachment_name text,
-  -- Idempotent send: the client's id for the message. On a 23505 here, return the existing message. Do not use
-  -- ON CONFLICT DO NOTHING: the seq trigger would already have bumped the counter and leave a gap.
   client_msg_id   uuid,
   created_at      timestamptz NOT NULL DEFAULT now(),
   edited_at       timestamptz,
-  deleted_at      timestamptz,                           -- soft delete; clients render a tombstone
+  deleted_at      timestamptz,
   UNIQUE (conversation_id, seq),
   UNIQUE (author_user_id, client_msg_id),
   CHECK (kind = 'system' OR author_party_id IS NOT NULL),
@@ -402,8 +354,6 @@ END $$;
 -- +goose StatementEnd
 CREATE TRIGGER messages_seq BEFORE INSERT ON messages FOR EACH ROW EXECUTE FUNCTION messages_assign_seq();
 
--- ── RFQ ──────────────────────────────────────────────────────────
-
 CREATE TABLE rfqs (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   code              text NOT NULL UNIQUE DEFAULT next_code('RFQ'),
@@ -412,13 +362,12 @@ CREATE TABLE rfqs (
   category_id       category_id NOT NULL,
   quantity          qty NOT NULL CHECK (quantity > 0),
   unit              text NOT NULL,
-  target_price_idr  idr,                                 -- per unit, optional
+  target_price_idr  idr,
   deadline          timestamptz NOT NULL,
   location          text NOT NULL,
   spec              text NOT NULL DEFAULT '',
   status            text NOT NULL DEFAULT 'open' CHECK (status IN ('open','awarded','closed')),
   conversation_id   uuid NOT NULL REFERENCES conversations(id),
-  -- Rfq.source: repeat (a past trade), listing, match, logistics (transport for a trade).
   source_kind       text CHECK (source_kind IN ('repeat','listing','match','logistics')),
   source_trade_id   uuid REFERENCES trades(id),
   source_listing_id uuid REFERENCES listings(id),
@@ -436,7 +385,7 @@ CREATE TABLE rfqs (
 );
 CREATE TRIGGER rfqs_updated_at BEFORE UPDATE ON rfqs FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE INDEX rfqs_buyer_idx ON rfqs (buyer_party_id, created_at DESC);
-CREATE INDEX rfqs_open_category_idx ON rfqs (category_id, created_at DESC) WHERE status = 'open';  -- supplier feed
+CREATE INDEX rfqs_open_category_idx ON rfqs (category_id, created_at DESC) WHERE status = 'open';
 CREATE INDEX rfqs_source_trade_idx ON rfqs (source_trade_id) WHERE source_trade_id IS NOT NULL;
 COMMENT ON TABLE rfqs IS 'A buyer''s request for quotation.';
 
@@ -449,18 +398,17 @@ CREATE TABLE rfq_invitations (
 CREATE INDEX rfq_invitations_party_idx ON rfq_invitations (party_id);
 COMMENT ON TABLE rfq_invitations IS 'A supplier party invited to quote on an RFQ.';
 
--- Quantity is in the RFQ's unit.
 CREATE TABLE quotes (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   rfq_id            uuid NOT NULL REFERENCES rfqs(id) ON DELETE CASCADE,
   supplier_party_id uuid NOT NULL REFERENCES parties(id),
-  price_idr         idr NOT NULL CHECK (price_idr > 0),  -- per unit
+  price_idr         idr NOT NULL CHECK (price_idr > 0),
   quantity          qty NOT NULL CHECK (quantity > 0),
   lead_time_days    integer NOT NULL CHECK (lead_time_days >= 0),
   terms             text NOT NULL CHECK (terms IN ('escrow','net14','net30')),
   note              text NOT NULL DEFAULT '',
   status            text NOT NULL DEFAULT 'submitted' CHECK (status IN ('submitted','countered','accepted','declined','withdrawn')),
-  counter_price_idr idr CHECK (counter_price_idr > 0),   -- buyer's counter per unit
+  counter_price_idr idr CHECK (counter_price_idr > 0),
   created_by        uuid REFERENCES users(id),
   created_at        timestamptz NOT NULL DEFAULT now(),
   updated_at        timestamptz NOT NULL DEFAULT now(),
@@ -480,26 +428,23 @@ CREATE TABLE quote_events (
   quote_id      uuid NOT NULL REFERENCES quotes(id) ON DELETE CASCADE,
   at            timestamptz NOT NULL DEFAULT now(),
   actor_user_id uuid REFERENCES users(id),
-  actor_label   text NOT NULL,                           -- Quote.history.by
+  actor_label   text NOT NULL,
   text          text NOT NULL
 );
 CREATE INDEX quote_events_quote_idx ON quote_events (quote_id, at);
 COMMENT ON TABLE quote_events IS 'One step of a quote''s negotiation history.';
 
--- ── Shipments ────────────────────────────────────────────────────
-
--- Staged delivery: a trade ships in one or more shipments; delivered once every unit is on a delivered shipment.
 CREATE TABLE shipments (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   trade_id          uuid NOT NULL REFERENCES trades(id) ON DELETE CASCADE,
-  quantity          qty NOT NULL CHECK (quantity > 0),   -- in the trade's unit
+  quantity          qty NOT NULL CHECK (quantity > 0),
   drop_point        text NOT NULL CHECK (length(btrim(drop_point)) > 0),
   carrier           text NOT NULL DEFAULT 'Armada supplier',
   scheduled_at      timestamptz NOT NULL DEFAULT now(),
   status            text NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','in_transit','delivered')),
   delivered_at      timestamptz,
-  proof_document_id uuid REFERENCES trade_documents(id), -- the uploaded proof (Shipment.proof = its name)
-  logistics_rfq_id  uuid REFERENCES rfqs(id),            -- transport booked through a logistics RFQ
+  proof_document_id uuid REFERENCES trade_documents(id),
+  logistics_rfq_id  uuid REFERENCES rfqs(id),
   created_at        timestamptz NOT NULL DEFAULT now(),
   updated_at        timestamptz NOT NULL DEFAULT now(),
   CHECK ((status = 'delivered') = (delivered_at IS NOT NULL))
@@ -508,8 +453,6 @@ CREATE TRIGGER shipments_updated_at BEFORE UPDATE ON shipments FOR EACH ROW EXEC
 CREATE INDEX shipments_trade_idx ON shipments (trade_id, scheduled_at);
 CREATE INDEX shipments_logistics_rfq_idx ON shipments (logistics_rfq_id) WHERE logistics_rfq_id IS NOT NULL;
 COMMENT ON TABLE shipments IS 'One staged delivery of part of a trade''s quantity.';
-
--- ── Supply contracts ─────────────────────────────────────────────
 
 CREATE TABLE supply_contracts (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -522,7 +465,7 @@ CREATE TABLE supply_contracts (
   unit_price_idr    idr NOT NULL,
   terms             text NOT NULL DEFAULT 'escrow' CHECK (terms IN ('escrow','net14','net30')),
   every             text NOT NULL CHECK (every IN ('weekly','biweekly','monthly')),
-  runs              smallint NOT NULL CHECK (runs BETWEEN 2 AND 52),  -- orders in total; ends after the last
+  runs              smallint NOT NULL CHECK (runs BETWEEN 2 AND 52),
   next_at           timestamptz NOT NULL,
   status            text NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed','active','paused','ended','declined')),
   proposed_by_side  text NOT NULL CHECK (proposed_by_side IN ('buyer','supplier')),
@@ -535,7 +478,7 @@ CREATE TABLE supply_contracts (
 CREATE TRIGGER supply_contracts_updated_at BEFORE UPDATE ON supply_contracts FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE INDEX supply_contracts_buyer_idx ON supply_contracts (buyer_party_id, created_at DESC);
 CREATE INDEX supply_contracts_supplier_idx ON supply_contracts (supplier_party_id, created_at DESC);
-CREATE INDEX supply_contracts_due_idx ON supply_contracts (next_at) WHERE status = 'active';  -- scheduler
+CREATE INDEX supply_contracts_due_idx ON supply_contracts (next_at) WHERE status = 'active';
 COMMENT ON TABLE supply_contracts IS 'A standing supply contract: the same order re-placed every period.';
 
 CREATE TABLE contract_orders (
@@ -548,7 +491,6 @@ CREATE TABLE contract_orders (
 );
 COMMENT ON TABLE contract_orders IS 'One run of a supply contract and the trade it placed.';
 
--- Forward reference from 00003: a smart match that was connected opens a conversation.
 ALTER TABLE matches ADD CONSTRAINT matches_conversation_id_fkey
   FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL;
 

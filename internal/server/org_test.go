@@ -14,8 +14,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/analytics"
 )
 
-// ── Rules (ported from the frontend's src/domain/org.test.ts) ────
-
 var testRules = []approvalRule{
 	{Label: "> 50 jt", MinAmount: 50_000_000, Approvers: []string{"finance", "owner"}, AppliesTo: []string{"procurement", "auction"}},
 	{Label: "Auction > 200 jt", MinAmount: 200_000_000, Approvers: []string{"owner", "procurement"}, AppliesTo: []string{"auction"}},
@@ -96,7 +94,7 @@ func TestOrgApprovalRules(t *testing.T) {
 	if !canApprove("owner", req, []approval{ok("finance")}, staffed) || canApprove("finance", req, []approval{ok("finance")}, staffed) {
 		t.Fatal("canApprove")
 	}
-	// Deadlock rule: no active Finance member, so the owner signs for Finance too (own role first); nobody else may.
+
 	eq(signingRoles("owner", req, nil, []string{"owner", "sales"}), []string{"owner", "finance"})
 	eq(signingRoles("owner", req, nil, staffed), []string{"owner"})
 	eq(signingRoles("owner", req, nil, nil), []string{"owner"})
@@ -171,9 +169,6 @@ func TestOrgAnalyticsCompute(t *testing.T) {
 	}
 }
 
-// ── Integration ──────────────────────────────────────────────────
-
-// workspace creates an organization owned by a fresh verified user (categories packaging, Bandung).
 func (e *testEnv) workspace(name string) (*http.Client, string, string) {
 	e.t.Helper()
 	c, userID := e.bidder("Owner " + name)
@@ -190,7 +185,6 @@ func (e *testEnv) workspace(name string) (*http.Client, string, string) {
 	return c, userID, orgID
 }
 
-// member adds a fresh verified user to the org with role.
 func (e *testEnv) member(orgID, role string) (*http.Client, string) {
 	e.t.Helper()
 	c, userID := e.bidder("Anggota " + role)
@@ -219,7 +213,6 @@ func want(t *testing.T, r resp, status int, code string) {
 	}
 }
 
-// An address without an account gets the invitation by email, with a register link.
 func TestOrgInviteNewAddress(t *testing.T) {
 	e := newEnv(t)
 	owner, _, orgID := e.workspace("Undangan Baru")
@@ -272,13 +265,11 @@ func TestOrgAccessProfileAndTeam(t *testing.T) {
 		t.Fatalf("profile audit: %v", n)
 	}
 
-	// Invite: an existing account gets a notification (emailed by the notification mailer, once); an address without an
-	// account gets the email directly.
 	invitee, inviteeEmail := e.signedIn("Calon Anggota")
 	_ = invitee
-	e.exec(`UPDATE users SET email_verified_at = now() WHERE email = $1`, inviteeEmail) // the mailer skips unverified emails
+	e.exec(`UPDATE users SET email_verified_at = now() WHERE email = $1`, inviteeEmail)
 	inviteeID := e.scalar(`SELECT id::text FROM users WHERE email = $1`, inviteeEmail).(string)
-	mailsBefore := e.mailCount(inviteeEmail) // the registration code
+	mailsBefore := e.mailCount(inviteeEmail)
 	want(t, e.call(owner, "POST", base+"/team/invite", map[string]any{"email": "bukan-email", "role": "finance"}), 422, "validation")
 	want(t, e.call(owner, "POST", base+"/team/invite", map[string]any{"email": strings.ToUpper(inviteeEmail), "role": "nope"}), 422, "validation")
 	want(t, e.call(owner, "POST", base+"/team/invite", map[string]any{"email": " " + strings.ToUpper(inviteeEmail), "role": "finance", "department": "Keuangan"}), 204, "")
@@ -323,7 +314,6 @@ func TestOrgAccessProfileAndTeam(t *testing.T) {
 	want(t, e.call(owner, "DELETE", base+"/team/members/"+invited, nil), 204, "")
 	want(t, e.call(owner, "DELETE", base+"/team/members/"+invited, nil), 404, "not_found")
 
-	// Team settings: a custom role with its matrix, rules referencing roles, built-ins must stay.
 	settings := e.call(owner, "GET", base, nil).Body
 	roles := append(settings["roles"].([]any), map[string]any{"id": "custom-qc", "label": "Quality Control", "custom": true})
 	perms := settings["permissions"].(map[string]any)
@@ -383,7 +373,6 @@ func TestOrgInventoryOverviewAnalytics(t *testing.T) {
 		t.Fatalf("inventory: %v", items)
 	}
 
-	// Purchase history drives overview spend and analytics (ClickHouse is not configured in tests: Postgres fallback).
 	month := time.Now().UTC().Format("2006-01") + "-01"
 	supID := e.scalar(`INSERT INTO suppliers (name, categories, region, seed_rating, verified) VALUES ('PT Kertas Uji', '{packaging}', 'Jawa Barat', 4.5, true) RETURNING id::text`).(string)
 	e.exec(`INSERT INTO supplier_scorecards (supplier_id, month, price, reliability, quality, delivery) VALUES ($1, $2, 80, 90, 85, 95)`, supID, month)
@@ -500,7 +489,6 @@ func TestOrgProcurementAndPools(t *testing.T) {
 		t.Fatalf("validation: %v", r.Body)
 	}
 
-	// Above Rp 50 jt: finance and owner must approve; both are notified, the creator is not.
 	r = e.call(proc, "POST", base+"/procurement", input(60_000_000, true))
 	want(t, r, 201, "")
 	id := r.Body["id"].(string)
@@ -536,7 +524,6 @@ func TestOrgProcurementAndPools(t *testing.T) {
 		t.Fatalf("overview: %v", r.Body)
 	}
 
-	// Collective: no open pool with this category/unit yet, so one is created from the request.
 	r = act(proc, map[string]any{"action": "collective", "quantity": 80, "optIn": true})
 	if r.Status != 200 || r.Body["status"] != "in_collective" || r.Body["visibility"] != "aggregate" || r.Body["poolId"] == nil {
 		t.Fatalf("collective: %v", r.Body)
@@ -547,7 +534,7 @@ func TestOrgProcurementAndPools(t *testing.T) {
 	if pool["thresholdQty"] != float64(800) || pool["baseUnitPriceIdr"] != float64(600_000) || pool["region"] != "Jawa Barat" || len(r.Body["activity"].([]any)) < 3 {
 		t.Fatalf("detail: %v", r.Body)
 	}
-	// Another org joins without opting in: masked for us, own row for them.
+
 	other, _, otherID := e.workspace("Tetangga")
 	want(t, e.call(other, "POST", "/orgs/"+otherID+"/collective/"+poolID+"/join", map[string]any{"quantity": 0}), 422, "validation")
 	r = e.call(other, "POST", "/orgs/"+otherID+"/collective/"+poolID+"/join", map[string]any{"quantity": 300})
@@ -566,7 +553,6 @@ func TestOrgProcurementAndPools(t *testing.T) {
 	want(t, e.call(owner, "POST", base+"/collective/"+poolID+"/leave", nil), 409, "closed")
 	want(t, e.call(owner, "POST", base+"/collective/"+poolID+"/join", map[string]any{"quantity": 1}), 409, "closed")
 
-	// A fresh open pool: leaving puts our request back to approved.
 	e.exec(`UPDATE collective_pools SET status = 'open', market_requested_at = NULL WHERE id = $1`, poolID)
 	want(t, e.call(sales, "POST", base+"/collective/"+poolID+"/leave", nil), 403, "forbidden")
 	want(t, e.call(owner, "POST", base+"/collective/"+poolID+"/leave", nil), 204, "")
@@ -575,7 +561,6 @@ func TestOrgProcurementAndPools(t *testing.T) {
 		t.Fatalf("after leave: %v", r.Body)
 	}
 
-	// Draft, submit below the threshold (no approvers), cancel.
 	r = e.call(proc, "POST", base+"/procurement", input(5_000_000, false))
 	draft := r.Body["id"].(string)
 	if r.Body["status"] != "draft" {
@@ -602,7 +587,6 @@ func TestOrgProcurementAndPools(t *testing.T) {
 	}
 }
 
-// closeAuction ends a lot auction now and runs the clock.
 func (e *testEnv) closeAuction(id string) {
 	e.t.Helper()
 	e.exec(`UPDATE auctions SET ends_at = now() - interval '1 second', starts_at = now() - interval '1 hour' WHERE id = $1`, id)
@@ -619,7 +603,6 @@ func TestOrgAuctionLifecycle(t *testing.T) {
 	proc, _ := e.member(orgID, "procurement")
 	sales, _ := e.member(orgID, "sales")
 
-	// An approved request to run through the auction.
 	pr := e.call(proc, "POST", base+"/procurement", map[string]any{"need": "Box karton", "categoryId": "packaging", "quantity": map[string]any{"value": 1000, "unit": "pcs"},
 		"budgetIdr": 2_000_000, "deadline": time.Now().Add(240 * time.Hour), "spec": "", "deliveryLocation": "", "visibility": "public", "invitedSupplierIds": []string{},
 		"submit": true}).Body
@@ -642,7 +625,6 @@ func TestOrgAuctionLifecycle(t *testing.T) {
 		t.Fatalf("validation: %v", r.Body)
 	}
 
-	// Value 1.500.000: no approvers, opens at once as two economy auctions owned by the org.
 	r = e.call(proc, "POST", base+"/auctions", auction(1000, prID))
 	want(t, r, 201, "")
 	aid := r.Body["id"].(string)
@@ -662,7 +644,6 @@ func TestOrgAuctionLifecycle(t *testing.T) {
 		t.Fatalf("public lot: %v", ar.Body)
 	}
 
-	// Members may not bid; suppliers bid through the economy endpoints.
 	e.qualify(proc, lot1)
 	want(t, e.call(proc, "POST", "/auctions/"+lot1+"/bids", map[string]any{"priceIdr": 990}), 403, "owner")
 	b1, _ := e.bidder("Supplier Satu")
@@ -674,7 +655,7 @@ func TestOrgAuctionLifecycle(t *testing.T) {
 	want(t, e.call(b1, "POST", "/auctions/"+lot1+"/bids", map[string]any{"priceIdr": 950}), 200, "")
 	want(t, e.call(b2, "POST", "/auctions/"+lot1+"/bids", map[string]any{"priceIdr": 900}), 200, "")
 	want(t, e.call(b1, "POST", "/auctions/"+lot2+"/bids", map[string]any{"priceIdr": 980}), 200, "")
-	// A directory supplier backed by b2's party gets its scorecard in the evaluation.
+
 	b2Party := e.scalar(`SELECT id::text FROM parties WHERE user_id = $1`, b2ID).(string)
 	supID := e.scalar(`INSERT INTO suppliers (name, categories, region, verified, party_id) VALUES ($1, '{packaging}', 'Jawa Barat', true, $2) RETURNING id::text`,
 		fmt.Sprintf("PT Dua %d", time.Now().UnixNano()), b2Party).(string)
@@ -730,7 +711,6 @@ func TestOrgAuctionLifecycle(t *testing.T) {
 		t.Fatalf("procurement awarded: %v", p)
 	}
 
-	// PO: one trade per award line, org as buyer.
 	want(t, e.call(finance, "POST", base+"/auctions/"+aid+"/po", nil), 403, "forbidden")
 	want(t, e.call(owner, "POST", base+"/auctions/00000000-0000-0000-0000-000000000000/po", nil), 404, "not_found")
 	r = e.call(owner, "POST", base+"/auctions/"+aid+"/po", nil)
@@ -761,7 +741,6 @@ func TestOrgAuctionLifecycle(t *testing.T) {
 		t.Fatalf("analytics from awards: %v", r.Body)
 	}
 
-	// Above Rp 50 jt: waits for finance + owner; a rejection hands the request back.
 	pr2 := e.call(proc, "POST", base+"/procurement", map[string]any{"need": "Kraft", "categoryId": "packaging", "quantity": map[string]any{"value": 10, "unit": "ton"},
 		"budgetIdr": 40_000_000, "deadline": time.Now().Add(240 * time.Hour), "spec": "", "deliveryLocation": "", "visibility": "public", "invitedSupplierIds": []string{},
 		"submit": true}).Body["id"].(string)
@@ -788,7 +767,7 @@ func TestOrgAuctionLifecycle(t *testing.T) {
 	if p := e.call(owner, "GET", base+"/procurement/"+pr2, nil).Body["request"].(map[string]any); p["status"] != "approved" || p["auctionId"] != nil {
 		t.Fatalf("handed back: %v", p)
 	}
-	// Approved by everyone: it opens.
+
 	r = e.call(proc, "POST", base+"/auctions", auction(100_000, pr2))
 	again := r.Body["id"].(string)
 	want(t, e.call(finance, "POST", base+"/auctions/"+again+"/actions", map[string]any{"action": "approve"}), 200, "")
@@ -855,7 +834,6 @@ func TestOrgAnalyticsSources(t *testing.T) {
 	e.exec(`INSERT INTO org_purchase_history (org_id, code, month, item, category_id, supplier_id, quantity, unit, unit_price_idr, budget_unit_idr, market_unit_idr, via)
 		VALUES ($1, 'HST-9', date_trunc('month', now())::date, 'Lem', 'packaging', $2, 3, 'kg', 1000, 1000, 1000, 'direct')`, orgID, supID)
 
-	// ClickHouse down: the Postgres figures, never an error.
 	down, err := analytics.Open("127.0.0.1:1", "ecopurnity", "default", "")
 	if err != nil {
 		t.Fatal(err)
@@ -866,8 +844,6 @@ func TestOrgAnalyticsSources(t *testing.T) {
 		t.Fatalf("fallback: %v", r.Body)
 	}
 
-	// ClickHouse up (a throwaway database): a completed org purchase (auction -> award -> PO) and the imported history
-	// both reach org_purchase_monthly through the outbox, and the page reads them from there.
 	ch, _ := chSchema(t)
 	if ch == nil {
 		t.Skip("no clickhouse")
@@ -886,7 +862,6 @@ func TestOrgAnalyticsSources(t *testing.T) {
 	e.exec(`INSERT INTO org_purchase_history (org_id, code, month, item, category_id, supplier_id, quantity, unit, unit_price_idr, budget_unit_idr, market_unit_idr, via, bidders, opening_idr)
 		VALUES ($1, 'HST-10', (date_trunc('month', now()) - interval '1 month')::date, 'Lem', 'packaging', $2, 4, 'kg', 1000, 1100, 1050, 'auction', 6, 1200)`, orgID, supID)
 
-	// The publisher's ClickHouse step for this org's facts (others in the shared test database are left alone).
 	rows, err := e.db.Primary().Query(t0(), `SELECT id, topic, aggregate_id, created_at, payload::text FROM outbox
 		WHERE topic <> 'rt' AND (payload->>'buyerOrgId' = $1 OR payload->>'orgId' = $1 OR aggregate_id = ANY(SELECT auction_id::text FROM org_auction_lots WHERE org_auction_id = $2))
 		ORDER BY id`, orgID, aid)
@@ -913,7 +888,7 @@ func TestOrgAnalyticsSources(t *testing.T) {
 			po = h
 		}
 	}
-	// HST-9 was inserted before ClickHouse existed in this test, but its outbox row is replayed too.
+
 	if r.Status != 200 || len(hist) != 3 || po == nil || po["item"] != "Lem PVAc" || po["totalIdr"] != float64(900_000) || po["via"] != "auction" ||
 		codes["HST-10"]["supplier"] != "CV Analitik" || codes["HST-10"]["totalIdr"] != float64(4000) || codes["HST-9"] == nil ||
 		codes["HST-10"]["month"] != time.Date(time.Now().UTC().Year(), time.Now().UTC().Month()-1, 1, 0, 0, 0, 0, time.UTC).Format("2006-01") {
@@ -938,7 +913,6 @@ func TestOrgAnalyticsSources(t *testing.T) {
 	}
 }
 
-// orgAuctionBody: a reverse procurement auction with the given lots ([item, quantity, reserve]) and withdraw rule.
 func orgAuctionBody(title, withdraw string, lots ...[3]any) map[string]any {
 	ls := []any{}
 	for _, l := range lots {
@@ -981,8 +955,6 @@ func TestWithdrawBlock(t *testing.T) {
 	}
 }
 
-// Lot close notifications (once, when the last lot closes), the org owner view of a lot, the per-auction withdraw rule
-// and bid capacity end to end.
 func TestOrgLotRoomWithdrawCapacityAndClose(t *testing.T) {
 	e := newEnv(t)
 	owner, ownerID, orgID := e.workspace("Kapasitas")
@@ -998,7 +970,6 @@ func TestOrgLotRoomWithdrawCapacityAndClose(t *testing.T) {
 	lot1 := r.Body["live"].([]any)[0].(map[string]any)["auctionId"].(string)
 	lot2 := r.Body["live"].([]any)[1].(map[string]any)["auctionId"].(string)
 
-	// Gap 2: members who can view auctions are owners of the lot and evaluate the business auction; others bid view.
 	evaluate := "/org/" + orgID + "/auctions/" + aid + "/evaluate"
 	for _, c := range []*http.Client{owner, sales} {
 		if me := e.call(c, "GET", "/auctions/"+lot1+"/me", nil).Body; me["owner"] != true || me["evaluateHref"] != evaluate {
@@ -1012,10 +983,9 @@ func TestOrgLotRoomWithdrawCapacityAndClose(t *testing.T) {
 			t.Fatalf("bidder view: %v", me)
 		}
 	}
-	// A member cannot reach the lot through the personal buyer evaluation either.
+
 	want(t, e.call(owner, "GET", "/auctions/"+lot1+"/evaluation", nil), 404, "not_found")
 
-	// Gap 3: the rule is listed in the room and enforced.
 	rules := e.call(e.client(), "GET", "/auctions/"+lot1, nil).Body["rules"].([]any)
 	if !slices.ContainsFunc(rules, func(x any) bool {
 		m := x.(map[string]any)
@@ -1024,7 +994,6 @@ func TestOrgLotRoomWithdrawCapacityAndClose(t *testing.T) {
 		t.Fatalf("rules: %v", rules)
 	}
 
-	// Gap 4: capacity on reverse bids, validated, own view only.
 	for _, c := range []*http.Client{b1, b2} {
 		e.qualify(c, lot1)
 		e.qualify(c, lot2)
@@ -1048,7 +1017,7 @@ func TestOrgLotRoomWithdrawCapacityAndClose(t *testing.T) {
 	if strings.Contains(string(pub), "capacity") || strings.Contains(string(frames), "capacity") || strings.Contains(string(frames), "600") {
 		t.Fatalf("capacity leaked to the room: %s %s", pub, frames)
 	}
-	// Outbid, more than 30 minutes left, but this auction's bids are binding.
+
 	me := e.call(b1, "GET", "/auctions/"+lot1+"/me", nil).Body["bid"].(map[string]any)
 	if me["status"] != "outbid" || me["canWithdraw"] != false {
 		t.Fatalf("binding bid: %v", me)
@@ -1058,7 +1027,6 @@ func TestOrgLotRoomWithdrawCapacityAndClose(t *testing.T) {
 		t.Fatalf("withdraw never: %d %v", r.Status, r.Body)
 	}
 
-	// Gap 1: nothing while a lot still runs; one notification per viewer when the last lot closes.
 	title := "Box mengikat ditutup"
 	count := func(userID string) int {
 		return len(slices.DeleteFunc(e.notifications(userID), func(s string) bool { return s != title }))
@@ -1082,7 +1050,6 @@ func TestOrgLotRoomWithdrawCapacityAndClose(t *testing.T) {
 		t.Fatalf("notification: %q %q", body, href)
 	}
 
-	// Evaluation offers the stated capacity; an award line above it is refused.
 	lots := e.call(owner, "GET", base+"/auctions/"+aid+"/evaluation", nil).Body["lots"].([]any)
 	offers := lots[0].(map[string]any)["offers"].([]any)
 	var capped, full map[string]any
@@ -1110,7 +1077,6 @@ func TestOrgLotRoomWithdrawCapacityAndClose(t *testing.T) {
 	want(t, r, 200, "")
 }
 
-// Gap 6: "above Rp 50 jt: Finance + Owner" in an org without an active Finance member: the owner signs for Finance.
 func TestOrgApprovalOwnerSignsForMissingRole(t *testing.T) {
 	e := newEnv(t)
 	owner, _, orgID := e.workspace("Tanpa Finance")
@@ -1140,7 +1106,6 @@ func TestOrgApprovalOwnerSignsForMissingRole(t *testing.T) {
 		t.Fatalf("approval history: %v", byRole)
 	}
 
-	// Procurement too; a rejection is recorded once, for the owner's own role.
 	newReq := func() string {
 		return e.call(owner, "POST", base+"/procurement", map[string]any{"need": "Kraft", "categoryId": "packaging", "quantity": map[string]any{"value": 10, "unit": "ton"},
 			"budgetIdr": 60_000_000, "deadline": time.Now().Add(240 * time.Hour), "spec": "", "deliveryLocation": "", "visibility": "public",
@@ -1157,7 +1122,6 @@ func TestOrgApprovalOwnerSignsForMissingRole(t *testing.T) {
 		t.Fatalf("reject: %v", r.Body)
 	}
 
-	// With a Finance member the owner signs only for itself.
 	finance, _ := e.member(orgID, "finance")
 	pr = newReq()
 	r = e.call(owner, "POST", base+"/procurement/"+pr+"/actions", map[string]any{"action": "approve"})

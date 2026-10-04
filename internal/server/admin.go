@@ -16,10 +16,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/secure"
 )
 
-// Governance (spec tag Admin, PRD §11): every operation needs the `admin` capability; every write is audited in the same
-// transaction, punitive ones with a written reason. Copy and rules follow the frontend mock (src/mocks/adminHandlers.ts).
-
-// adminActor is the signed-in admin; Label is how the audit trail and decisions show them ("Sari Kusuma (Admin)").
 type adminActor struct{ ID, Label string }
 
 var errNotAdmin = &Error{Status: http.StatusForbidden, Code: "forbidden", Message: "Butuh capability admin"}
@@ -40,7 +36,6 @@ func (s *Server) requireAdmin(ctx context.Context) (adminActor, error) {
 	return adminActor{ID: sess.UserID, Label: sess.Name + " (Admin)"}, nil
 }
 
-// record writes an audit entry by this admin.
 func (a adminActor) record(ctx context.Context, q dbtx, e audit) error {
 	e.ActorUserID, e.ActorLabel = &a.ID, a.Label
 	return writeAudit(ctx, q, e)
@@ -48,7 +43,6 @@ func (a adminActor) record(ctx context.Context, q dbtx, e audit) error {
 
 const minReason = 10
 
-// needReason returns the trimmed reason, or the 422 reason_required every punitive action answers.
 func needReason(r *string) (string, error) {
 	if r != nil {
 		if t := strings.TrimSpace(*r); utf8.RuneCountInString(t) >= minReason {
@@ -59,7 +53,6 @@ func needReason(r *string) (string, error) {
 		Fields: map[string]string{"reason": fmt.Sprintf("Tulis alasan minimal %d karakter; tercatat di audit trail", minReason)}}
 }
 
-// optReason is the trimmed reason, or nil when empty.
 func optReason(r *string) *string {
 	if r == nil || strings.TrimSpace(*r) == "" {
 		return nil
@@ -78,8 +71,6 @@ func notFound(msg string) error {
 func conflict(code, msg string) error {
 	return &Error{Status: http.StatusConflict, Code: code, Message: msg}
 }
-
-// ── Audit trail ──────────────────────────────────────────────────
 
 func loadAudit(ctx context.Context, q dbtx, where string, limit int, args ...any) ([]api.AuditEntry, error) {
 	rows, err := q.Query(ctx, fmt.Sprintf(`
@@ -118,7 +109,7 @@ func (s *Server) ListAdminAudit(ctx context.Context, req api.ListAdminAuditReque
 		where = append(where, fmt.Sprintf(cond, len(args)))
 	}
 	if p.Q != nil && strings.TrimSpace(*p.Q) != "" {
-		// ponytail: ILIKE scan on Postgres; the ClickHouse audit mirror (ngram index) takes over when this gets slow.
+
 		add(`(actor_label || ' ' || action || ' ' || entity_label || ' ' || coalesce(reason, '')) ILIKE '%%' || $%d || '%%'`, likeEscape(strings.TrimSpace(*p.Q)))
 	}
 	if p.EntityType != nil {
@@ -144,18 +135,14 @@ func (s *Server) ListAdminAudit(ctx context.Context, req api.ListAdminAuditReque
 	return api.ListAdminAudit200JSONResponse(out), nil
 }
 
-// ── Overview ─────────────────────────────────────────────────────
-
 const (
 	verificationSLA = 48 * time.Hour
 	disputeSLA      = 72 * time.Hour
 )
 
-// Users in the governance queue: reported and still active, or waiting on an appeal of their current suspension.
 const userQueueCond = `((u.status = 'active' AND EXISTS (SELECT 1 FROM user_reports r WHERE r.user_id = u.id))
 	OR EXISTS (SELECT 1 FROM suspension_appeals a WHERE a.user_id = u.id AND a.suspended_at = u.suspended_at AND a.status = 'pending'))`
 
-// Markets in the moderation queue: not suspended, with a flag newer than the last review.
 const marketQueueCond = `(m.status <> 'suspended' AND EXISTS (SELECT 1 FROM market_flags f WHERE f.market_id = m.id
 	AND f.created_at > coalesce(m.reviewed_at, '-infinity')))`
 
@@ -211,8 +198,6 @@ func (s *Server) GetAdminOverview(ctx context.Context, _ api.GetAdminOverviewReq
 	return api.GetAdminOverview200JSONResponse(o), nil
 }
 
-// ── Users ────────────────────────────────────────────────────────
-
 const adminUserSelect = `
 	SELECT u.id, u.name, u.username, u.email, u.location, u.status, u.created_at, coalesce(i.identity_verified_at IS NOT NULL, false),
 	       coalesce((SELECT array_agg(c.capability ORDER BY c.capability) FROM user_capabilities c WHERE c.user_id = u.id), '{}'),
@@ -246,7 +231,7 @@ func loadAdminUsers(ctx context.Context, q dbtx, where string, args ...any) ([]a
 		return nil, err
 	}
 	rows.Close()
-	// ponytail: one score query per listed user; batch loadRepTxs over all parties if the admin list grows large.
+
 	for i := range out {
 		score, _, err := userReputation(ctx, q, out[i].Id)
 		if err != nil {
@@ -367,7 +352,6 @@ func loadReports(ctx context.Context, q dbtx, sql string, args ...any) ([]api.Us
 	return out, rows.Err()
 }
 
-// userTransactions is the user's trades as Transactions seen from their side (AdminUserDetail.history).
 func userTransactions(ctx context.Context, q dbtx, userID string) ([]api.Transaction, error) {
 	out := []api.Transaction{}
 	party, err := myPartyID(ctx, q, userID)
@@ -395,9 +379,6 @@ func userTransactions(ctx context.Context, q dbtx, userID string) ([]api.Transac
 
 var statusVerb = map[string]string{"active": "Pulihkan akun", "restricted": "Batasi akun", "suspended": "Suspend akun"}
 
-// setUserStatus changes an account's governance status. Suspending starts a suspension episode (suspended_at, the
-// appeal key; kept when the account is already suspended) and signs the user out everywhere. via = alert code for
-// escalations.
 func setUserStatus(ctx context.Context, tx pgx.Tx, a adminActor, u api.AdminUser, to, reason, via string) error {
 	if _, err := tx.Exec(ctx, `
 		UPDATE users SET status = $2, suspended_at = CASE WHEN $2 = 'suspended' THEN coalesce(suspended_at, now()) END WHERE id = $1`,
@@ -417,7 +398,6 @@ func setUserStatus(ctx context.Context, tx pgx.Tx, a adminActor, u api.AdminUser
 		Changes: []change{diff("status", string(u.Status), to)}})
 }
 
-// lockAdminUser locks the users row and returns the admin view of it (404 when missing).
 func lockAdminUser(ctx context.Context, tx pgx.Tx, id string) (api.AdminUser, error) {
 	var uid string
 	err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id::text = $1 FOR UPDATE`, id).Scan(&uid)
@@ -481,7 +461,7 @@ func (s *Server) ActOnAdminUser(ctx context.Context, req api.ActOnAdminUserReque
 				return conflict("no_change", "Status akun sudah seperti itu")
 			}
 			if req.Body.Action == api.UserActionRestore {
-				// The pending appeal of the current suspension is granted by restoring the account.
+
 				if _, err := tx.Exec(ctx, `
 					UPDATE suspension_appeals a SET status = 'granted', decided_at = now(), decided_by = $2, decision_note = $3
 					FROM users u WHERE u.id = a.user_id AND a.user_id = $1 AND a.suspended_at = u.suspended_at AND a.status = 'pending'`,
@@ -502,13 +482,11 @@ func (s *Server) ActOnAdminUser(ctx context.Context, req api.ActOnAdminUserReque
 	return api.ActOnAdminUser200JSONResponse(out), nil
 }
 
-// ── Verification queue ───────────────────────────────────────────
-
 type verificationRow struct {
 	api.VerificationRequest
 	UserID string
 	OrgID  *string
-	Keys   []string // object keys, in Documents order
+	Keys   []string
 }
 
 func loadVerifications(ctx context.Context, q dbtx, where string, args ...any) ([]verificationRow, error) {
@@ -638,7 +616,7 @@ func (s *Server) GetAdminVerification(ctx context.Context, req api.GetAdminVerif
 				return nil, err
 			}
 			v.Nik = ptr(string(nik))
-			// Every view of a decrypted NIK is on the record.
+
 			if err := admin.record(ctx, s.DB.Primary(), audit{Action: "Melihat NIK", EntityType: "user", EntityID: v.UserID,
 				EntityLabel: v.Business}); err != nil {
 				return nil, err
@@ -695,7 +673,7 @@ func (s *Server) DecideAdminVerification(ctx context.Context, req api.DecideAdmi
 			e.Action = map[string]string{"approved": "Setujui verifikasi KTP", "rejected": "Tolak verifikasi KTP", "reupload": "Minta unggah ulang dokumen"}[to]
 			e.EntityType, e.EntityID, e.EntityLabel = "user", v.UserID, v.Owner
 			if to == "approved" {
-				// One verified account per NIK: the hash moves onto the identity (identities.nik_hash is UNIQUE).
+
 				_, err := tx.Exec(ctx, `
 					INSERT INTO identities (user_id, identity_verified_at, identity_verified_by, nik_hash)
 					SELECT $1, now(), $2, k.nik_hash FROM kyc_submissions k WHERE k.verification_request_id = $3

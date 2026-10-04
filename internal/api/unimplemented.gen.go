@@ -7,10 +7,8 @@ import (
 	"errors"
 )
 
-// ErrNotImplemented is returned by every Unimplemented method; the server maps it to 501 not_implemented.
 var ErrNotImplemented = errors.New("not implemented")
 
-// Unimplemented answers every operation with ErrNotImplemented. Embed it and define the operations you implement.
 type Unimplemented struct{}
 
 var _ StrictServerInterface = Unimplemented{}

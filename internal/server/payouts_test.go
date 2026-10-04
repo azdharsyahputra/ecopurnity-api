@@ -20,7 +20,6 @@ func TestManualPayouts(t *testing.T) {
 	sellerID := e.scalar(`SELECT id::text FROM users WHERE email = $1`, email).(string)
 	party := e.partyOf(sellerID)
 
-	// 900k released earnings + 100k collected PPN in the wallet; an approved KTP named BUDI SANTOSO.
 	if err := e.server.inTx(t0(), func(tx pgx.Tx) error {
 		acc, err := accounts(t0(), tx, "bank_clearing", "wallet_available:"+party, "ppn_payable:"+party)
 		if err != nil {
@@ -45,8 +44,8 @@ func TestManualPayouts(t *testing.T) {
 		}
 		return r.Body["withdrawals"].([]any)[0].(map[string]any)["id"].(string)
 	}
-	paidID := wd(950_000)  // 900k wallet + 50k PPN
-	rejectID := wd(50_000) // the remaining PPN
+	paidID := wd(950_000)
+	rejectID := wd(50_000)
 	walletPPN := func() (int64, int64) {
 		w, _ := balance(t0(), e.db.Primary(), party, "wallet_available")
 		p, _ := balance(t0(), e.db.Primary(), party, "ppn_payable")
@@ -56,7 +55,6 @@ func TestManualPayouts(t *testing.T) {
 		t.Fatal("drained", w, p)
 	}
 
-	// Admins only.
 	for _, path := range []string{"/admin/withdrawals", "/admin/withdrawals/" + paidID} {
 		if r := e.call(seller, "GET", path, nil); r.Status != 403 {
 			t.Fatal("non-admin", path, r.Status)
@@ -69,7 +67,6 @@ func TestManualPayouts(t *testing.T) {
 		t.Fatal("404", r.Status)
 	}
 
-	// Queue: masked number, SLA hint; overview counts it.
 	q := e.list(adm, "/admin/withdrawals?status=processing")
 	w := find(q, "id", paidID)
 	if w == nil || find(q, "id", rejectID) == nil || w["accountLast4"] != "7890" || w["accountNo"] != nil || w["bank"] != "BCA" ||
@@ -80,7 +77,6 @@ func TestManualPayouts(t *testing.T) {
 		t.Fatal("overview", r.Body)
 	}
 
-	// Detail: decrypted number (audited), KTP name next to the holder, the party's other withdrawals.
 	views := func() int64 {
 		return e.scalar(`SELECT count(*) FROM audit_log WHERE entity_id = $1 AND action LIKE 'Melihat nomor rekening%'`, sellerID).(int64)
 	}
@@ -90,7 +86,6 @@ func TestManualPayouts(t *testing.T) {
 		t.Fatal("detail", r.Status, r.Body, views())
 	}
 
-	// Validation, then mark paid.
 	act := func(id string, body map[string]any) resp {
 		return e.call(adm, "POST", "/admin/withdrawals/"+id+"/actions", body)
 	}
@@ -128,12 +123,11 @@ func TestManualPayouts(t *testing.T) {
 	if n := e.scalar(`SELECT count(*) FROM audit_log WHERE entity_id = $1 AND action LIKE 'Tandai pencairan WDR-% dibayar'`, sellerID).(int64); n != 1 {
 		t.Fatal("paid audit", n)
 	}
-	// No full number once paid (and no new audited view).
+
 	if r := e.call(adm, "GET", "/admin/withdrawals/"+paidID, nil); r.Body["accountNo"] != nil || views() != 1 {
 		t.Fatal("paid detail", r.Body, views())
 	}
 
-	// Reject: the PPN it took is available again.
 	r = act(rejectID, map[string]any{"action": "reject", "reason": "Nama pemilik rekening tidak sesuai KTP"})
 	if r.Status != 200 || r.Body["status"] != "rejected" || r.Body["reason"] != "Nama pemilik rekening tidak sesuai KTP" {
 		t.Fatal("reject", r.Status, r.Body)
@@ -151,7 +145,6 @@ func TestManualPayouts(t *testing.T) {
 		t.Fatal("reject audit", n)
 	}
 
-	// The seller's view.
 	f := e.call(seller, "GET", "/me/finance", nil).Body
 	if num(f["availableIdr"]) != 50_000 || num(f["withdrawnIdr"]) != 950_000 {
 		t.Fatal("finance totals", f)

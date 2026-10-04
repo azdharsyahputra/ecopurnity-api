@@ -28,7 +28,7 @@ func TestRegisterSessionLogout(t *testing.T) {
 			t.Fatalf("cookie %q lacks %s", cookie, want)
 		}
 	}
-	// Only the hash of the session token is stored.
+
 	if n := e.scalar(`SELECT count(*) FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.email = $1`, strings.ToLower(email)); n != int64(1) {
 		t.Fatalf("sessions: %v", n)
 	}
@@ -42,12 +42,11 @@ func TestRegisterSessionLogout(t *testing.T) {
 	if r := e.call(c, "GET", "/auth/me", nil); r.Status != 401 || r.code() != "unauthenticated" {
 		t.Fatalf("me after logout: %d %v", r.Status, r.Body)
 	}
-	// Logging out without a session still succeeds.
+
 	if r := e.call(e.client(), "POST", "/auth/logout", nil); r.Status != http.StatusNoContent {
 		t.Fatalf("anonymous logout: %d", r.Status)
 	}
 
-	// Sign back in; email is case-insensitive.
 	if r := e.call(c, "POST", "/auth/login", map[string]any{"email": strings.ToUpper(email), "password": "rahasia123"}); r.Status != 200 {
 		t.Fatalf("login: %d %v", r.Status, r.Body)
 	}
@@ -62,7 +61,7 @@ func TestRegisterValidation(t *testing.T) {
 	if r := e.call(e.client(), "POST", "/auth/register", map[string]any{"name": "A", "email": email, "password": "rahasia123"}); r.Status != 201 {
 		t.Fatalf("first: %d %v", r.Status, r.Body)
 	}
-	// Taken email is reported before the short password (mock order), with the field message the UI shows.
+
 	r := e.call(e.client(), "POST", "/auth/register", map[string]any{"name": "B", "email": email, "password": "x"})
 	if r.Status != 409 || r.code() != "email_taken" || r.field("email") != "Email ini sudah punya akun. Masuk saja." {
 		t.Fatalf("dup: %d %v", r.Status, r.Body)
@@ -75,7 +74,7 @@ func TestRegisterValidation(t *testing.T) {
 	if r.Status != 422 || r.field("name") == "" || r.field("email") == "" {
 		t.Fatalf("bad name/email: %d %v", r.Status, r.Body)
 	}
-	// Same local part: usernames stay unique.
+
 	other := strings.Replace(email, "@example.id", "@lain.id", 1)
 	r = e.call(e.client(), "POST", "/auth/register", map[string]any{"name": "C", "email": other, "password": "rahasia123"})
 	if r.Status != 201 || !strings.HasSuffix(r.Body["username"].(string), "2") {
@@ -95,7 +94,7 @@ func TestLoginFailures(t *testing.T) {
 			t.Fatalf("bad login: %d %v", r.Status, r.Body)
 		}
 	}
-	// Body is validated against the spec before the handler.
+
 	if r := e.call(e.client(), "POST", "/auth/login", map[string]any{"email": email}); r.Status != 422 || r.field("password") == "" {
 		t.Fatalf("missing password: %d %v", r.Status, r.Body)
 	}
@@ -119,12 +118,11 @@ func TestEmailVerificationCode(t *testing.T) {
 	if !ok || len(first.Code) != 6 || !strings.Contains(first.Subject, first.Code) || !strings.Contains(first.Body, first.Code) {
 		t.Fatalf("verification mail: %+v", first)
 	}
-	// Only an HMAC is stored, never the code.
+
 	if n := e.scalar(`SELECT count(*) FROM auth_tokens WHERE token_hash = convert_to($1, 'UTF8')`, first.Code); n != int64(0) {
 		t.Fatal("code stored in clear")
 	}
 
-	// Needs the session; malformed codes are rejected by the spec (pattern).
 	if r := e.call(e.client(), "POST", "/auth/verify-email", map[string]any{"code": first.Code}); r.Status != 401 {
 		t.Fatalf("no session: %d", r.Status)
 	}
@@ -132,7 +130,6 @@ func TestEmailVerificationCode(t *testing.T) {
 		t.Fatalf("malformed: %d %v", r.Status, r.Body)
 	}
 
-	// Resend is rate limited to one per minute.
 	r := e.call(c, "POST", "/auth/resend-verification", nil)
 	if r.Status != 429 || r.code() != "resend_cooldown" || r.Header.Get("Retry-After") == "" {
 		t.Fatalf("cooldown: %d %v", r.Status, r.Body)
@@ -143,10 +140,10 @@ func TestEmailVerificationCode(t *testing.T) {
 	}
 	second, _ := e.lastMail(email)
 	if second.Code == first.Code {
-		// Astronomically unlikely; the codes are independent.
+
 		t.Log("same code twice")
 	}
-	// The old code no longer works once a new one was sent.
+
 	if first.Code != second.Code {
 		if r := e.call(c, "POST", "/auth/verify-email", map[string]any{"code": first.Code}); r.Status != 422 || r.code() != "invalid_code" {
 			t.Fatalf("old code: %d %v", r.Status, r.Body)
@@ -156,7 +153,7 @@ func TestEmailVerificationCode(t *testing.T) {
 	if r.Status != 200 || r.Body["emailVerified"] != true {
 		t.Fatalf("verify: %d %v", r.Status, r.Body)
 	}
-	// Idempotent once verified; resend does nothing.
+
 	if r := e.call(c, "POST", "/auth/verify-email", map[string]any{"code": "000000"}); r.Status != 200 {
 		t.Fatalf("verified again: %d %v", r.Status, r.Body)
 	}
@@ -184,12 +181,11 @@ func TestEmailCodeAttemptsAndExpiry(t *testing.T) {
 	if r := e.call(c, "POST", "/auth/verify-email", map[string]any{"code": wrong}); r.Status != 429 || r.code() != "too_many_attempts" {
 		t.Fatalf("5th attempt: %d %v", r.Status, r.Body)
 	}
-	// Burned: even the right code fails now.
+
 	if r := e.call(c, "POST", "/auth/verify-email", map[string]any{"code": m.Code}); r.Status != 422 || r.code() != "code_expired" {
 		t.Fatalf("after burn: %d %v", r.Status, r.Body)
 	}
 
-	// Expiry.
 	e.exec(`UPDATE auth_tokens SET created_at = created_at - interval '2 minutes' WHERE user_id = (SELECT id FROM users WHERE email = $1)`, email)
 	e.call(c, "POST", "/auth/resend-verification", nil)
 	m2, _ := e.lastMail(email)
@@ -205,7 +201,6 @@ func TestPasswordReset(t *testing.T) {
 	other := e.client()
 	e.call(other, "POST", "/auth/register", map[string]any{"name": "R", "email": email, "password": "rahasia123"})
 
-	// Unknown email: same 204, no mail.
 	ghost := uniqueEmail(t, "ghost")
 	if r := e.call(e.client(), "POST", "/auth/forgot-password", map[string]any{"email": ghost}); r.Status != 204 {
 		t.Fatalf("forgot unknown: %d", r.Status)
@@ -225,14 +220,14 @@ func TestPasswordReset(t *testing.T) {
 	if r := e.call(e.client(), "POST", "/auth/reset-password", map[string]any{"token": "nope", "password": "x"}); r.Status != 400 || r.code() != "invalid_token" {
 		t.Fatalf("bad token checked before password: %d %v", r.Status, r.Body)
 	}
-	// A short password keeps the token usable.
+
 	if r := e.call(e.client(), "POST", "/auth/reset-password", map[string]any{"token": tok, "password": "pendek"}); r.Status != 422 || r.field("password") == "" {
 		t.Fatalf("short: %d %v", r.Status, r.Body)
 	}
 	if r := e.call(e.client(), "POST", "/auth/reset-password", map[string]any{"token": tok, "password": "baru-sekali-123"}); r.Status != 204 {
 		t.Fatalf("reset: %d %v", r.Status, r.Body)
 	}
-	// Old sessions are signed out, old password stops working, new one works, token is spent.
+
 	if r := e.call(other, "GET", "/auth/me", nil); r.Status != 401 {
 		t.Fatalf("old session survived reset: %d", r.Status)
 	}
@@ -260,7 +255,6 @@ func TestSuspensionAndAppeal(t *testing.T) {
 
 	e.exec(`UPDATE users SET status = 'suspended', suspended_at = now() WHERE email = $1`, email)
 
-	// An existing session is cut off immediately.
 	if r := e.call(c, "GET", "/auth/me", nil); r.Status != 403 || r.code() != "account_suspended" {
 		t.Fatalf("me suspended: %d %v", r.Status, r.Body)
 	}
@@ -299,7 +293,6 @@ func TestSuspensionAndAppeal(t *testing.T) {
 		t.Fatalf("login with denied appeal: %d %v", r.Status, r.Body)
 	}
 
-	// A new suspension episode can be appealed again.
 	e.exec(`UPDATE users SET status = 'active', suspended_at = NULL WHERE email = $1`, email)
 	e.exec(`UPDATE users SET status = 'suspended', suspended_at = now() WHERE email = $1`, email)
 	if r := e.call(e.client(), "POST", "/auth/appeal", appeal); r.Status != 200 {
@@ -314,7 +307,7 @@ func TestGoogleDevLogin(t *testing.T) {
 	if r.Status != 200 || r.Body["email"] != "tamu.google@gmail.com" || r.Body["emailVerified"] != true {
 		t.Fatalf("google: %d %v", r.Status, r.Body)
 	}
-	// Second sign-in reuses the account.
+
 	if r2 := e.call(e.client(), "POST", "/auth/google", nil); r2.Body["id"] != r.Body["id"] {
 		t.Fatalf("google second: %v vs %v", r2.Body["id"], r.Body["id"])
 	}
@@ -364,7 +357,6 @@ func TestOnboarding(t *testing.T) {
 		t.Fatalf("admin not notified: %v", n)
 	}
 
-	// Repeating onboarding updates preferences but does not duplicate the org, listing or application.
 	body["radiusKm"] = 10
 	if r := e.call(c, "PATCH", "/me/onboarding", body); r.Status != 200 || len(r.Body["orgs"].([]any)) != 1 {
 		t.Fatalf("repeat: %d %v", r.Status, r.Body)

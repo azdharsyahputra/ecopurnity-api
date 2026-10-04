@@ -15,55 +15,20 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Trade action engine (PRD F6 settlement flow), shared by POST /me/transactions/{id}/actions and
-// POST /orgs/{orgId}/transactions/{tid}/actions (every action but `pay`), the payment gateway settlement (payments.go:
-// `pay`, once per settled payment) and the external counterparty bot (trade_clock.go).
-//
-// Contract of applyTradeAction(ctx, tx, tradeID, actor, in):
-//   - The CALLER authorizes: it has established that `actor` may act for `actor.Side` of this trade (personal: the
-//     session user's party is that side; org: the member's role permission; bot: the side's party is external).
-//     The engine never looks at sessions.
-//   - It runs inside the caller's transaction `tx` and locks the trade row (FOR UPDATE) itself.
-//   - It returns *Error for the API contract: 404 not_found (no such trade), 409 invalid_transition (action not open
-//     to that side in the current state, rules in trade_rules.go), 422 validation (per-action fields). Any other error
-//     is internal; the caller rolls back.
-//   - On success, in the same transaction: the trade, its child rows (acceptances, invoice, shipments, documents, QC,
-//     dispute + evidence, reviews), the ledger journals below, a trade_events row and a `trade.status` analytics fact
-//     when the status changed, an audit entry (reason = note), a notification to the users behind the other side, and a
-//     `trade.updated` frame on `user:{id}` for the users behind both sides (fanoutTrade: a user party's user, an org
-//     party's active members).
-//
-// Ledger postings (finance.go explains signs; B = buyer pays, S = subtotal, fees on the current subtotal):
-//   - pay, escrow terms:  bank_clearing +B / escrow(buyer) −B                        [escrow]  "Bayar TRX · title"
-//   - confirm_receipt accepted/partial, escrow: release (below); partial first refunds the short quantity incl. PPN:
-//     escrow(buyer) +r / wallet_available(buyer) −r                                    [refund]  "Refund TRX"
-//   - release R of the escrow:  escrow(buyer) +R / wallet_available(supplier) −S / ppn_payable(supplier) −(R−S)
-//                                                                                      [payout]  "Pencairan TRX · title"
-//     then fees: wallet_available(supplier) +(pf+mf) / platform_revenue −pf / maker_commission(maker) −mf
-//                                                                                      [fee]     "Fee platform … TRX"
-//     (no maker party → the maker fee goes to platform_revenue)
-//   - pay, net terms (after acceptance): bank_clearing +B / escrow(buyer) −B [payment], then release R = B as above.
-//   - cancel never moves money: it is only open before an escrow payment (agreement/invoiced).
-//   - QC rejected / dispute: the escrow stays held until the admin decision (settleDisputeResolution): refund and/or
-//     release with the same journals.
-
 type tradeActor struct {
-	Side   string  // buyer | supplier
-	UserID *string // nil for the external-party bot
-	Name   string  // shown in audit, evidence, reviews, notifications
-	OrgID  *string // the org acting through a member (audit org_id: the org's activity on the trade)
-	File   *upload // the step's attachment, claimed by the caller (tradeFile); the bot attaches by bare name (in.File)
+	Side   string
+	UserID *string
+	Name   string
+	OrgID  *string
+	File   *upload
 }
 
-// tradeFilePurpose is the upload purpose of the actions that take a file.
 var tradeFilePurpose = map[api.TradeAction]api.UploadPurpose{
 	api.TradeActionUploadProof: api.UploadPurposeTradeProof,
 	api.TradeActionDispute:     api.UploadPurposeDisputeEvidence,
 	api.TradeActionAddEvidence: api.UploadPurposeDisputeEvidence,
 }
 
-// tradeFile claims in.UploadId for userID when the action takes a file (nil: none sent, or the action takes none).
-// Runs in the action's transaction, so a refused step leaves the upload unclaimed.
 func (s *Server) tradeFile(ctx context.Context, tx pgx.Tx, userID string, in api.TradeActionInput) (*upload, error) {
 	purpose, ok := tradeFilePurpose[in.Action]
 	if !ok || strings.TrimSpace(deref(in.UploadId)) == "" {
@@ -75,8 +40,8 @@ func (s *Server) tradeFile(ctx context.Context, tx pgx.Tx, userID string, in api
 
 type tradeRow struct {
 	ID, Code, Title           string
-	Party                     map[string]string  // side -> party id
-	User                      map[string]*string // side -> user id (nil: org or external party)
+	Party                     map[string]string
+	User                      map[string]*string
 	PartyName                 map[string]string
 	Quantity                  float64
 	Unit                      string
@@ -84,7 +49,7 @@ type tradeRow struct {
 	Terms, Status             string
 	MakerRate, PlatformRate   float64
 	MarketID, MakerParty      *string
-	PaymentStatus             string // invoice status, unpaid without an invoice
+	PaymentStatus             string
 	Scheduled                 float64
 	OpenShipments             int
 	AcceptedBuyer, AcceptedSu bool
@@ -103,7 +68,6 @@ func (t tradeRow) label() string { return t.Code + " · " + t.Title }
 
 var errTradeNotFound = &Error{Status: http.StatusNotFound, Code: "not_found", Message: "Transaksi tidak ditemukan"}
 
-// lockTrade loads a trade with everything the rules need and locks the trade row.
 func lockTrade(ctx context.Context, q dbtx, id string) (tradeRow, error) {
 	t := tradeRow{Party: map[string]string{}, User: map[string]*string{}, PartyName: map[string]string{}}
 	if !isUUID(id) {
@@ -142,7 +106,6 @@ func fieldErr(field, msg string) error {
 
 var errInvalidTransition = &Error{Status: http.StatusConflict, Code: "invalid_transition", Message: "Aksi ini tidak tersedia untuk status sekarang"}
 
-// applyTradeAction applies one action for `actor` (see the contract at the top of this file).
 func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor tradeActor, in api.TradeActionInput) error {
 	t, err := lockTrade(ctx, tx, tradeID)
 	if err != nil {
@@ -155,7 +118,7 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 	}
 	note := tradeActionLabel[action]
 	inputNote := strings.TrimSpace(deref(in.Note))
-	var file tradeFileRef // users attach verified uploads; only the bot (no user) attaches a bare name
+	var file tradeFileRef
 	if actor.File != nil {
 		file = tradeFileRef{actor.File.FileName, actor.File.ObjectKey}
 	} else if actor.UserID == nil {
@@ -170,7 +133,7 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 	}
 	allDelivered := false
 	qc := ""
-	eventNote := "" // the timeline note when it differs from note (pay: the payment reference)
+	eventNote := ""
 
 	switch action {
 	case "accept_agreement":
@@ -202,8 +165,7 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 		}
 
 	case "pay":
-		// Reached from a settled gateway payment (payments.go; note = its reference) or the demo bot; users cannot
-		// send `pay` (the handlers answer 409 payment_required).
+
 		b := breakdown(t.Total, t.PlatformRate, t.MakerRate).BuyerPays
 		kind, status := "escrow", "escrow"
 		note = "Dana masuk escrow"
@@ -342,7 +304,6 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 		}
 
 	case "cancel":
-		// Open only in agreement/invoiced, i.e. before any escrow payment: nothing to refund.
 
 	case "dispute":
 		if inputNote == "" {
@@ -427,13 +388,10 @@ func applyTradeAction(ctx context.Context, tx pgx.Tx, tradeID string, actor trad
 		Href: "/app/transactions/" + t.ID})
 }
 
-// emitTradeUpdated sends `trade.updated` to everyone behind both parties of the trade (no notification).
 func emitTradeUpdated(ctx context.Context, q dbtx, tradeID string) error {
 	return fanoutTrade(ctx, q, tradeID, "", notification{})
 }
 
-// fanoutTrade sends `trade.updated` to the users behind both parties (a user party's user, an org party's active
-// members) and notification n to the ones behind side `notifySide` ("" = nobody).
 func fanoutTrade(ctx context.Context, q dbtx, tradeID, notifySide string, n notification) error {
 	type party struct{ side, user, org string }
 	rows, err := q.Query(ctx, `
@@ -468,8 +426,6 @@ func fanoutTrade(ctx context.Context, q dbtx, tradeID, notifySide string, n noti
 	return nil
 }
 
-// orgTradeFanout notifies (when n has a title; linked to the org's transaction page) and sends `trade.updated` to every
-// active member of an org whose role may see transactions (owner, or transactions.view).
 func orgTradeFanout(ctx context.Context, q dbtx, orgID, tradeID string, n notification) error {
 	if n.Title != "" {
 		n.Href = "/org/" + orgID + "/transactions/" + tradeID
@@ -506,7 +462,6 @@ func notifyTradeUser(ctx context.Context, q dbtx, userID, tradeID string, n noti
 	return emitFrame(ctx, q, "user:"+userID, "trade.updated", nil, map[string]any{"transactionId": tradeID, "status": status, "updatedAt": at.UTC()})
 }
 
-// emitTradeFact publishes the trade snapshot (migrations/clickhouse/README.md, topic trade.status).
 func emitTradeFact(ctx context.Context, q dbtx, tradeID, topic string) error {
 	var payload []byte
 	err := q.QueryRow(ctx, `
@@ -531,13 +486,6 @@ func emitTradeFact(ctx context.Context, q dbtx, tradeID, topic string) error {
 	return emit(ctx, q, topic, tradeID, payload)
 }
 
-// settleDisputeResolution applies an admin dispute decision to its trade, in the admin's transaction after the dispute
-// row is resolved (admin_disputes.go). Escrowed money: refund d.RefundIdr plus its PPN to the buyer's wallet and release
-// the rest of the escrow to the supplier for a subtotal of d.ReleaseIdr (fees on that subtotal); the invoice becomes
-// d.Payment. Net terms with nothing paid yet: a refund cancels (nothing to move, invoice stays unpaid), a release sends
-// the trade to `accepted` with a fresh payment due date (the buyer still pays through `pay`), and a partial amount is
-// refused (422 refundIdr: there is no money to split). The trade gets the status, a "Putusan dispute: …" event, a
-// trade.status fact and trade.updated frames; the admin flow notifies the parties and writes the audit entry.
 func (s *Server) settleDisputeResolution(ctx context.Context, tx pgx.Tx, d disputeSettlement) error {
 	t, err := lockTrade(ctx, tx, d.TradeID)
 	if err != nil {
@@ -591,7 +539,6 @@ func (s *Server) settleDisputeResolution(ctx context.Context, tx pgx.Tx, d dispu
 	return emitTradeUpdated(ctx, tx, t.ID)
 }
 
-// tradeStatusChanged publishes a new trade status: the trade.status fact and, on completion, the public activity.
 func tradeStatusChanged(ctx context.Context, tx pgx.Tx, tradeID, status string) error {
 	if err := emitTradeFact(ctx, tx, tradeID, "trade.status"); err != nil {
 		return err
@@ -608,8 +555,6 @@ func tradeStatusChanged(ctx context.Context, tx pgx.Tx, tradeID, status string) 
 	return emitActivity(ctx, tx, "transaction_completed", "Transaksi selesai: "+title, &total, market)
 }
 
-// ── Money movements ──────────────────────────────────────────────
-
 func escrowHeld(ctx context.Context, q dbtx, tradeID string) (int64, error) {
 	var v int64
 	err := q.QueryRow(ctx, `
@@ -618,8 +563,6 @@ func escrowHeld(ctx context.Context, q dbtx, tradeID string) (int64, error) {
 	return v, err
 }
 
-// releaseEscrow pays `amount` of the buyer's escrow to the supplier for a subtotal of `subtotal` (the rest of amount
-// is PPN), then takes the platform and maker fees off the supplier's wallet. Marks the invoice released.
 func releaseEscrow(ctx context.Context, q dbtx, t tradeRow, amount, subtotal int64, by *string) error {
 	buyer, supplier := t.Party["buyer"], t.Party["supplier"]
 	keys := []string{"escrow:" + buyer, "wallet_available:" + supplier, "ppn_payable:" + supplier, "platform_revenue"}
@@ -660,7 +603,6 @@ func releaseEscrow(ctx context.Context, q dbtx, t tradeRow, amount, subtotal int
 	return err
 }
 
-// refundEscrow returns `amount` of the buyer's escrow to the buyer's wallet (withdrawable).
 func refundEscrow(ctx context.Context, q dbtx, t tradeRow, amount int64, by *string) error {
 	buyer := t.Party["buyer"]
 	acc, err := accounts(ctx, q, "escrow:"+buyer, "wallet_available:"+buyer)
@@ -671,8 +613,6 @@ func refundEscrow(ctx context.Context, q dbtx, t tradeRow, amount int64, by *str
 		{acc["escrow:"+buyer], amount, "refund"}, {acc["wallet_available:"+buyer], -amount, "refund"}}})
 }
 
-// ── Disputes ─────────────────────────────────────────────────────
-
 func openDispute(ctx context.Context, tx pgx.Tx, t tradeRow, actor tradeActor, reason, evidence string, file tradeFileRef) error {
 	var id string
 	if err := tx.QueryRow(ctx, `
@@ -680,13 +620,10 @@ func openDispute(ctx context.Context, tx pgx.Tx, t tradeRow, actor tradeActor, r
 		t.ID, reason, actor.Side, actor.UserID, t.MarketID).Scan(&id); err != nil {
 		return err
 	}
-	// The opening statement is the first evidence row; the "Dispute dibuka" step is derived from the dispute row
-	// (admin case timeline), so no dispute_events row here.
+
 	return addEvidence(ctx, tx, id, actor, evidence, file)
 }
 
-// tradeFileRef is a file attached to a trade step: its name, and its object key when it was uploaded ("" for the bot's
-// name-only files).
 type tradeFileRef struct{ Name, Key string }
 
 func addEvidence(ctx context.Context, tx pgx.Tx, disputeID string, actor tradeActor, text string, file tradeFileRef) error {
@@ -696,8 +633,6 @@ func addEvidence(ctx context.Context, tx pgx.Tx, disputeID string, actor tradeAc
 	return err
 }
 
-// ── small helpers ────────────────────────────────────────────────
-
 func derefF(p *float64) float64 {
 	if p == nil {
 		return 0
@@ -705,7 +640,6 @@ func derefF(p *float64) float64 {
 	return *p
 }
 
-// isUUID: path ids are compared against uuid columns; anything else is simply not found.
 func isUUID(s string) bool {
 	if len(s) != 36 {
 		return false

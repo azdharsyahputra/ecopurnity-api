@@ -8,9 +8,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Read models for markets and opportunities, shared by every endpoint that embeds them (listing detail, explorer,
-// public lists, ...). Callers pass a WHERE fragment over the alias m / o and its args.
-
 const marketSelect = `
 	SELECT m.id, m.code, m.name, m.category_id, m.region, m.objective, m.mechanism, m.status,
 	       p.name, p.display_kind, p.verified, m.unit, m.demand_value, m.supply_value, m.price_min_idr, m.price_max_idr,

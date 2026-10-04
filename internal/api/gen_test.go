@@ -7,9 +7,6 @@ import (
 	"testing"
 )
 
-// oapi-codegen gives a response type over a pure union its own MarshalJSON, but not a response type over a struct that
-// mixes a union with extra properties: such a response silently drops the union's fields. Each one must be written
-// by a hand-made response type in internal/server; list it here once that exists.
 var handled = map[string]string{
 	"GetMyListing200JSONResponse": "server.listingDetailResponse",
 }

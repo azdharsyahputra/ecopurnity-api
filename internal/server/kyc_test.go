@@ -13,7 +13,6 @@ import (
 	"testing"
 )
 
-// signedIn registers a fresh user and returns a cookie client and the email.
 func (e *testEnv) signedIn(name string) (*http.Client, string) {
 	e.t.Helper()
 	c := e.client()
@@ -42,7 +41,6 @@ func jpegBytes(t *testing.T) []byte {
 	return b.Bytes()
 }
 
-// upload asks for a slot and PUTs the bytes to the presigned URL like a browser would; returns the upload id.
 func (e *testEnv) upload(c *http.Client, purpose, contentType string, data []byte) string {
 	e.t.Helper()
 	r := e.call(c, "POST", "/uploads", map[string]any{"purpose": purpose, "fileName": "foto." + strings.TrimPrefix(contentType, "image/"),
@@ -66,7 +64,6 @@ func (e *testEnv) upload(c *http.Client, purpose, contentType string, data []byt
 	return r.Body["uploadId"].(string)
 }
 
-// Email only: two levels and no phone verification endpoints.
 func TestKycLevels(t *testing.T) {
 	e := newEnv(t)
 	c, _ := e.signedIn("Pita")
@@ -89,7 +86,6 @@ func TestUploadsAndKTP(t *testing.T) {
 	}
 	c, email := e.signedIn("Kartika")
 
-	// Slot validation.
 	if r := e.call(c, "POST", "/uploads", map[string]any{"purpose": "kyc_ktp", "fileName": "ktp.pdf", "contentType": "application/pdf", "sizeBytes": 100}); r.Status != 422 || r.field("contentType") == "" {
 		t.Fatalf("type: %d %v", r.Status, r.Body)
 	}
@@ -102,10 +98,10 @@ func TestUploadsAndKTP(t *testing.T) {
 
 	ktp := e.upload(c, "kyc_ktp", "image/png", pngBytes(t))
 	selfie := e.upload(c, "kyc_selfie", "image/jpeg", jpegBytes(t))
-	// A text file declared as PNG is uploaded fine but rejected when used.
+
 	fake := []byte("<html>bukan gambar</html>")
 	disguised := e.upload(c, "kyc_ktp", "image/png", fake)
-	// A slot that was never uploaded.
+
 	ghost := e.call(c, "POST", "/uploads", map[string]any{"purpose": "kyc_ktp", "fileName": "a.png", "contentType": "image/png", "sizeBytes": 10}).Body["uploadId"].(string)
 
 	submit := func(cl *http.Client, ktpID, selfieID, nik string) resp {
@@ -132,7 +128,7 @@ func TestUploadsAndKTP(t *testing.T) {
 	if r := submit(c, ktp, selfie, "3205010101900001"); r.Status != 409 || r.code() != "already_submitted" {
 		t.Fatalf("second submit: %d %v", r.Status, r.Body)
 	}
-	// What the admin queue holds: masked NIK in the form, encrypted NIK in kyc_submissions, both documents.
+
 	form := e.scalar(`SELECT form::text FROM verification_requests r JOIN users u ON u.id = r.submitted_by WHERE u.email = $1`, email).(string)
 	if !strings.Contains(form, "3205********0001") || strings.Contains(form, "3205010101900001") || !strings.Contains(form, "Kartika Sari") {
 		t.Fatalf("form: %s", form)
@@ -144,12 +140,11 @@ func TestUploadsAndKTP(t *testing.T) {
 	if n := e.scalar(`SELECT count(*) FROM verification_documents d JOIN verification_requests r ON r.id = d.request_id JOIN users u ON u.id = r.submitted_by WHERE u.email = $1`, email); n != int64(2) {
 		t.Fatalf("documents: %v", n)
 	}
-	// Uploads are single-use.
+
 	if n := e.scalar(`SELECT count(*) FROM uploads WHERE id::text = ANY($1) AND consumed_at IS NOT NULL`, []string{ktp, selfie}); n != int64(2) {
 		t.Fatalf("consumed: %v", n)
 	}
 
-	// Admin approves (admin area, simulated): the NIK becomes taken for other accounts.
 	e.exec(`UPDATE identities SET identity_verified_at = now(), identity_verified_by = user_id, nik_hash = (SELECT k.nik_hash FROM kyc_submissions k JOIN verification_requests r ON r.id = k.verification_request_id
 	          WHERE r.submitted_by = identities.user_id) WHERE user_id = (SELECT id FROM users WHERE email = $1)`, email)
 	e.exec(`UPDATE verification_requests SET status = 'approved', decided_at = now(), decided_by = submitted_by, decision_note = 'ok' WHERE submitted_by = (SELECT id FROM users WHERE email = $1)`, email)
@@ -174,7 +169,7 @@ func TestIdentity(t *testing.T) {
 
 	body := map[string]any{
 		"profile": map[string]any{"name": " Ira Wijaya ", "username": "hacker", "location": "Jawa Barat", "bio": "Pengolah kopi",
-			// Trusted by the mock, ignored here.
+
 			"verification": map[string]any{"email": true, "identity": "verified"}},
 		"items": []any{
 			map[string]any{"id": "cap-local-1", "kind": "skill", "name": "Roasting", "detail": "Mahir", "categoryId": "agri"},
@@ -205,7 +200,6 @@ func TestIdentity(t *testing.T) {
 		t.Fatalf("user not updated: %v", me.Body)
 	}
 
-	// Reorder + edit + drop: the kept item keeps its id (smart-match state hangs off it).
 	body["items"] = []any{
 		map[string]any{"id": "cap-local-3", "kind": "capacity", "name": "Produksi", "detail": "2 ton/bulan"},
 		map[string]any{"id": firstID, "kind": "skill", "name": "Roasting lanjutan", "detail": "Ahli"},

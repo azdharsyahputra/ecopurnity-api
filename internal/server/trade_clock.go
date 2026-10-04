@@ -11,21 +11,10 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// The trade clock: places due standing-contract orders and, when SIMULATE_COUNTERPARTIES is on, plays external
-// counterparties. Runs on every API instance; rows are claimed FOR UPDATE SKIP LOCKED, so instances never double-process.
-//
-// Simulation (demo only, off in production): an external party (parties.kind = 'external', no account) cannot act,
-// so a trade or contract with one would stall. The bot takes the external side's next step the way the frontend mock
-// does (src/mocks/trade.ts botStep, src/mocks/contracts.ts contractTick): after the trade/proposal has been idle for
-// `botDelay`, it accepts the agreement, issues the invoice, pays, ships everything, confirms delivery, accepts QC and
-// reviews (5 stars); it accepts contract proposals made to an external party. It never cancels or disputes. Without the
-// flag, trades with an external party wait for an operator and proposals to one stay `proposed`.
-
-const botDelay = 8 * time.Second // let the user see each step (mock: 8 s)
+const botDelay = 8 * time.Second
 
 var botPriority = []string{"accept_agreement", "issue_invoice", "pay", "ship", "upload_proof", "confirm_receipt", "review"}
 
-// RunTradeClock ticks until ctx ends.
 func (s *Server) RunTradeClock(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -46,7 +35,6 @@ func (s *Server) RunTradeClock(ctx context.Context, every time.Duration) {
 	}
 }
 
-// drain runs step until it reports nothing left (at most 100 per tick), one row per transaction.
 func (s *Server) drain(ctx context.Context, step func(pgx.Tx) (bool, error)) error {
 	for range 100 {
 		did := false
@@ -62,8 +50,6 @@ func (s *Server) drain(ctx context.Context, step func(pgx.Tx) (bool, error)) err
 	return nil
 }
 
-// ContractTick places due orders of active contracts and, when simulating, accepts proposals made to external parties
-// idle for `delay` (exported for tests).
 func (s *Server) ContractTick(ctx context.Context, delay time.Duration) error {
 	if err := s.drain(ctx, func(tx pgx.Tx) (bool, error) {
 		var id string
@@ -112,10 +98,8 @@ func (s *Server) ContractTick(ctx context.Context, delay time.Duration) error {
 	})
 }
 
-// TradeCounterpartyTick takes one step for the external side of every trade idle for `delay` (exported for tests).
-// Callers gate it on SimulateCounterparties.
 func (s *Server) TradeCounterpartyTick(ctx context.Context, delay time.Duration) error {
-	// One step per trade per tick: a trade already looked at (acted on, or waiting on the user) is not picked again.
+
 	seen := map[string]bool{}
 	return s.drain(ctx, func(tx pgx.Tx) (bool, error) {
 		var id, side, name string
@@ -143,7 +127,7 @@ func (s *Server) TradeCounterpartyTick(ctx context.Context, delay time.Duration)
 		open := tradeActions(st, side)
 		i := slices.IndexFunc(botPriority, func(a string) bool { return slices.Contains(open, a) })
 		if i < 0 {
-			return true, nil // not the bot's turn
+			return true, nil
 		}
 		in := api.TradeActionInput{Action: api.TradeAction(botPriority[i])}
 		switch botPriority[i] {

@@ -11,8 +11,6 @@ import (
 
 func (e *testEnv) fake() *payments.Fake { return e.server.Payments.(*payments.Fake) }
 
-// payViaGateway pays as c at base (/me/transactions/{id} or /orgs/{org}/transactions/{id}) with a BCA VA, lets the
-// fake gateway settle it and runs the reconciler; returns the trade read back, which must be in `status`.
 func (e *testEnv) payViaGateway(c *http.Client, base, status string) resp {
 	e.t.Helper()
 	r := e.call(c, "POST", base+"/payments", map[string]any{"method": "bank_transfer", "bank": "bca"})
@@ -30,7 +28,6 @@ func (e *testEnv) payViaGateway(c *http.Client, base, status string) resp {
 	return got
 }
 
-// notifyMidtrans posts a notification signed with the fake gateway's key.
 func (e *testEnv) notifyMidtrans(order, statusCode, gross, txStatus string) resp {
 	e.t.Helper()
 	return e.call(e.client(), "POST", "/payments/midtrans/notification", map[string]any{"order_id": order, "status_code": statusCode, "gross_amount": gross,
@@ -68,7 +65,6 @@ func TestPaymentFlowAndWebhook(t *testing.T) {
 		t.Fatal("pay action is closed to users", r.Status, r.Body)
 	}
 
-	// A VA: pending, 24 h, the engine's amount (subtotal 1.000.000 + PPN).
 	va := pay(buyer, bca)
 	if va.Status != 201 || va.Body["status"] != "pending" || num(va.Body["amountIdr"]) != 1_110_000 || va.Body["bank"] != "bca" ||
 		!strings.HasPrefix(va.Body["vaNumber"].(string), "39021") || !strings.Contains(va.Body["orderId"].(string), "-1-") {
@@ -90,7 +86,6 @@ func TestPaymentFlowAndWebhook(t *testing.T) {
 		t.Fatal("pending moves nothing", r.Body["status"])
 	}
 
-	// "Ganti metode": the old one is cancelled at the gateway, one pending per invoice.
 	qr := pay(buyer, map[string]any{"method": "qris"})
 	if qr.Status != 201 || !strings.HasPrefix(qr.Body["qrUrl"].(string), "data:image/svg+xml") || qr.Body["bank"] != nil {
 		t.Fatal("QRIS", qr.Status, qr.Body)
@@ -108,7 +103,6 @@ func TestPaymentFlowAndWebhook(t *testing.T) {
 		t.Fatal("nothing left to cancel", r.Status)
 	}
 
-	// Webhook: a bad signature is refused; a signed notification is confirmed with the gateway, never trusted.
 	gp := pay(buyer, map[string]any{"method": "gopay"})
 	order := gp.Body["orderId"].(string)
 	if gp.Status != 201 || gp.Body["deeplinkUrl"] == nil || gp.Body["qrUrl"] == nil {
@@ -132,7 +126,7 @@ func TestPaymentFlowAndWebhook(t *testing.T) {
 	if got.Body["status"] != "paid" || got.Body["payment"].(map[string]any)["status"] != "escrow" {
 		t.Fatal("settled", got.Body)
 	}
-	// Same ledger as the old pay step: 1.110.000 held in escrow for the buyer, receivable for the supplier (minus the 1% platform fee).
+
 	fb := e.call(buyer, "GET", "/me/finance", nil)
 	if num(fb.Body["escrowHeldIdr"]) != 1_110_000 || len(fb.Body["entries"].([]any)) != 1 {
 		t.Fatalf("buyer finance: %v", fb.Body)
@@ -150,7 +144,6 @@ func TestPaymentFlowAndWebhook(t *testing.T) {
 		t.Fatal("stored notification", v)
 	}
 
-	// Duplicates and the reconciler change nothing; an unknown order is acknowledged.
 	entries := e.scalar(`SELECT count(*) FROM ledger_entries WHERE trade_id = $1`, id).(int64)
 	if r := e.notifyMidtrans(order, "200", "1110000.00", "settlement"); r.Status != 200 {
 		t.Fatal(r.Status)
@@ -179,7 +172,6 @@ func TestPaymentExpiry(t *testing.T) {
 	e.mustAct(supplier, id, map[string]any{"action": "accept_agreement"}, "agreement")
 	e.mustAct(supplier, id, map[string]any{"action": "issue_invoice"}, "invoiced")
 
-	// The gateway expires it.
 	r := e.call(buyer, "POST", base+"/payments", map[string]any{"method": "echannel"})
 	if r.Status != 201 || r.Body["bank"] != "mandiri" || r.Body["billKey"] == nil || r.Body["billerCode"] == nil {
 		t.Fatal("mandiri bill", r.Status, r.Body)
@@ -198,7 +190,6 @@ func TestPaymentExpiry(t *testing.T) {
 		t.Fatal("trade stays invoiced", c.Body["status"])
 	}
 
-	// Overdue while the gateway still says pending: expired locally.
 	r = e.call(buyer, "POST", base+"/payments", map[string]any{"method": "shopeepay"})
 	if r.Status != 201 || r.Body["deeplinkUrl"] == nil {
 		t.Fatal("shopeepay", r.Status, r.Body)
@@ -210,7 +201,7 @@ func TestPaymentExpiry(t *testing.T) {
 	if c := e.call(buyer, "GET", base+"/payments/current", nil); c.Body["status"] != "expire" {
 		t.Fatal("overdue", c.Body)
 	}
-	// A new attempt still works.
+
 	e.payViaGateway(buyer, base, "paid")
 }
 

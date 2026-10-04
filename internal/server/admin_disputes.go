@@ -12,10 +12,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Admin dispute cases (PRD §11). The workflow and the resolution arithmetic are ported from the frontend's
-// src/domain/dispute.ts (tests in admin_disputes_test.go). The money side of a resolution is settled by the transactions
-// area through settleDisputeResolution, in the same transaction.
-
 var disputeFlow = map[string]struct {
 	from []string
 	to   string
@@ -25,7 +21,6 @@ var disputeFlow = map[string]struct {
 	"resolve":          {[]string{"review"}, "resolved"},
 }
 
-// disputeTransition is the next status, or "" when the action is not available in this status.
 func disputeTransition(status, action string) string {
 	f, ok := disputeFlow[action]
 	if !ok || !slices.Contains(f.from, status) {
@@ -35,11 +30,10 @@ func disputeTransition(status, action string) string {
 }
 
 type resolution struct {
-	Kind      string // refund | release | partial
-	RefundIdr int64  // partial only
+	Kind      string
+	RefundIdr int64
 }
 
-// validateResolution is the error message for an invalid resolution, or "".
 func validateResolution(totalIdr int64, r resolution) string {
 	if r.Kind != "partial" {
 		return ""
@@ -54,13 +48,11 @@ func validateResolution(totalIdr int64, r resolution) string {
 }
 
 type resolutionOutcome struct {
-	Status, Payment       string // trade status, invoice payment state
+	Status, Payment       string
 	RefundIdr, ReleaseIdr int64
-	Note                  string // timeline and notification summary
+	Note                  string
 }
 
-// resolveOutcome: refund -> buyer gets everything back, the order is cancelled; release -> supplier gets everything,
-// the order completes; partial -> buyer gets RefundIdr back, supplier the rest, the order completes.
 func resolveOutcome(totalIdr int64, r resolution) resolutionOutcome {
 	switch r.Kind {
 	case "refund":
@@ -73,27 +65,22 @@ func resolveOutcome(totalIdr int64, r resolution) resolutionOutcome {
 		fmt.Sprintf("%s dikembalikan ke pembeli, %s dilepas ke supplier", rupiah(r.RefundIdr), rupiah(release))}
 }
 
-// disputeSettlement is a decided dispute's effect on its trade.
 type disputeSettlement struct {
 	DisputeID, TradeID    string
-	Kind                  string // refund | release | partial
-	RefundIdr, ReleaseIdr int64  // out of trades.total_idr (pre-tax), as the frontend computes it
-	TradeStatus           string // cancelled (refund) | completed
-	Payment               string // invoice payment state: refunded | released
-	Note                  string // "Putusan dispute: <Note>" on the trade's completed timeline step
+	Kind                  string
+	RefundIdr, ReleaseIdr int64
+	TradeStatus           string
+	Payment               string
+	Note                  string
 	ActorUserID           string
 }
-
-// settleDisputeResolution (the money side of a resolution) lives with the trade engine: trade_engine.go.
-
-// ── Read model ───────────────────────────────────────────────────
 
 type disputeRow struct {
 	Summary                     api.DisputeSummary
 	TradeID, BuyerParty, Status string
 	Address                     string
 	TotalIdr                    int64
-	Resolution                  []byte // JSON of the resolution, nil while open
+	Resolution                  []byte
 }
 
 const disputeSelect = `
@@ -128,7 +115,7 @@ func loadDisputes(ctx context.Context, q dbtx, where string, args ...any) ([]dis
 		buyer.Role, supplier.Role = api.RoleBuyer, api.RoleSupplier
 		d.Parties = []api.DisputeParty{buyer, supplier}
 		if side != nil && *side == "supplier" {
-			d.Parties = []api.DisputeParty{supplier, buyer} // the party who opened the case first
+			d.Parties = []api.DisputeParty{supplier, buyer}
 		}
 		d.TotalIdr, r.Status = int(r.TotalIdr), string(d.Status)
 		if kind != nil {
@@ -171,7 +158,6 @@ func loadDisputeRow(ctx context.Context, q dbtx, id string, forUpdate bool) (dis
 	return rows[0], nil
 }
 
-// disputeCase is the full case: the trade from the buyer's side, evidence and the case timeline.
 func disputeCase(ctx context.Context, q dbtx, r disputeRow, files fileURL) (api.DisputeCase, error) {
 	var c api.DisputeCase
 	if err := widen(r.Summary, &c); err != nil {
@@ -183,7 +169,7 @@ func disputeCase(ctx context.Context, q dbtx, r disputeRow, files fileURL) (api.
 			return c, err
 		}
 	}
-	// The trade from the buyer's side, with the parties' evidence of its latest dispute (transactions read model).
+
 	var err error
 	if c.Transaction, err = loadTransaction(ctx, q, r.BuyerParty, r.TradeID, files); err != nil {
 		return c, err
@@ -206,7 +192,7 @@ func disputeCase(ctx context.Context, q dbtx, r disputeRow, files fileURL) (api.
 	if err := rows.Err(); err != nil {
 		return c, err
 	}
-	// The opening is part of the case row; dispute_events holds the steps after it.
+
 	type step = struct {
 		At    time.Time `json:"at"`
 		By    string    `json:"by"`
@@ -227,8 +213,6 @@ func disputeCase(ctx context.Context, q dbtx, r disputeRow, files fileURL) (api.
 	}
 	return c, rows.Err()
 }
-
-// ── Handlers ─────────────────────────────────────────────────────
 
 func (s *Server) ListAdminDisputes(ctx context.Context, _ api.ListAdminDisputesRequestObject) (api.ListAdminDisputesResponseObject, error) {
 	if _, err := s.requireAdmin(ctx); err != nil {
@@ -327,7 +311,7 @@ func (s *Server) ActOnAdminDispute(ctx context.Context, req api.ActOnAdminDisput
 				return err
 			}
 			e.Action, e.Reason = "Mulai review dispute", optReason(in.Reason)
-		default: // resolve
+		default:
 			in, err := req.Body.AsDisputeActionInputResolve()
 			if err != nil {
 				return err

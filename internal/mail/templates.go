@@ -10,10 +10,6 @@ import (
 	"time"
 )
 
-// Transactional email templates (internal/mail/templates/*.html). Each file defines "subject" and "preheader"
-// (plain text), "content" (HTML, rendered inside layout.html) and "text" (the plain-text alternative). HTML is escaped
-// by html/template. Edit the copy there; add a template by adding a file and a constructor below.
-
 //go:embed templates/*.html
 var templateFS embed.FS
 
@@ -37,7 +33,6 @@ func init() {
 	}
 }
 
-// page is what layout.html sees: the page data under .Page plus the layout's own fields.
 type page struct {
 	Subject, Preheader, Footer, ManageURL string
 	Page                                  any
@@ -70,12 +65,11 @@ func render(name, to string, data any, footer, manageURL string) (Message, error
 
 func must(m Message, err error) Message {
 	if err != nil {
-		panic(fmt.Sprintf("mail template: %v", err)) // templates are embedded and covered by tests
+		panic(fmt.Sprintf("mail template: %v", err))
 	}
 	return m
 }
 
-// VerifyCode is the email-verification code (OTP) email.
 func VerifyCode(to, name, code string, ttl time.Duration) Message {
 	m := must(render("verify_code", to, struct {
 		Name, Code string
@@ -85,7 +79,6 @@ func VerifyCode(to, name, code string, ttl time.Duration) Message {
 	return m
 }
 
-// ResetPassword is the password-reset link email.
 func ResetPassword(to, name, url string, ttl time.Duration) Message {
 	m := must(render("reset_password", to, struct {
 		Name, URL  string
@@ -95,16 +88,15 @@ func ResetPassword(to, name, url string, ttl time.Duration) Message {
 	return m
 }
 
-// Notification is an in-app notification mirrored to email (per the user's notification preferences).
 type Notification struct {
-	Type   string // NotificationType, picks the tag
+	Type   string
 	Title  string
 	Body   string
-	URL    string // absolute link to the page (optional)
-	Action string // button label; default "Lihat detail"
+	URL    string
+	Action string
 }
 
-var notificationTags = map[string][3]string{ // label, background, foreground (frontend tag tones)
+var notificationTags = map[string][3]string{
 	"outbid":               {"Tersalip", "#fdecec", "#b42318"},
 	"winning_bid":          {"Menang", "#e8f6ee", "#18794e"},
 	"auction_ending":       {"Auction", "#fff4e5", "#b54708"},

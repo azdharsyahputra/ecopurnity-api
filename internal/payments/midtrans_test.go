@@ -13,7 +13,6 @@ import (
 	"time"
 )
 
-// toServer sends every request to srv instead of api.sandbox.midtrans.com.
 type toServer struct{ u *url.URL }
 
 func (t toServer) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -85,7 +84,7 @@ func TestMidtransChargeRequestAndInstructions(t *testing.T) {
 	if ex := got["custom_expiry"].(map[string]any); ex["expiry_duration"] != float64(15) {
 		t.Fatal(ex)
 	}
-	// A 400 in the body (HTTP 200) is an error, not instructions.
+
 	if _, err := m.Charge(context.Background(), Charge{OrderID: "TRX-1-4", Amount: 5, Method: "qris"}); err == nil || !strings.Contains(err.Error(), "bank is invalid") {
 		t.Fatal(err)
 	}
@@ -151,8 +150,6 @@ func TestFake(t *testing.T) {
 	}
 }
 
-// TestMidtransSandboxLive charges a BCA VA and a QRIS in the Midtrans sandbox, checks they are pending and cancels them.
-// Opt-in: MIDTRANS_LIVE_TEST=1 with MIDTRANS_SERVER_KEY (a sandbox key) set; never part of the regular suite.
 func TestMidtransSandboxLive(t *testing.T) {
 	key := os.Getenv("MIDTRANS_SERVER_KEY")
 	if os.Getenv("MIDTRANS_LIVE_TEST") != "1" || key == "" || os.Getenv("MIDTRANS_ENV") == "production" {

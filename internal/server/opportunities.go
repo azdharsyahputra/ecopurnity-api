@@ -17,9 +17,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Opportunities: public list/detail (tag Public) and the caller's personalised view, join/follow/leave (tag Personal).
-// Detection lives in detection.go.
-
 var errOpportunityNotFound = &Error{Status: http.StatusNotFound, Code: "not_found", Message: "Opportunity tidak ditemukan"}
 
 func (s *Server) ListOpportunities(ctx context.Context, req api.ListOpportunitiesRequestObject) (api.ListOpportunitiesResponseObject, error) {
@@ -97,8 +94,6 @@ type previewParty = struct {
 	Verified bool                                         `json:"verified"`
 }
 
-// participantsPreview: up to 6 parties, joined participants first, then the owners of the listings the engine counted
-// in this opportunity (opportunity_listings). Visitors see initials only (PRD §6.3).
 func participantsPreview(ctx context.Context, q dbtx, d api.OpportunityDetail, signedIn bool) ([]previewParty, error) {
 	rows, err := q.Query(ctx, `
 		SELECT p.id::text, p.name, p.display_kind, p.verified, x.role FROM (
@@ -131,7 +126,6 @@ func participantsPreview(ctx context.Context, q dbtx, d api.OpportunityDetail, s
 	return out, rows.Err()
 }
 
-// maskName keeps the first letter of each word: "CV Sumber Pangan" -> "C••• S••• P•••" (mock: name.replace(/\B\w+/g, '•••')).
 func maskName(name string) string {
 	var b strings.Builder
 	run := 0
@@ -154,8 +148,6 @@ func maskName(name string) string {
 	return b.String()
 }
 
-// opportunityHistory: monthly demand vs supply listed in the opportunity's category, unit and region over the last 6
-// months (oldest first, empty months 0).
 func opportunityHistory(ctx context.Context, q dbtx, d api.OpportunityDetail, now time.Time) ([]struct {
 	Demand float64 `json:"demand"`
 	Month  string  `json:"month"`
@@ -199,15 +191,12 @@ func opportunityHistory(ctx context.Context, q dbtx, d api.OpportunityDetail, no
 	return out, rows.Err()
 }
 
-// ── Personal view ────────────────────────────────────────────────
-
-// viewer is what personalisation needs about the signed-in user.
 type viewer struct {
-	UserID, Name, Home string // Home: account location, else the first preferred location
+	UserID, Name, Home string
 	PrefLocations      []string
 	PrefCategories     map[string]bool
 	RadiusKm           float64
-	ListingCats        map[string]int // active listings per category
+	ListingCats        map[string]int
 }
 
 func loadViewer(ctx context.Context, q dbtx, userID string) (viewer, error) {
@@ -247,7 +236,6 @@ func loadViewer(ctx context.Context, q dbtx, userID string) (viewer, error) {
 	return v, rows.Err()
 }
 
-// near: the opportunity's region is one the user prefers or lives in.
 func (v viewer) near(region string) bool {
 	if strings.EqualFold(regionOf(v.Home), region) {
 		return true
@@ -255,7 +243,6 @@ func (v viewer) near(region string) bool {
 	return slices.ContainsFunc(v.PrefLocations, func(l string) bool { return strings.EqualFold(regionOf(l), region) })
 }
 
-// personalOpportunities scores every open opportunity (plus closed ones the user is related to) for the user.
 func personalOpportunities(ctx context.Context, q dbtx, userID string) ([]api.PersonalOpportunity, error) {
 	v, err := loadViewer(ctx, q, userID)
 	if err != nil {
@@ -401,7 +388,6 @@ func personalOpportunity(ctx context.Context, q dbtx, userID, oppID string) (api
 	return api.PersonalOpportunity{}, errOpportunityNotFound
 }
 
-// lockOpportunity locks the opportunity row and returns its id (404 when missing).
 func lockOpportunity(ctx context.Context, tx pgx.Tx, id string) (string, error) {
 	var oppID string
 	err := tx.QueryRow(ctx, `SELECT id::text FROM opportunities WHERE id::text = $1 FOR UPDATE`, id).Scan(&oppID)
@@ -411,8 +397,6 @@ func lockOpportunity(ctx context.Context, tx pgx.Tx, id string) (string, error) 
 	return oppID, err
 }
 
-// JoinOpportunity records the caller's contribution. Re-joining replaces the previous contribution (the mock adds it
-// again), and the listing must be one of the caller's own of the contributed kind.
 func (s *Server) JoinOpportunity(ctx context.Context, req api.JoinOpportunityRequestObject) (api.JoinOpportunityResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -479,7 +463,6 @@ func (s *Server) JoinOpportunity(ctx context.Context, req api.JoinOpportunityReq
 	return api.JoinOpportunity200JSONResponse(out), nil
 }
 
-// adjustContribution adds (sign 1) or removes (sign -1) a contribution from the opportunity's demand or supply total.
 func adjustContribution(ctx context.Context, tx pgx.Tx, oppID string, role *string, qty *float64, sign float64) error {
 	if role == nil || qty == nil {
 		return nil
@@ -515,7 +498,6 @@ func (s *Server) FollowOpportunity(ctx context.Context, req api.FollowOpportunit
 	return api.FollowOpportunity204Response{}, nil
 }
 
-// LeaveOpportunity clears following and joined; a joined contribution is taken back out of the totals.
 func (s *Server) LeaveOpportunity(ctx context.Context, req api.LeaveOpportunityRequestObject) (api.LeaveOpportunityResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -524,7 +506,7 @@ func (s *Server) LeaveOpportunity(ctx context.Context, req api.LeaveOpportunityR
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		oppID, err := lockOpportunity(ctx, tx, req.Id)
 		if errors.Is(err, errOpportunityNotFound) {
-			return nil // idempotent
+			return nil
 		}
 		if err != nil {
 			return err

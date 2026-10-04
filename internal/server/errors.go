@@ -11,8 +11,6 @@ import (
 	"github.com/getkin/kin-openapi/openapi3filter"
 )
 
-// Error is the API error contract: {"error": {"code", "message", "fields"?}}. Handlers may return it as a plain error
-// for cases where the typed response object would be noise; documented responses are still preferred.
 type Error struct {
 	Status  int               `json:"-"`
 	Code    string            `json:"code"`
@@ -28,14 +26,11 @@ func writeError(w http.ResponseWriter, e *Error) {
 	_ = json.NewEncoder(w).Encode(map[string]*Error{"error": e})
 }
 
-// validationError turns request-validation failures into 422 with one message per input, the shape the frontend renders
-// under each field. Messages stay in English here; the Indonesian copy for known fields belongs to the handlers.
 func validationError(err error) *Error {
 	fields := map[string]string{}
 	var collect func(error)
 	collect = func(err error) {
-		// Check the wrapper types by direct assertion first: errors.As would see through a RequestError into the
-		// MultiError it wraps and lose the parameter name.
+
 		if multi, ok := err.(openapi3.MultiError); ok {
 			for _, e := range multi {
 				collect(e)

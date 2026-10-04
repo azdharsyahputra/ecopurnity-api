@@ -9,18 +9,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// The auction clock: starts scheduled auctions, closes the ones whose time is up, and steps Dutch asks down.
-// Runs on every API instance; each auction is claimed with FOR UPDATE SKIP LOCKED, so instances never double-process.
-
 const (
-	// dutchStepEvery: how often a Dutch ask drops by min_step. ponytail: one global pace; make it a market rule when
-	// markets need different paces.
 	dutchStepEvery = 30 * time.Second
-	// dutchFloorPct: the ask never drops below this share of the opening price (frontend mock: 80%).
+
 	dutchFloorPct = 0.8
 )
 
-// RunAuctionClock ticks until ctx ends.
 func (s *Server) RunAuctionClock(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -36,10 +30,9 @@ func (s *Server) RunAuctionClock(ctx context.Context, every time.Duration) {
 	}
 }
 
-// AuctionTick does one pass (exported for tests).
 func (s *Server) AuctionTick(ctx context.Context) error {
 	for _, step := range []func(context.Context) (bool, error){s.startOne, s.closeOne, s.dutchOne} {
-		// Drain each queue one auction per transaction so a slow one doesn't hold the others' locks.
+
 		for i := 0; i < 100; i++ {
 			did, err := step(ctx)
 			if err != nil {
@@ -73,7 +66,7 @@ func (s *Server) startOne(ctx context.Context) (bool, error) {
 		if _, err := tx.Exec(ctx, `UPDATE auctions SET status = 'live' WHERE id = $1`, id); err != nil {
 			return err
 		}
-		// Market rounds were announced on the public feed when the maker opened them (mmAudit "Round n dibuka").
+
 		var title string
 		var market *string
 		var round *int32
@@ -112,12 +105,6 @@ func (s *Server) dutchOne(ctx context.Context) (bool, error) {
 	return did, err
 }
 
-// closeOne closes one auction whose time is up.
-//   - Buyer auctions (owned): bids stay as they are until the owner awards; the owner is told to evaluate. Lots of a
-//     business auction: the org's members who can view auctions are told once, when the last lot closes.
-//   - Market rounds: the best bidder is marked won and everyone else lost; trades are created by the market maker's
-//     collective settlement (market maker area), so bidders are told the result, not handed a trade.
-//   - Sealed auctions reveal ranks only now (bid.status frames).
 func (s *Server) closeOne(ctx context.Context) (bool, error) {
 	did := false
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
@@ -205,7 +192,7 @@ func (s *Server) closeOne(ctx context.Context) (bool, error) {
 		if err := emit(ctx, tx, "auction.closed", id, fact); err != nil {
 			return err
 		}
-		return emitRoundResult(ctx, tx, id) // market rounds only (mm_markets.go): the round's recorded prices
+		return emitRoundResult(ctx, tx, id)
 	})
 	return did, err
 }

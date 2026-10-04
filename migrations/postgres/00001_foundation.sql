@@ -1,11 +1,7 @@
 -- +goose Up
--- Foundation: shared helpers, accounts, organizations, parties, notifications, audit, outbox.
--- Every other migration builds on these tables. See migrations/CONVENTIONS.md.
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- gen_random_uuid()
-CREATE EXTENSION IF NOT EXISTS citext;    -- case-insensitive email / username
-
--- ── Helpers ──────────────────────────────────────────────────────
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS citext;
 
 -- +goose StatementBegin
 CREATE FUNCTION set_updated_at() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -15,8 +11,7 @@ BEGIN
 END $$;
 -- +goose StatementEnd
 
--- Human-readable codes (TRX-4F2A, AUC-91C0, ...): prefix + 4..8 upper-case base36 chars from a sequence.
-CREATE SEQUENCE public_code_seq START 46656;  -- 36^3, so codes start at 4 characters
+CREATE SEQUENCE public_code_seq START 46656;
 -- +goose StatementBegin
 CREATE FUNCTION next_code(prefix text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
@@ -32,13 +27,10 @@ BEGIN
 END $$;
 -- +goose StatementEnd
 
--- Shared value domains.
-CREATE DOMAIN idr AS bigint CHECK (VALUE >= 0);                 -- Rupiah amount, never negative (signed flows use bigint)
-CREATE DOMAIN qty AS numeric(18,3) CHECK (VALUE >= 0);         -- quantity value; the unit lives in a sibling text column
+CREATE DOMAIN idr AS bigint CHECK (VALUE >= 0);
+CREATE DOMAIN qty AS numeric(18,3) CHECK (VALUE >= 0);
 CREATE DOMAIN category_id AS text
   CHECK (VALUE IN ('agri','food','packaging','manufacturing','logistics','it','energy'));
-
--- ── Accounts ─────────────────────────────────────────────────────
 
 CREATE TABLE users (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -46,12 +38,11 @@ CREATE TABLE users (
   username        citext NOT NULL UNIQUE CHECK (username ~ '^[a-z0-9._-]{3,32}$'),
   email           citext NOT NULL UNIQUE,
   email_verified_at timestamptz,
-  password_hash   text,                                   -- null for Google-only accounts
+  password_hash   text,
   google_sub      text UNIQUE,
   location        text,
   avatar_url      text,
   onboarded_at    timestamptz,
-  -- Governance state (PRD admin): active | restricted (no new bids/listings/auctions) | suspended (cannot sign in).
   status          text NOT NULL DEFAULT 'active' CHECK (status IN ('active','restricted','suspended')),
   created_at      timestamptz NOT NULL DEFAULT now(),
   updated_at      timestamptz NOT NULL DEFAULT now(),
@@ -59,7 +50,6 @@ CREATE TABLE users (
 );
 CREATE TRIGGER users_updated_at BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
--- Capabilities on top of the base participant account (market_maker, admin).
 CREATE TABLE user_capabilities (
   user_id     uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   capability  text NOT NULL CHECK (capability IN ('market_maker','admin')),
@@ -68,7 +58,6 @@ CREATE TABLE user_capabilities (
   PRIMARY KEY (user_id, capability)
 );
 
--- Server-side sessions behind the httpOnly cookie. Only the SHA-256 of the token is stored.
 CREATE TABLE sessions (
   token_hash   bytea PRIMARY KEY,
   user_id      uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -81,7 +70,6 @@ CREATE TABLE sessions (
 CREATE INDEX sessions_user_idx ON sessions (user_id);
 CREATE INDEX sessions_expires_idx ON sessions (expires_at);
 
--- One-time tokens: email verification and password reset (hash only, single use).
 CREATE TABLE auth_tokens (
   token_hash  bytea PRIMARY KEY,
   user_id     uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -91,10 +79,6 @@ CREATE TABLE auth_tokens (
   created_at  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX auth_tokens_user_idx ON auth_tokens (user_id, purpose);
-
--- ── Organizations ────────────────────────────────────────────────
--- Profile, legal data, verification, roles and settings live in the org migration; this is the identity row
--- other areas point at.
 
 CREATE TABLE orgs (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -107,8 +91,6 @@ CREATE TABLE orgs (
 CREATE UNIQUE INDEX orgs_name_key ON orgs (lower(name));
 CREATE TRIGGER orgs_updated_at BEFORE UPDATE ON orgs FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
--- Membership. `role` is a built-in role id or a custom role id defined in org_roles (org migration), so it is text.
--- Invited members exist before they have an account: user_id is null and email is set.
 CREATE TABLE org_members (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id      uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -128,18 +110,12 @@ CREATE UNIQUE INDEX org_members_user_key ON org_members (org_id, user_id) WHERE 
 CREATE INDEX org_members_user_idx ON org_members (user_id) WHERE user_id IS NOT NULL;
 CREATE INDEX org_members_email_invited_idx ON org_members (email) WHERE status = 'invited';
 
--- ── Parties ──────────────────────────────────────────────────────
--- Anyone who can stand on one side of a trade, quote, contract or dispute: a platform user, an organization, or an
--- external party that is not on the platform (simulated counterparties in the mock; offline suppliers in production).
--- `name` and `verified` are a snapshot for display; for user/org parties the live values come from users/orgs.
-
 CREATE TABLE parties (
   id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   kind      text NOT NULL CHECK (kind IN ('user','org','external')),
   user_id   uuid UNIQUE REFERENCES users(id),
   org_id    uuid UNIQUE REFERENCES orgs(id),
   name      text NOT NULL,
-  -- PartyRef.kind: how it is shown (person or business), independent of whether it is on the platform.
   display_kind text NOT NULL DEFAULT 'business' CHECK (display_kind IN ('person','business')),
   verified  boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -149,8 +125,6 @@ CREATE TABLE parties (
     (kind = 'external' AND user_id IS NULL AND org_id IS NULL)
   )
 );
-
--- ── Notifications ────────────────────────────────────────────────
 
 CREATE TABLE notifications (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -166,7 +140,6 @@ CREATE TABLE notifications (
 CREATE INDEX notifications_user_idx ON notifications (user_id, created_at DESC);
 CREATE INDEX notifications_unread_idx ON notifications (user_id) WHERE read_at IS NULL;
 
--- Per-type channel preferences; a missing row means the default (in-app on, email on).
 CREATE TABLE notification_prefs (
   user_id  uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   type     text NOT NULL,
@@ -175,25 +148,20 @@ CREATE TABLE notification_prefs (
   PRIMARY KEY (user_id, type)
 );
 
--- ── Audit ────────────────────────────────────────────────────────
--- Append-only. Every mutating governance, market maker and organization action writes one row in the same
--- transaction as the change. Mirrored to ClickHouse through the outbox for search.
-
 CREATE TABLE audit_log (
   id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   at           timestamptz NOT NULL DEFAULT now(),
   actor_user_id uuid REFERENCES users(id),
-  actor_label  text NOT NULL,                  -- "Sari Kusuma (Admin)", "Sistem"
+  actor_label  text NOT NULL,
   action       text NOT NULL,
   entity_type  text NOT NULL CHECK (entity_type IN ('user','business','opportunity','market','auction','alert','transaction',
                                                     'dispute','rule','procurement','supplier')),
   entity_id    text NOT NULL,
   entity_label text NOT NULL,
-  -- Scope so an org or a market can read its own log without scanning everything.
   org_id       uuid REFERENCES orgs(id),
-  market_id    uuid,                            -- FK added in the economy migration
+  market_id    uuid,
   reason       text,
-  changes      jsonb NOT NULL DEFAULT '[]'      -- [{field, before?, after}]
+  changes      jsonb NOT NULL DEFAULT '[]'
 );
 CREATE INDEX audit_entity_idx ON audit_log (entity_type, entity_id, at DESC);
 CREATE INDEX audit_org_idx ON audit_log (org_id, at DESC) WHERE org_id IS NOT NULL;
@@ -208,14 +176,10 @@ END $$;
 -- +goose StatementEnd
 CREATE TRIGGER audit_log_no_update BEFORE UPDATE OR DELETE ON audit_log FOR EACH ROW EXECUTE FUNCTION audit_log_immutable();
 
--- ── Outbox ───────────────────────────────────────────────────────
--- Transactional outbox: domain events written in the same transaction as the change, published afterwards to
--- ClickHouse (analytics) and the realtime hub (WebSocket). Delivery is at-least-once; consumers dedupe on id.
-
 CREATE TABLE outbox (
   id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   created_at    timestamptz NOT NULL DEFAULT now(),
-  topic         text NOT NULL,                  -- 'auction.bid', 'trade.status', 'audit', 'activity', ...
+  topic         text NOT NULL,
   aggregate_id  text NOT NULL,
   payload       jsonb NOT NULL,
   published_at  timestamptz,
@@ -223,7 +187,6 @@ CREATE TABLE outbox (
 );
 CREATE INDEX outbox_unpublished_idx ON outbox (id) WHERE published_at IS NULL;
 
--- ── Table comments ───────────────────────────────────────────────
 COMMENT ON TABLE users IS 'A person''s platform account (participant); capabilities and org memberships hang off it.';
 COMMENT ON TABLE user_capabilities IS 'A capability granted on top of the participant account (market_maker, admin).';
 COMMENT ON TABLE sessions IS 'A signed-in browser session behind the httpOnly cookie (token stored as SHA-256).';

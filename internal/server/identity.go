@@ -12,8 +12,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Economic identity (GET/PUT /me/identity): profile, capacity items, availability, preferences.
-
 func loadIdentity(ctx context.Context, q dbtx, userID string) (api.Identity, error) {
 	var id api.Identity
 	var location *string
@@ -78,7 +76,6 @@ func loadIdentity(ctx context.Context, q dbtx, userID string) (api.Identity, err
 	return id, nil
 }
 
-// completeness is the share of profile checks that pass (frontend src/mocks/personal.ts completeness()).
 func completeness(i api.Identity) float64 {
 	has := func(kinds ...api.CapacityKind) bool {
 		for _, it := range i.Items {
@@ -120,8 +117,6 @@ var hhmm = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-// SaveMyIdentity replaces the identity document. Verification state in the body is ignored (it changes only through
-// /me/kyc and email verification); the username is not editable here.
 func (s *Server) SaveMyIdentity(ctx context.Context, req api.SaveMyIdentityRequestObject) (api.SaveMyIdentityResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -187,10 +182,8 @@ func (s *Server) SaveMyIdentity(ctx context.Context, req api.SaveMyIdentityReque
 	return api.SaveMyIdentity200JSONResponse(out), nil
 }
 
-// saveCapacityItems upserts the list in order: items keep their row (and the smart-match state hanging off it) when
-// the client sends back their id; new client-side ids become new rows; rows not sent are deleted.
 func saveCapacityItems(ctx context.Context, tx pgx.Tx, userID string, items []api.CapacityItem) error {
-	// Move existing positions out of the way so the unique (user_id, position) does not trip mid-update.
+
 	if _, err := tx.Exec(ctx, `UPDATE capacity_items SET position = position + 10000 WHERE user_id = $1`, userID); err != nil {
 		return err
 	}

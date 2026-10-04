@@ -14,8 +14,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Personal listings (supply + demand), spec tag Personal.
-
 type listingRow struct {
 	ID, Code, Kind, Status, Item, Category, Unit, Location, Spec, Delivery string
 	Quantity                                                               float64
@@ -24,7 +22,7 @@ type listingRow struct {
 	AvailableFrom, ExpiresAt, Deadline                                     *time.Time
 	CreatedAt, UpdatedAt                                                   time.Time
 	atts                                                                   []attachmentRow
-	Attachments                                                            []api.ListingAttachment // signed from atts
+	Attachments                                                            []api.ListingAttachment
 }
 
 const listingSelect = `
@@ -40,7 +38,6 @@ func scanListing(row pgx.Row) (listingRow, error) {
 	return r, err
 }
 
-// fill sets the shared and kind-specific fields on any union that accepts a SupplyListing or DemandListing.
 func (r listingRow) fill(fromSupply func(api.SupplyListing) error, fromDemand func(api.DemandListing) error) error {
 	q := api.Quantity{Value: r.Quantity, Unit: r.Unit}
 	if r.Kind == "supply" {
@@ -73,7 +70,6 @@ func (r listingRow) final() bool {
 	return false
 }
 
-// myListing loads one of the user's listings (optionally locked for update), or 404.
 func (s *Server) myListing(ctx context.Context, q dbtx, userID, id string, forUpdate bool) (listingRow, error) {
 	sql := listingSelect + ` WHERE l.id::text = $1 AND p.user_id = $2`
 	if forUpdate {
@@ -127,13 +123,12 @@ func (s *Server) ListMyListings(ctx context.Context, req api.ListMyListingsReque
 	return out, rows.Err()
 }
 
-// listingDraft is the editable part of a listing, validated the same way on create and update.
 type listingDraft struct {
 	Kind, Item, Category, Unit, Location, Spec, Delivery string
 	Quantity                                             float64
 	Price, Budget                                        *int64
 	AvailableFrom, ExpiresAt, Deadline                   *time.Time
-	Attachments                                          []api.ListingAttachmentInput // nil on update = unchanged
+	Attachments                                          []api.ListingAttachmentInput
 }
 
 func (d *listingDraft) validate(now time.Time, isNew bool) map[string]string {
@@ -323,9 +318,6 @@ func (s *Server) GetMyListing(ctx context.Context, req api.GetMyListingRequestOb
 	return listingDetailResponse{detail}, nil
 }
 
-// listingDetailResponse writes a ListingDetail with its own MarshalJSON. The generated GetMyListing200JSONResponse is a
-// defined type over ListingDetail and loses that method, which drops the listing's union fields from the JSON
-// (oapi-codegen only adds the method for pure unions).
 type listingDetailResponse struct{ api.ListingDetail }
 
 func (r listingDetailResponse) VisitGetMyListingResponse(w http.ResponseWriter) error {
@@ -339,7 +331,6 @@ func (r listingDetailResponse) VisitGetMyListingResponse(w http.ResponseWriter) 
 	return err
 }
 
-// parseDate accepts an RFC 3339 timestamp or a plain YYYY-MM-DD date; "" means unset.
 func parseDate(s string) (*time.Time, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -371,7 +362,7 @@ func (s *Server) UpdateMyListing(ctx context.Context, req api.UpdateMyListingReq
 			return &Error{Status: http.StatusConflict, Code: "not_editable", Message: "Listing yang sudah selesai tidak bisa diubah"}
 		}
 		f := map[string]string{}
-		// The frontend sends the whole draft including kind; another kind is a mistake, not a conversion.
+
 		if k, ok := in.AdditionalProperties["kind"]; ok && k != r.Kind {
 			f["kind"] = "Jenis listing tidak bisa diubah"
 		}
@@ -499,7 +490,6 @@ func (s *Server) ArchiveMyListing(ctx context.Context, req api.ArchiveMyListingR
 	return api.ArchiveMyListing200JSONResponse(out), nil
 }
 
-// SubmitMyListingToMarket moves a listing into a market and makes the owner a participant there.
 func (s *Server) SubmitMyListingToMarket(ctx context.Context, req api.SubmitMyListingToMarketRequestObject) (api.SubmitMyListingToMarketResponseObject, error) {
 	sess, err := requireActive(ctx)
 	if err != nil {
@@ -585,28 +575,22 @@ func derefTime(p *time.Time) time.Time {
 	return *p
 }
 
-// ── Attachments ──────────────────────────────────────────────────
-
 const (
 	maxListingAttachments = 8
 	attachmentURLTTL      = time.Hour
 )
 
-// attachmentRow is one listing_attachments row as attachmentsJSON aggregates it.
 type attachmentRow struct {
 	ID          string  `json:"id"`
-	Key         *string `json:"key"` // null: legacy name-only attachment
+	Key         *string `json:"key"`
 	FileName    string  `json:"fileName"`
 	ContentType string  `json:"contentType"`
 	Size        *int64  `json:"size"`
 }
 
-// attachmentsJSON selects the attachments of listing `l` in order, as a JSON array of attachmentRow.
 const attachmentsJSON = `coalesce((SELECT json_agg(json_build_object('id', a.id, 'key', a.object_key, 'fileName', a.file_name,
 	'contentType', a.content_type, 'size', a.size_bytes) ORDER BY a.position) FROM listing_attachments a WHERE a.listing_id = l.id), '[]')`
 
-// signAttachments returns the API shape with a presigned GET URL for every stored file. Only call it for a viewer who
-// may see the listing (the owner, or anyone for a public listing).
 func (s *Server) signAttachments(ctx context.Context, rows []attachmentRow) ([]api.ListingAttachment, error) {
 	out := make([]api.ListingAttachment, len(rows))
 	for i, a := range rows {
@@ -626,9 +610,6 @@ func (s *Server) signAttachments(ctx context.Context, rows []attachmentRow) ([]a
 	return out, nil
 }
 
-// setAttachments makes refs the listing's complete attachment set in that order: `id` keeps one of its attachments,
-// `uploadId` claims a new upload, anything not listed is deleted. Returns the object keys of the deleted rows, for
-// deleteObjects after the transaction commits. The count limit is checked by listingDraft.validate.
 func (s *Server) setAttachments(ctx context.Context, tx pgx.Tx, userID, listingID string, refs []api.ListingAttachmentInput) ([]string, error) {
 	bad := func(msg string) error {
 		return &Error{Status: http.StatusUnprocessableEntity, Code: "validation", Message: "Periksa kembali file yang diunggah", Fields: map[string]string{"attachments": msg}}
@@ -642,12 +623,12 @@ func (s *Server) setAttachments(ctx context.Context, tx pgx.Tx, userID, listingI
 	for _, id := range ids {
 		existing[id] = true
 	}
-	kept := []string{} // not nil: ANY(NULL) would keep everything
+	kept := []string{}
 	for _, ref := range refs {
 		switch {
 		case ref.UploadId != nil && ref.Id == nil:
 		case ref.Id != nil && ref.UploadId == nil:
-			if !existing[*ref.Id] { // also catches the same id twice
+			if !existing[*ref.Id] {
 				return nil, bad("Lampiran tidak ditemukan. Muat ulang halaman.")
 			}
 			delete(existing, *ref.Id)
@@ -687,7 +668,6 @@ func (s *Server) setAttachments(ctx context.Context, tx pgx.Tx, userID, listingI
 	return removed, nil
 }
 
-// deleteObjects removes files whose rows are gone. Best effort: a failure leaves an orphan object, logged.
 func (s *Server) deleteObjects(ctx context.Context, keys []string) {
 	if s.Storage == nil {
 		return

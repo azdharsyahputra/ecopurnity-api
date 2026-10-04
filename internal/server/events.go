@@ -9,13 +9,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// audit is one audit_log row; written in the same transaction as the change it records, and mirrored to the outbox
-// for ClickHouse search.
 type audit struct {
 	ActorUserID *string
 	ActorLabel  string
 	Action      string
-	EntityType  string // user, business, opportunity, market, auction, alert, transaction, dispute, rule, procurement, supplier
+	EntityType  string
 	EntityID    string
 	EntityLabel string
 	OrgID       *string
@@ -50,7 +48,6 @@ func writeAudit(ctx context.Context, q dbtx, a audit) error {
 	return emit(ctx, q, "audit", a.EntityID, payload)
 }
 
-// emit appends a domain event to the transactional outbox.
 func emit(ctx context.Context, q dbtx, topic, aggregateID string, payload []byte) error {
 	_, err := q.Exec(ctx, `INSERT INTO outbox (topic, aggregate_id, payload) VALUES ($1, $2, $3)`, topic, aggregateID, payload)
 	return err
@@ -60,8 +57,6 @@ type notification struct {
 	Type, Title, Body, Href string
 }
 
-// notify stores an in-app notification and queues it for the user's realtime channel. A type the user switched off
-// in-app (notification_prefs.in_app = false) is skipped; no row means the default (on).
 func notify(ctx context.Context, q dbtx, userID string, n notification) error {
 	var id string
 	err := q.QueryRow(ctx, `
@@ -79,10 +74,6 @@ func notify(ctx context.Context, q dbtx, userID string, n notification) error {
 		map[string]any{"id": id, "type": n.Type, "title": n.Title, "body": n.Body, "href": n.Href, "read": false})
 }
 
-// emitFrame queues one realtime frame (api/asyncapi.yaml envelope {channel, type, seq?, payload, ts}) in the outbox,
-// in the caller's transaction, so it is delivered if and only if the change commits. Topic 'rt'; aggregate_id is the
-// channel. The frame is final: masked for its channel's audience before it is written (the publisher never reshapes
-// it). seq is the per-channel sequence for channels that have one (auction:{id}, conversation:{id}).
 func emitFrame(ctx context.Context, q dbtx, channel, typ string, seq *int64, payload any) error {
 	b, err := renderFrame(channel, typ, seq, payload)
 	if err != nil {
@@ -91,7 +82,6 @@ func emitFrame(ctx context.Context, q dbtx, channel, typ string, seq *int64, pay
 	return emit(ctx, q, "rt", channel, b)
 }
 
-// renderFrame is the server event envelope; ephemeral frames (typing) use it without the outbox.
 func renderFrame(channel, typ string, seq *int64, payload any) ([]byte, error) {
 	frame := map[string]any{"channel": channel, "type": typ, "payload": payload, "ts": time.Now().UTC().Format(time.RFC3339Nano)}
 	if seq != nil {
@@ -100,7 +90,6 @@ func renderFrame(channel, typ string, seq *int64, payload any) ([]byte, error) {
 	return json.Marshal(frame)
 }
 
-// notifyAdmins notifies every user with the admin capability.
 func notifyAdmins(ctx context.Context, q dbtx, n notification) error {
 	rows, err := q.Query(ctx, `SELECT user_id FROM user_capabilities WHERE capability = 'admin'`)
 	if err != nil {

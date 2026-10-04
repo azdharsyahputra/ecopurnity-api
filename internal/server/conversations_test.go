@@ -25,7 +25,6 @@ func TestConversations(t *testing.T) {
 		}
 	}
 
-	// Start with an opening message: seq 1, frame, notification for Budi; Ana has read it.
 	trade := newUUID(e)
 	start := map[string]any{"subject": "Pengiriman cabai", "with": map[string]any{"name": "Budi Chat", "kind": "person", "verified": true, "userId": budiID},
 		"link": map[string]any{"type": "transaction", "id": trade, "href": "/ignored"}, "text": "  Halo Budi  "}
@@ -51,7 +50,6 @@ func TestConversations(t *testing.T) {
 		t.Fatalf("notification: %v", n)
 	}
 
-	// Budi's inbox: unread 1; opening the thread reads it (and broadcasts `read`).
 	var inbox map[string]any
 	for _, c := range e.callArray(budi, "/me/conversations") {
 		if c["id"] == conv {
@@ -68,7 +66,6 @@ func TestConversations(t *testing.T) {
 		t.Fatalf("read frame: %v", f)
 	}
 
-	// Idempotent send.
 	key := newUUID(e)
 	for i := range 2 {
 		r = e.call(budi, "POST", "/me/conversations/"+conv+"/messages", map[string]any{"text": "Siap, besok dikirim", "clientMsgId": key})
@@ -83,7 +80,7 @@ func TestConversations(t *testing.T) {
 	if n := e.scalar(`SELECT count(*) FROM notifications WHERE user_id = $1 AND href = $2`, anaID, "/app/messages/"+conv); n != int64(1) {
 		t.Fatalf("notifications after retry: %v", n)
 	}
-	// The same key in another conversation is rejected; blank text too; outsiders get 404.
+
 	r = e.call(ana, "POST", "/me/conversations", map[string]any{"subject": "Lain", "with": map[string]any{"name": fmt.Sprintf("Toko Luar %d", time.Now().UnixNano()), "kind": "business", "verified": false}})
 	if r.Status != 201 || r.Body["participants"].([]any)[1].(map[string]any)["userId"] != nil {
 		t.Fatalf("external conversation: %d %v", r.Status, r.Body)
@@ -111,7 +108,7 @@ func TestConversations(t *testing.T) {
 	if r := e.call(luar, "GET", "/me/conversations/"+conv, nil); r.Status != 404 {
 		t.Fatalf("outsider get: %d", r.Status)
 	}
-	// Without a simulation tick nothing answers for the external party.
+
 	if n := e.scalar(`SELECT count(*) FROM messages WHERE conversation_id = $1 AND author_user_id IS NULL`, other); n != int64(0) {
 		t.Fatalf("external replied by itself: %v", n)
 	}

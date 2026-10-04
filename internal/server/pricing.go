@@ -7,9 +7,6 @@ import (
 	"unicode"
 )
 
-// Price suggestion (frontend src/domain/pricing.ts): quartiles of comparable prices, rounded to Rp 50; nothing below
-// 3 data points.
-
 type priceSuggestion struct {
 	Median, Low, High int
 	Sample            int
@@ -37,7 +34,6 @@ func suggestPrice(samples []float64) *priceSuggestion {
 	return &priceSuggestion{Median: round(quantile(s, 0.5)), Low: round(quantile(s, 0.25)), High: round(quantile(s, 0.75)), Sample: len(s)}
 }
 
-// itemWords are the words of 4+ letters used to narrow comparisons to similar items ("Biji kopi arabika" → kopi, arabika, biji).
 func itemWords(item string) []string {
 	var out []string
 	for _, w := range strings.FieldsFunc(strings.ToLower(item), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {

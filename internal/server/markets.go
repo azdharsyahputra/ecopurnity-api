@@ -16,9 +16,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Public markets (spec tag Public) and the caller's market membership (tag Personal). Draft markets are not
-// published: they are absent from every list here and answer 404.
-
 var errMarketNotFound = &Error{Status: http.StatusNotFound, Code: "not_found", Message: "Market tidak ditemukan"}
 
 const marketsOrder = ` ORDER BY m.volume_30d_idr DESC, m.id`
@@ -71,8 +68,6 @@ func (s *Server) GetMarket(ctx context.Context, req api.GetMarketRequestObject) 
 	return api.GetMarket200JSONResponse(d), nil
 }
 
-// marketDetail is the public MarketDetail of a published market (also embedded in the market maker's ops view, read
-// on the primary there).
 func (s *Server) marketDetail(ctx context.Context, q dbtx, id string) (api.MarketDetail, error) {
 	var d api.MarketDetail
 	ms, err := loadMarkets(ctx, q, `m.id::text = $1 AND m.status <> 'draft'`, id)
@@ -86,7 +81,7 @@ func (s *Server) marketDetail(ctx context.Context, q dbtx, id string) (api.Marke
 		return d, err
 	}
 	var rules []byte
-	// Rules shown are the version governing the current round (latest started round; v1 before any round ran).
+
 	err = q.QueryRow(ctx, `
 		WITH r AS (SELECT coalesce(max(round_no), 0) AS n FROM auctions
 		           WHERE market_id = $1 AND status NOT IN ('scheduled','qualification','cancelled'))
@@ -108,7 +103,7 @@ func (s *Server) marketDetail(ctx context.Context, q dbtx, id string) (api.Marke
 		}
 		d.Rules = r.labeled(d.PriceRange.Unit)
 	}
-	// ponytail: every round of the market, unpaged; add a limit when markets run for years of weekly rounds.
+
 	if d.Auctions, err = loadAuctions(ctx, q, `a.market_id = $1
 		ORDER BY CASE a.status WHEN 'live' THEN 0 WHEN 'extended' THEN 0 WHEN 'qualification' THEN 1 WHEN 'scheduled' THEN 2 ELSE 3 END,
 		         a.ends_at, a.id`, d.Id); err != nil {
@@ -125,8 +120,6 @@ type pricePoint = struct {
 	Week      string `json:"week"`
 }
 
-// marketAnalytics reads the 12-week price history and the recent activity from ClickHouse. Analytics is never the
-// system of record: when it is down or slow the market page shows empty charts instead of failing.
 func (s *Server) marketAnalytics(ctx context.Context, marketID string) ([]pricePoint, []api.ActivityEvent) {
 	history, activity := []pricePoint{}, []api.ActivityEvent{}
 	if s.Analytics == nil {
@@ -156,8 +149,6 @@ func (s *Server) marketAnalytics(ctx context.Context, marketID string) ([]priceP
 	return history, activity
 }
 
-// ListMyMarkets: every published market with the caller's state. Read on the primary: the UI refetches right after
-// join/leave/watch.
 func (s *Server) ListMyMarkets(ctx context.Context, _ api.ListMyMarketsRequestObject) (api.ListMyMarketsResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -216,8 +207,6 @@ func (s *Server) ListMyMarkets(ctx context.Context, _ api.ListMyMarketsRequestOb
 	return out, nil
 }
 
-// JoinMarket marks the market joined and queues the caller as a buyer participant (same rules as putting a listing
-// into a market). Operators are notified when the request waits for their approval. Idempotent.
 func (s *Server) JoinMarket(ctx context.Context, req api.JoinMarketRequestObject) (api.JoinMarketResponseObject, error) {
 	sess, err := requireActive(ctx)
 	if err != nil {
@@ -283,8 +272,6 @@ func (s *Server) JoinMarket(ctx context.Context, req api.JoinMarketRequestObject
 	return api.JoinMarket204Response{}, nil
 }
 
-// LeaveMarket clears the caller's joined flag and price watch, and withdraws a participant request still pending.
-// Active, rejected and suspended participant rows are the market maker's record and stay.
 func (s *Server) LeaveMarket(ctx context.Context, req api.LeaveMarketRequestObject) (api.LeaveMarketResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -309,7 +296,6 @@ func (s *Server) LeaveMarket(ctx context.Context, req api.LeaveMarketRequestObje
 	return api.LeaveMarket204Response{}, nil
 }
 
-// SetMarketWatchPrice sets (or with 0 / no price clears) the median price alert; the joined flag is unchanged.
 func (s *Server) SetMarketWatchPrice(ctx context.Context, req api.SetMarketWatchPriceRequestObject) (api.SetMarketWatchPriceResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -344,7 +330,6 @@ func publishedMarket(ctx context.Context, q dbtx, id string) (string, error) {
 	return marketID, err
 }
 
-// widen copies a Market into a type that extends it (MarketDetail, MyMarket): the generated structs repeat the fields.
 func widen(src, dst any) error {
 	b, err := json.Marshal(src)
 	if err != nil {
@@ -353,7 +338,6 @@ func widen(src, dst any) error {
 	return json.Unmarshal(b, dst)
 }
 
-// marketRules is a market_rule_versions.rules snapshot (MarketRules); dates stay strings so a blank renders as "—".
 type marketRules struct {
 	Eligibility string  `json:"eligibility"`
 	Visibility  string  `json:"visibility"`
@@ -367,7 +351,6 @@ type marketRules struct {
 	Award       string  `json:"award"`
 }
 
-// Copy from the frontend's src/domain/marketRules.ts (RULE_FIELDS, ELIGIBILITY, VISIBILITY, AWARD).
 var (
 	ruleEligibility = map[string]string{"open": "Terbuka untuk semua akun", "verified": "Akun terverifikasi",
 		"verified_docs": "Akun terverifikasi + dokumen legal usaha"}
@@ -378,7 +361,6 @@ var (
 	idMonths = [...]string{"Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"}
 )
 
-// labeled is rulesToLabeled: the public rule list in display order.
 func (r marketRules) labeled(unit string) []api.LabeledValue {
 	label := func(m map[string]string, k string) string {
 		if v, ok := m[k]; ok {
@@ -400,7 +382,6 @@ func (r marketRules) labeled(unit string) []api.LabeledValue {
 	}
 }
 
-// idNumber formats like Intl.NumberFormat('id-ID'): 12.345,5 (at most 3 decimals).
 func idNumber(v float64) string {
 	s := strconv.FormatFloat(math.Round(v*1000)/1000, 'f', -1, 64)
 	neg := strings.HasPrefix(s, "-")
@@ -423,7 +404,6 @@ func idNumber(v float64) string {
 	return out
 }
 
-// idDate formats YYYY-MM-DD like the frontend's formatDate: "5 Mar 2026"; blank is "—".
 func idDate(d string) string {
 	if d == "" {
 		return "—"

@@ -13,8 +13,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/analytics"
 )
 
-// chSchema is a throwaway ClickHouse database with the full analytics schema (migrations/clickhouse/00001_init.sql,
-// materialized views included), or nil when ClickHouse is not running. The dev `ecopurnity` database is untouched.
 func chSchema(t *testing.T) (*analytics.Client, driver.Conn) {
 	addr := os.Getenv("TEST_CLICKHOUSE_ADDR")
 	if addr == "" {
@@ -108,7 +106,6 @@ func TestPublicAnalyticsReads(t *testing.T) {
 		t.Fatalf("aggregates: %v", agg)
 	}
 
-	// ClickHouse unreachable: same endpoints answer zeros, no 500.
 	down, err := analytics.Open("127.0.0.1:1", "x", "default", "")
 	if err != nil {
 		t.Fatal(err)

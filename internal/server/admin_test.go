@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-// admin registers a user with the admin capability.
 func (e *testEnv) admin(name string) (*http.Client, string) {
 	e.t.Helper()
 	c, email := e.signedIn(name)
@@ -19,7 +18,6 @@ func (e *testEnv) admin(name string) (*http.Client, string) {
 	return c, id
 }
 
-// list calls an endpoint that answers a JSON array.
 func (e *testEnv) list(c *http.Client, path string) []map[string]any {
 	e.t.Helper()
 	res, err := c.Get(e.srv.URL + BasePath + path)
@@ -85,7 +83,6 @@ func TestAdminUserGovernance(t *testing.T) {
 		t.Fatalf("missing user (404 before reason): %d", r.Status)
 	}
 
-	// Suspend: episode starts, sessions die, login refused.
 	if r := e.call(a, "POST", path, map[string]any{"action": "suspend", "reason": punitive}); r.Status != 200 || r.Body["status"] != "suspended" {
 		t.Fatalf("suspend: %d %v", r.Status, r.Body)
 	}
@@ -113,7 +110,6 @@ func TestAdminUserGovernance(t *testing.T) {
 		t.Fatalf("appeal after deny: %v", ap)
 	}
 
-	// Restore, suspend again (new episode), appeal, restore grants it.
 	if r := e.call(a, "POST", path, map[string]any{"action": "restore", "reason": punitive}); r.Status != 200 || r.Body["status"] != "active" {
 		t.Fatalf("restore: %d %v", r.Status, r.Body)
 	}
@@ -131,7 +127,6 @@ func TestAdminUserGovernance(t *testing.T) {
 		t.Fatalf("login after restore: %d %v", r.Status, r.Body)
 	}
 
-	// Verify.
 	if r := e.call(a, "POST", path, map[string]any{"action": "verify", "reason": "Dokumen identitas dicek manual"}); r.Status != 200 || r.Body["verified"] != true {
 		t.Fatalf("verify: %d %v", r.Status, r.Body)
 	}
@@ -155,7 +150,6 @@ func TestAdminVerifications(t *testing.T) {
 	e := newEnv(t)
 	a, _ := e.admin("Sari Admin")
 
-	// Business request (an org asks for review).
 	owner, email := e.signedIn("Pemilik CV")
 	ownerID := e.scalar(`SELECT id::text FROM users WHERE email = $1`, email).(string)
 	r := e.call(owner, "POST", "/orgs", map[string]any{"name": "CV Verif " + ownerID[:6], "type": "CV", "categoryId": "packaging"})
@@ -186,7 +180,6 @@ func TestAdminVerifications(t *testing.T) {
 		t.Fatalf("decide twice: %d %v", r.Status, r.Body)
 	}
 
-	// Personal request (KTP + selfie through presigned uploads).
 	if testStorage() == nil {
 		t.Skip("object storage not running")
 	}
@@ -255,14 +248,13 @@ func TestAdminMarketsAndAuctions(t *testing.T) {
 		t.Fatalf("market detail: %v", d.Body)
 	}
 
-	// Auctions: freeze holds a live buyer auction, unfreeze restores it.
 	_, auc, _ := e.buyerAuction("full", "reverse")
 	buyerID := e.scalar(`SELECT owner_user_id::text FROM auctions WHERE id = $1`, auc).(string)
 	s1, _ := e.bidder("Supplier Satu")
 	s2, _ := e.bidder("Supplier Dua")
 	e.qualify(s1, auc)
 	e.qualify(s2, auc)
-	for _, p := range []int{9500, 9000, 8500} { // one bidder three times in a row: "Bid beruntun"
+	for _, p := range []int{9500, 9000, 8500} {
 		if r := e.call(s1, "POST", "/auctions/"+auc+"/bids", map[string]any{"priceIdr": p}); r.Status != 200 {
 			t.Fatalf("bid %d: %d %v", p, r.Status, r.Body)
 		}
@@ -303,7 +295,6 @@ func TestAdminMarketsAndAuctions(t *testing.T) {
 		t.Fatal("unfreeze must restore live")
 	}
 
-	// Open a case, then work the alert: note, escalate to a freeze.
 	r := e.call(a, "POST", act, map[string]any{"action": "open_case", "reason": "Pola bid beruntun mencurigakan", "type": "abnormal_bidding"})
 	caseID, _ := r.Body["caseId"].(string)
 	if r.Status != 200 || caseID == "" {
@@ -369,7 +360,7 @@ func TestAdminDisputes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Through the real flow: paid into escrow, then the buyer opens the dispute (its reason is the first evidence).
+
 	e.mustAct(buyer, tr.ID, map[string]any{"action": "accept_agreement"}, "agreement")
 	e.mustAct(supplier, tr.ID, map[string]any{"action": "accept_agreement"}, "agreement")
 	e.mustAct(supplier, tr.ID, map[string]any{"action": "issue_invoice"}, "invoiced")

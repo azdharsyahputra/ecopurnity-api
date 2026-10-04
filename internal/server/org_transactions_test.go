@@ -42,7 +42,6 @@ func TestOrgTransactions(t *testing.T) {
 		}
 	}
 
-	// Reads: members only, from the org's side.
 	if l := e.list(finance, "/orgs/"+buyerOrg+"/transactions"); len(l) != 1 || l[0]["role"] != "buyer" || l[0]["timeline"] != nil {
 		t.Fatalf("list: %v", l)
 	}
@@ -53,7 +52,6 @@ func TestOrgTransactions(t *testing.T) {
 		t.Fatal("supplier org view", r.Status, r.Body)
 	}
 
-	// Role gate before the state machine: finance may not accept an agreement (and the message says who may).
 	r := do(buyerOrg, finance, "accept_agreement", nil)
 	if r.Status != 403 || r.message() != "Setujui agreement hanya untuk Owner, Procurement, Sales; peranmu Finance" {
 		t.Fatal("finance accept", r.Status, r.Body)
@@ -78,7 +76,7 @@ func TestOrgTransactions(t *testing.T) {
 		t.Fatalf("org activity on the trade: %v", acts)
 	}
 	ok(do(supplierOrg, supOps, "ship", map[string]any{"shipment": map[string]any{"quantity": 1000, "dropPoint": "Gudang Bandung"}}), "fulfilling")
-	// The proof is the acting member's own upload; the buyer org's members with transactions.view get the link.
+
 	if r := do(supplierOrg, supOps, "upload_proof", map[string]any{"uploadId": e.upload(sales, "trade_proof", "image/png", pngBytes(t))}); r.Status != 422 || r.field("uploadId") == "" {
 		t.Fatal("another member's upload", r.Status, r.Body)
 	}
@@ -92,7 +90,6 @@ func TestOrgTransactions(t *testing.T) {
 	ok(do(buyerOrg, ops, "confirm_receipt", nil), "completed")
 	ok(do(buyerOrg, owner, "review", map[string]any{"review": map[string]any{"rating": 5, "quality": 5, "timeliness": 5, "communication": 5, "text": "Mantap"}}), "completed")
 
-	// Fan-out: members who may see transactions get notified with the org link and trade.updated frames.
 	if !slices.ContainsFunc(e.notifications(supOwnerID), func(s string) bool { return strings.HasSuffix(s, ": Dana masuk escrow") }) {
 		t.Fatal("supplier org owner notified of the payment", e.notifications(supOwnerID))
 	}
@@ -113,7 +110,6 @@ func TestOrgTransactions(t *testing.T) {
 	}
 }
 
-// activity returns the public activity facts (outbox topic `activity`) with this title.
 func (e *testEnv) activity(typ, title string) []map[string]any {
 	e.t.Helper()
 	rows, err := e.db.Primary().Query(t0(), `SELECT payload FROM outbox WHERE topic = 'activity' AND payload->>'type' = $1 AND payload->>'title' = $2`, typ, title)

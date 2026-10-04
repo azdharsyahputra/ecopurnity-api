@@ -1,4 +1,3 @@
-// Package auth holds the credential primitives: password hashing (argon2id) and opaque tokens (sessions, email links).
 package auth
 
 import (
@@ -12,8 +11,6 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-// Argon2id parameters (OWASP 2024 baseline: m=19 MiB, t=2, p=1). Stored in the hash, so they can be raised later
-// without invalidating existing passwords; NeedsRehash reports hashes made with weaker settings.
 const (
 	argonMemory  = 19 * 1024
 	argonTime    = 2
@@ -24,7 +21,6 @@ const (
 
 const MinPasswordLength = 8
 
-// HashPassword returns a PHC-format argon2id hash: $argon2id$v=19$m=…,t=…,p=…$salt$key.
 func HashPassword(password string) (string, error) {
 	salt := make([]byte, saltLen)
 	if _, err := rand.Read(salt); err != nil {
@@ -38,7 +34,6 @@ func HashPassword(password string) (string, error) {
 
 var errMalformed = errors.New("malformed password hash")
 
-// VerifyPassword reports whether password matches hash, in constant time.
 func VerifyPassword(password, hash string) (bool, error) {
 	parts := strings.Split(hash, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {
@@ -66,9 +61,6 @@ func VerifyPassword(password, hash string) (bool, error) {
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }
 
-// dummyHash is verified against when the account does not exist, so a login for an unknown email takes as long as
-// one for a known email (no account enumeration by timing).
 var dummyHash, _ = HashPassword("ecopurnity-timing-equaliser")
 
-// BurnTime spends the same work as VerifyPassword on a real hash.
 func BurnTime(password string) { _, _ = VerifyPassword(password, dummyHash) }

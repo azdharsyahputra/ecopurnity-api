@@ -8,7 +8,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// loadUser builds the User the frontend keeps as "me": account, capabilities and active org memberships.
 func loadUser(ctx context.Context, q dbtx, id string) (api.User, error) {
 	var u api.User
 	err := q.QueryRow(ctx, `
@@ -51,7 +50,6 @@ func loadUser(ctx context.Context, q dbtx, id string) (api.User, error) {
 	return u, rows.Err()
 }
 
-// userParty returns the user's party row, creating it on first use.
 func userParty(ctx context.Context, q dbtx, userID string) (string, error) {
 	var id string
 	err := q.QueryRow(ctx, `
@@ -64,8 +62,6 @@ func userParty(ctx context.Context, q dbtx, userID string) (string, error) {
 
 var notUsername = regexp.MustCompile(`[^a-z0-9._-]+`)
 
-// usernameBase derives a username from the email's local part (the frontend shows /u/<username>); a numeric suffix is
-// added on collision by the caller.
 func usernameBase(email string) string {
 	local, _, _ := strings.Cut(strings.ToLower(email), "@")
 	u := strings.Trim(notUsername.ReplaceAllString(local, ""), "._-")

@@ -13,21 +13,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// The opportunity engine: clusters the open listings by category, region (province, from the free-text location), unit
-// and item (shared significant word), and turns a cluster whose demand and supply are out of balance into an
-// opportunity. Existing engine opportunities get their cluster's fresh totals and listings (opportunity_listings). Runs on every API instance; a transaction-scoped advisory lock lets one pass run
-// at a time.
-//
-// Rules (the mock seeds its opportunities, so these are the BE's; thresholds are the knobs below):
-//   - a group needs demand and at least minParties distinct parties;
-//   - market_gap:        both sides listed but no active/forming market in the category and region;
-//   - collective_demand: demand > supply with at least collectiveBuyers distinct buyers;
-//   - supply_gap:        supply covers less than supplyGapRatio of demand;
-//   - capacity_match:    supply exceeds demand (idle capacity looking for buyers);
-//   - otherwise balanced: nothing to detect.
-//
-// A cluster backing an opportunity in any status but closed is never detected again (a dismissed one stays dismissed).
-
 const (
 	minParties       = 2
 	collectiveBuyers = 3
@@ -35,7 +20,6 @@ const (
 	engineLockKey    = "opportunity_engine"
 )
 
-// RunOpportunityEngine ticks until ctx ends.
 func (s *Server) RunOpportunityEngine(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -60,8 +44,8 @@ type gapGroup struct {
 	itemOrder                    []string
 	supplyValue, demandBudgetIdr float64
 	demandQty                    float64
-	words                        []string // significant item words of the cluster
-	taken                        bool     // an existing opportunity is backed by this cluster (this pass)
+	words                        []string
+	taken                        bool
 }
 
 func (g *gapGroup) parties() []string {
@@ -77,7 +61,6 @@ func (g *gapGroup) parties() []string {
 	return out
 }
 
-// item is the most listed item name (ties: first seen).
 func (g *gapGroup) item() string {
 	best := ""
 	for _, it := range g.itemOrder {
@@ -88,7 +71,6 @@ func (g *gapGroup) item() string {
 	return best
 }
 
-// unitPrice is the volume-weighted supply price, else the demand budget per unit.
 func (g *gapGroup) unitPrice() float64 {
 	if g.supply > 0 && g.supplyValue > 0 {
 		return g.supplyValue / g.supply
@@ -99,7 +81,6 @@ func (g *gapGroup) unitPrice() float64 {
 	return 0
 }
 
-// classify applies the rules above; ok=false when the group is balanced or too thin.
 func classify(g *gapGroup, hasMarket bool) (kind, mechanism string, ok bool) {
 	if g.demand <= 0 || len(g.parties()) < minParties {
 		return "", "", false
@@ -114,7 +95,7 @@ func classify(g *gapGroup, hasMarket bool) (kind, mechanism string, ok bool) {
 		return "collective_demand", "collective_procurement", true
 	case g.supply < supplyGapRatio*g.demand:
 		if g.category == "it" {
-			return "supply_gap", "direct_market", true // services by the hour sell at a posted rate
+			return "supply_gap", "direct_market", true
 		}
 		return "supply_gap", "reverse_auction", true
 	case g.supply > g.demand:
@@ -128,8 +109,6 @@ func classify(g *gapGroup, hasMarket bool) (kind, mechanism string, ok bool) {
 
 var kindLabel = map[string]string{"collective_demand": "Collective demand", "supply_gap": "Supply gap", "market_gap": "Market gap",
 	"capacity_match": "Capacity match"}
-
-// mechanismLabel (frontend MECHANISMS labels) lives in mm_domain.go.
 
 type detected struct {
 	title, description, contribution, reason string
@@ -161,7 +140,7 @@ func describe(g *gapGroup, kind, mechanism string) detected {
 		d.description = fmt.Sprintf("Permintaan %s di %s (%s) melebihi supply yang tercatat (%s).", item, g.region, q(g.demand), q(g.supply))
 		d.contribution = fmt.Sprintf("Supplier: pasokan %s ≥ %s per bulan di %s.", item, q(g.demand-g.supply), g.region)
 	}
-	// Same copy as the mock's mechanismReason (mocks/economy.ts).
+
 	if g.supply < g.demand {
 		d.reason = fmt.Sprintf("%d peserta dengan demand %d%% di atas supply: %s paling cepat menemukan harga.",
 			n, int(jsRound((1-g.supply/g.demand)*100)), strings.ToLower(mechanismLabel[mechanism]))
@@ -175,14 +154,11 @@ func groupKey(category, region, unit string) string {
 	return category + "|" + strings.ToLower(region) + "|" + strings.ToLower(unit)
 }
 
-// genericWords are 4+ letter words too common to say two listings are the same item ("Cabai merah" vs "Bawang merah").
-// ponytail: a short hand list; grow it from false merges seen in the data.
 var genericWords = map[string]bool{"merah": true, "putih": true, "hitam": true, "hijau": true, "kuning": true, "segar": true,
 	"kering": true, "basah": true, "organik": true, "premium": true, "grade": true, "kualitas": true, "super": true, "lokal": true,
 	"impor": true, "import": true, "curah": true, "besar": true, "kecil": true, "murah": true, "baru": true, "bekas": true,
 	"jenis": true, "per": true, "untuk": true, "dengan": true}
 
-// significantWords are the item's itemWords (pricing.go) minus the generic ones.
 func significantWords(item string) []string {
 	var out []string
 	for _, w := range itemWords(item) {
@@ -193,8 +169,6 @@ func significantWords(item string) []string {
 	return out
 }
 
-// engineItem parses the item out of a title the engine wrote ("<Kind>: <item> di <region>"); ok=false for an
-// opportunity the engine did not create (seeded or curated ones are never touched by a pass).
 func engineItem(title, region string) (string, bool) {
 	for _, label := range kindLabel {
 		if rest, ok := strings.CutPrefix(title, label+": "); ok {
@@ -212,10 +186,6 @@ type engineOpp struct {
 	cluster          *gapGroup
 }
 
-// OpportunityTick runs one detection pass (exported for tests). Every engine opportunity is matched to the cluster that
-// shares a significant item word with it (same category, region and unit) and gets that cluster's totals; while still
-// `detected` it is also re-described, and retired (closed) when its cluster is gone or no longer out of balance.
-// Clusters without an opportunity are classified and may become a new one.
 func (s *Server) OpportunityTick(ctx context.Context) error {
 	return s.inTx(ctx, func(tx pgx.Tx) error {
 		var locked bool
@@ -258,7 +228,7 @@ func (s *Server) OpportunityTick(ctx context.Context) error {
 				continue
 			}
 			o.words = significantWords(o.item)
-			// The cluster sharing a word, the biggest when several do; each cluster backs one opportunity (the oldest).
+
 			for _, g := range clusters[groupKey(c, r, u)] {
 				if g.taken || !g.matches(o.item, o.words) {
 					continue
@@ -283,7 +253,7 @@ func (s *Server) OpportunityTick(ctx context.Context) error {
 			case o.status == "dismissed":
 				continue
 			case g == nil:
-				if o.status == "detected" { // nothing left behind it
+				if o.status == "detected" {
 					if _, err := tx.Exec(ctx, `UPDATE opportunities SET status = 'closed' WHERE id = $1`, o.id); err != nil {
 						return err
 					}
@@ -297,7 +267,7 @@ func (s *Server) OpportunityTick(ctx context.Context) error {
 				return err
 			}
 			if o.status != "detected" {
-				continue // a market maker is working on it: keep its kind and copy
+				continue
 			}
 			kind, mechanism, ok := classify(g, markets[g.category+"|"+strings.ToLower(g.region)])
 			if !ok {
@@ -321,7 +291,7 @@ func (s *Server) OpportunityTick(ctx context.Context) error {
 		for k := range clusters {
 			keys = append(keys, k)
 		}
-		slices.Sort(keys) // deterministic order: stable codes and lock order
+		slices.Sort(keys)
 		for _, k := range keys {
 			for _, g := range clusters[k] {
 				if g.taken {
@@ -347,10 +317,6 @@ type openListing struct {
 	words                 []string
 }
 
-// loadGroups reads the open listings and clusters them per (category, region, unit) key: listings whose items share a
-// significant word are one cluster (transitively); an item without one only clusters with the same item name.
-// ponytail: a full scan of open listings per pass and an O(n²) union per key; make it incremental (listings.updated_at
-// watermark) and index words when the open book passes ~100k rows.
 func loadGroups(ctx context.Context, q dbtx) (map[string][]*gapGroup, error) {
 	rows, err := q.Query(ctx, `
 		SELECT id::text, kind, category_id, location, unit, item, quantity::float8, coalesce(price_idr, 0), coalesce(budget_idr, 0), owner_party_id::text
@@ -444,7 +410,6 @@ func (g *gapGroup) add(l openListing) {
 	}
 }
 
-// matches: the opportunity's item shares a significant word with the cluster (or, without any, names one of its items).
 func (g *gapGroup) matches(item string, words []string) bool {
 	if len(words) == 0 {
 		return slices.ContainsFunc(g.itemOrder, func(it string) bool { return strings.EqualFold(it, item) })
@@ -452,8 +417,6 @@ func (g *gapGroup) matches(item string, words []string) bool {
 	return slices.ContainsFunc(words, func(w string) bool { return slices.Contains(g.words, w) })
 }
 
-// refreshOpportunity sets the engine totals plus the platform contributions that are not already among the group's
-// listings (POST /me/opportunities/{id}/join), only when something changed.
 func refreshOpportunity(ctx context.Context, tx pgx.Tx, id string, g *gapGroup) error {
 	_, err := tx.Exec(ctx, `
 		WITH n AS (
@@ -470,7 +433,6 @@ func refreshOpportunity(ctx context.Context, tx pgx.Tx, id string, g *gapGroup) 
 	return err
 }
 
-// syncListings makes opportunity_listings the cluster's current listings.
 func syncListings(ctx context.Context, tx pgx.Tx, oppID string, g *gapGroup) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM opportunity_listings WHERE opportunity_id = $1 AND NOT listing_id = ANY($2::uuid[])`, oppID, g.listings); err != nil {
 		return err
@@ -506,8 +468,7 @@ func createOpportunity(ctx context.Context, tx pgx.Tx, g *gapGroup, kind, mechan
 	if err := emitActivity(ctx, tx, "opportunity_detected", "Opportunity baru: "+d.title, &d.potential, nil); err != nil {
 		return err
 	}
-	// Interested: owners of the listings in the group, and users whose preferences name the category (and the region,
-	// when they set any locations).
+
 	users := map[string]bool{}
 	rows, err := tx.Query(ctx, `SELECT user_id::text FROM parties WHERE id = ANY($1::uuid[]) AND user_id IS NOT NULL`, g.parties())
 	if err != nil {
@@ -550,7 +511,7 @@ func createOpportunity(ctx context.Context, tx pgx.Tx, g *gapGroup, kind, mechan
 		ids = append(ids, u)
 	}
 	slices.Sort(ids)
-	// ponytail: one notification per interested user inside the pass; batch it when a category has thousands of fans.
+
 	for _, u := range ids {
 		if err := notify(ctx, tx, u, notification{Type: "opportunity_detected", Title: "Opportunity baru cocok untukmu", Body: body,
 			Href: "/opportunities/" + id}); err != nil {
@@ -560,8 +521,6 @@ func createOpportunity(ctx context.Context, tx pgx.Tx, g *gapGroup, kind, mechan
 	return nil
 }
 
-// emitActivity appends one public activity event (ActivityEvent) for the ClickHouse feed (topic `activity`) and pushes
-// it on the public:activity channel. Other areas call it from their write paths (see the report / docs).
 func emitActivity(ctx context.Context, q dbtx, typ, title string, amountIdr *int64, marketID *string) error {
 	id := "act-" + strings.ToLower(rand.Text())
 	payload := map[string]any{"type": typ, "title": title}

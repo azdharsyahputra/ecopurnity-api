@@ -9,17 +9,10 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Auction read model, shared by public reads, the participant endpoints, market detail and the realtime frames.
-//
-// Masking (matches the frontend mock and docs/realtime.md): bidder names are always "Supplier N" (reverse / sealed)
-// or "Bidder N" (forward / dutch) with N the stable per-auction bidder number. The bid list and the best price are
-// public only with visibility `full`; for `rank_only` and `sealed` the list is empty and currentPriceIdr is absent,
-// except Dutch auctions, whose current ask is always public.
-
 type auctionRow struct {
 	ID, Code, Title, Category, Type, Status, Visibility, Item, Spec, Unit string
 	MarketID, MarketName, OwnerUserID, OwnerOrgID                         *string
-	OrgAuctionID, WithdrawRule                                            *string // lots of a business auction only
+	OrgAuctionID, WithdrawRule                                            *string
 	RoundNo                                                               *int32
 	Quantity                                                              float64
 	Opening, MinStep                                                      int64
@@ -47,10 +40,8 @@ func scanAuction(row interface{ Scan(...any) error }) (auctionRow, error) {
 	return r, err
 }
 
-// lowerWins: reverse and sealed auctions are procurements (lowest price wins); forward and dutch sell (highest).
 func (r auctionRow) lowerWins() bool { return r.Type == "reverse" || r.Type == "sealed" }
 
-// pricePublic reports whether prices of this auction are visible to everyone.
 func (r auctionRow) pricePublic() bool { return r.Visibility == "full" || r.Type == "dutch" }
 
 func (r auctionRow) bidderLabel(no int32) string {
@@ -106,11 +97,10 @@ func loadAuction(ctx context.Context, q dbtx, id string, forUpdate bool) (auctio
 	return scanAuction(q.QueryRow(ctx, sql, id))
 }
 
-// auctionDetail is the AuctionDetail the viewer may see (viewerUserID "" for anonymous).
 func auctionDetail(ctx context.Context, q dbtx, r auctionRow, viewerUserID string) (api.AuctionDetail, error) {
 	d := api.AuctionDetail{}
 	base := r.api()
-	// AuctionDetail is allOf(Auction, extras); the generated struct repeats the Auction fields.
+
 	b, _ := json.Marshal(base)
 	if err := json.Unmarshal(b, &d); err != nil {
 		return d, err

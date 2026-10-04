@@ -14,9 +14,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
 )
 
-// Integration tests for notifications, opportunities (engine + personal), matches, reputation, profiles, dashboard,
-// search and the ClickHouse-down behaviour of the public reads.
-
 func uniq(prefix string) string { return fmt.Sprintf("%s%d", prefix, time.Now().UnixNano()) }
 
 func (e *testEnv) notifyDirect(userID, typ, title string) {
@@ -128,7 +125,7 @@ func TestOpportunityEngineAndPersonal(t *testing.T) {
 	if n := e.scalar(`SELECT count(*) FROM notifications WHERE href = $1`, "/opportunities/"+oppID); n != int64(4) {
 		t.Fatalf("owners + fan notified: %v", n)
 	}
-	// Idempotent; a 4th buyer refreshes the totals.
+
 	c4, _ := e.signedIn("Pembeli 4")
 	r := e.call(c4, "POST", "/me/listings", energyDemand(unit, "Denpasar", 50))
 	l4 := r.Body["id"].(string)
@@ -142,7 +139,6 @@ func TestOpportunityEngineAndPersonal(t *testing.T) {
 		t.Fatalf("refresh: %v", d)
 	}
 
-	// Public list and detail (visitors see initials).
 	r = e.call(e.client(), "GET", "/opportunities?q="+unit[:5]+"&category=energy&region=Bali&status=detected&pageSize=50", nil)
 	if r.Status != 200 {
 		t.Fatalf("list: %d %v", r.Status, r.Body)
@@ -163,7 +159,6 @@ func TestOpportunityEngineAndPersonal(t *testing.T) {
 		t.Fatalf("404: %d", r.Status)
 	}
 
-	// Personal view, join (replace on re-join), follow, leave.
 	mine := e.callList(c4, "/me/opportunities?tab=collective")
 	var po map[string]any
 	for _, o := range mine {
@@ -302,7 +297,6 @@ func TestMatchesConnect(t *testing.T) {
 	}
 }
 
-// completedTrade creates a trade between two users and walks it to completed, with a 5-star review for the supplier.
 func (e *testEnv) completedTrade(buyer, supplier, title string) string {
 	e.t.Helper()
 	var id string
@@ -364,7 +358,6 @@ func TestReputationProfilesDashboard(t *testing.T) {
 		t.Fatalf("404: %d", r.Status)
 	}
 
-	// Business profiles: an external market maker by slugified name, and a verified org by slug.
 	name := uniq("Pasar ")
 	e.seedMarket(name, "agri", "kg", "active", "auto")
 	slug := slugify("Koperasi " + name)
@@ -387,7 +380,6 @@ func TestReputationProfilesDashboard(t *testing.T) {
 		t.Fatalf("404: %d", r.Status)
 	}
 
-	// Dashboard: a fresh trade waiting for the buyer's acceptance.
 	if err := e.server.inTx(t0(), func(tx pgx.Tx) error {
 		b, _ := userParty(t0(), tx, buyer)
 		s, _ := userParty(t0(), tx, seller)
@@ -447,7 +439,6 @@ func TestSearchAndPublicWithoutAnalytics(t *testing.T) {
 		t.Fatalf("empty q: %v", got)
 	}
 
-	// No ClickHouse: zeros and empty lists, never an error.
 	if r := e.call(e.client(), "GET", "/public/stats", nil); r.Status != 200 || r.Body["activeMarkets"] != 0.0 {
 		t.Fatalf("stats: %d %v", r.Status, r.Body)
 	}
@@ -478,7 +469,7 @@ func (f *failingMailer) Send(context.Context, mail.Message) error {
 
 func TestNotificationEmails(t *testing.T) {
 	e := newEnv(t)
-	if err := e.server.NotificationMailTick(t0()); err != nil { // drain other tests' notifications
+	if err := e.server.NotificationMailTick(t0()); err != nil {
 		t.Fatal(err)
 	}
 	c, me := e.bidder("Rina Surel")
@@ -486,9 +477,9 @@ func TestNotificationEmails(t *testing.T) {
 	_, unverifiedEmail := e.signedIn("Tanpa Verifikasi")
 	unverified := e.scalar(`SELECT id::text FROM users WHERE email = $1`, unverifiedEmail).(string)
 
-	e.notifyDirect(me, "outbid", "Kamu tersalip di Kopi")          // email on by default
-	e.notifyDirect(me, "opportunity_detected", "Opportunity baru") // email off by default
-	e.notifyDirect(unverified, "outbid", "Tidak terkirim")         // unverified email
+	e.notifyDirect(me, "outbid", "Kamu tersalip di Kopi")
+	e.notifyDirect(me, "opportunity_detected", "Opportunity baru")
+	e.notifyDirect(unverified, "outbid", "Tidak terkirim")
 	e.exec(`INSERT INTO notifications (user_id, type, title, body, href, created_at) VALUES ($1, 'payment', 'Lama', 'b', '/x', now() - interval '2 days')`, me)
 	if err := e.server.NotificationMailTick(t0()); err != nil {
 		t.Fatal(err)
@@ -499,7 +490,7 @@ func TestNotificationEmails(t *testing.T) {
 	}
 	n := 0
 	for _, s := range e.mail.Sent {
-		if (s.To == email || s.To == unverifiedEmail) && strings.Contains(s.HTML, "http://app.test/x") { // notification mails only
+		if (s.To == email || s.To == unverifiedEmail) && strings.Contains(s.HTML, "http://app.test/x") {
 			n++
 		}
 	}
@@ -513,14 +504,13 @@ func TestNotificationEmails(t *testing.T) {
 		t.Fatal("unverified marked")
 	}
 
-	// Turning a type on mails new ones; a second tick sends nothing twice.
 	prefs := e.call(c, "GET", "/me/notification-prefs", nil).Body
 	prefs["opportunity_detected"] = map[string]any{"inApp": true, "email": true}
 	if r := e.call(c, "PUT", "/me/notification-prefs", prefs); r.Status != 200 {
 		t.Fatal(r.Status)
 	}
 	e.notifyDirect(me, "opportunity_detected", "Opportunity kedua")
-	e.server.WaitMail() // registration mails are sent asynchronously
+	e.server.WaitMail()
 	before := len(e.mail.Sent)
 	if err := e.server.NotificationMailTick(t0()); err != nil {
 		t.Fatal(err)
@@ -528,12 +518,11 @@ func TestNotificationEmails(t *testing.T) {
 	if err := e.server.NotificationMailTick(t0()); err != nil {
 		t.Fatal(err)
 	}
-	// The first opportunity notification (created while email was off) is still within the day, so it goes too.
+
 	if got := len(e.mail.Sent) - before; got != 2 {
 		t.Fatalf("after enabling: %d mails", got)
 	}
 
-	// Failures: counted, retried on later ticks, given up after 3.
 	fail := &failingMailer{}
 	e.server.WaitMail()
 	e.server.Mail = fail
@@ -548,9 +537,6 @@ func TestNotificationEmails(t *testing.T) {
 	}
 }
 
-// Regression (E2E OPP-100E): unrelated items in one category/region/unit must not merge, a wrongly merged engine
-// opportunity is corrected on the next pass, and a market formed from it invites the cluster's listing owners and
-// moves their listings in.
 func TestDetectionClustersByItem(t *testing.T) {
 	e := newEnv(t)
 	unit := uniq("kg")
@@ -575,7 +561,7 @@ func TestDetectionClustersByItem(t *testing.T) {
 	s1, u3 := list("Pemasok Cabai", "supply", "Cabai merah keriting", 200, 35000)
 	k1, _ := list("Kopi Satu", "supply", "Biji kopi arabika Garut", 700, 90000)
 	k2, _ := list("Kopi Dua", "supply", "Biji kopi arabika Preanger", 700, 95000)
-	// What the old grouping produced, plus an engine opportunity whose listings are gone.
+
 	stale := e.scalar(`INSERT INTO opportunities (title, kind, category_id, region, unit, demand_value, supply_value, participant_count,
 		potential_value_idr, suggested_mechanism, confidence, mechanism_reason, description, required_contribution)
 		VALUES ('Capacity match: Cabai merah keriting di Jawa Barat', 'capacity_match', 'agri', 'Jawa Barat', $1, 600, 1600, 5, 122750000,
@@ -621,7 +607,6 @@ func TestDetectionClustersByItem(t *testing.T) {
 		t.Fatalf("preview: %v", p)
 	}
 
-	// Form a market from it with auto-invite under manual approval.
 	mm, _ := e.maker("Dimas Cabai")
 	in := marketInput("Cabai Jabar " + unit)
 	in["opportunityId"], in["unit"], in["approval"] = stale, unit, "manual"

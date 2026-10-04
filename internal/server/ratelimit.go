@@ -10,9 +10,6 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// limiter is a per-key token bucket for the credential endpoints (login, register, appeal, password reset).
-// ponytail: in-process memory, so each API instance limits on its own; move to Postgres/Redis counters when one
-// instance's budget per IP is too generous.
 type limiter struct {
 	mu      sync.Mutex
 	every   time.Duration
@@ -33,7 +30,7 @@ func (l *limiter) allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
-	if len(l.buckets) > 10_000 { // drop idle buckets so the map can't grow without bound
+	if len(l.buckets) > 10_000 {
 		for k, b := range l.buckets {
 			if now.Sub(b.seen) > 10*time.Minute {
 				delete(l.buckets, k)
@@ -49,7 +46,6 @@ func (l *limiter) allow(key string) bool {
 	return b.l.Allow()
 }
 
-// limitPaths answers 429 when a client IP exceeds the budget on one of the given POST paths.
 func (l *limiter) limitPaths(paths ...string) func(http.Handler) http.Handler {
 	set := map[string]bool{}
 	for _, p := range paths {
@@ -67,7 +63,6 @@ func (l *limiter) limitPaths(paths ...string) func(http.Handler) http.Handler {
 	}
 }
 
-// clientIP is the TCP peer. ponytail: behind a load balancer, read the proxy's X-Forwarded-For (trusted hops only).
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

@@ -4,8 +4,6 @@ import (
 	"testing"
 )
 
-// Port of the frontend's src/domain/matching.test.ts, plus the detection rules and the gazetteer.
-
 func baseMatch() matchInput {
 	one := 1.0
 	return matchInput{CategoryMatch: true, DistanceKm: 10, RadiusKm: 50, Coverage: &one, Confidence: 1}
@@ -93,8 +91,8 @@ func TestClassify(t *testing.T) {
 		{group(100, 90, 1, 1), true, "", ""},
 		{group(100, 120, 1, 1), true, "capacity_match", "forward_auction"},
 		{group(100, 200, 1, 1), true, "capacity_match", "dutch_auction"},
-		{group(100, 0, 1, 0), false, "", ""}, // one party: too thin
-		{group(0, 100, 0, 2), false, "", ""}, // no demand
+		{group(100, 0, 1, 0), false, "", ""},
+		{group(0, 100, 0, 2), false, "", ""},
 	}
 	for i, c := range cases {
 		kind, mec, ok := classify(c.g, c.market)
@@ -118,7 +116,7 @@ func TestMaskName(t *testing.T) {
 
 func TestItemWordsForClustering(t *testing.T) {
 	if w := significantWords("Cabai merah keriting"); len(w) != 2 || w[0] != "cabai" || w[1] != "keriting" {
-		t.Fatalf("words: %v", w) // "merah" is generic: Cabai merah and Bawang merah stay apart
+		t.Fatalf("words: %v", w)
 	}
 	if item, ok := engineItem("Capacity match: Cabai merah keriting di Jawa Barat", "Jawa Barat"); !ok || item != "Cabai merah keriting" {
 		t.Fatal(item, ok)

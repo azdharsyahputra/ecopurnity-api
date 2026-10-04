@@ -42,7 +42,6 @@ func TestListingAttachments(t *testing.T) {
 	up := func(id string) map[string]any { return map[string]any{"uploadId": id} }
 	keep := func(id any) map[string]any { return map[string]any{"id": id} }
 
-	// Slot rules for the purpose.
 	if r := e.call(c, "POST", "/uploads", map[string]any{"purpose": "listing_attachment", "fileName": "a.txt", "contentType": "text/plain", "sizeBytes": 10}); r.Status != 422 ||
 		r.field("contentType") != "Format file tidak didukung. Pakai PDF, JPG, PNG, atau WebP." {
 		t.Fatalf("type: %d %v", r.Status, r.Body)
@@ -52,7 +51,6 @@ func TestListingAttachments(t *testing.T) {
 		t.Fatalf("size: %d %v", r.Status, r.Body)
 	}
 
-	// Create with a photo and a PDF: both come back with presigned URLs that work.
 	photo, doc := e.upload(c, "listing_attachment", "image/png", pngBytes(t)), e.upload(c, "listing_attachment", "application/pdf", pdfBytes)
 	r := create(up(photo), up(doc))
 	if r.Status != 201 {
@@ -74,7 +72,6 @@ func TestListingAttachments(t *testing.T) {
 		keys[x["id"].(string)] = e.scalar(`SELECT object_key FROM listing_attachments WHERE id::text = $1`, x["id"]).(string)
 	}
 
-	// Rejections, all on field attachments.
 	other, _ := e.signedIn("Bukan Pemilik")
 	ktp := e.upload(c, "kyc_ktp", "image/png", pngBytes(t))
 	disguised := e.upload(c, "listing_attachment", "image/png", []byte("<html>bukan gambar</html>"))
@@ -92,19 +89,18 @@ func TestListingAttachments(t *testing.T) {
 		"content":     {[]map[string]any{up(disguised)}, "Isi file bukan gambar yang valid."},
 		"too many":    {nine, "Maksimal 8 lampiran"},
 		"empty ref":   {[]map[string]any{{}}, "Setiap lampiran berisi uploadId atau id."},
-		"unknown id":  {[]map[string]any{keep(a[0]["id"])}, "Lampiran tidak ditemukan. Muat ulang halaman."}, // another listing's attachment
+		"unknown id":  {[]map[string]any{keep(a[0]["id"])}, "Lampiran tidak ditemukan. Muat ulang halaman."},
 		"both in one": {[]map[string]any{{"uploadId": photo, "id": a[0]["id"]}}, "Setiap lampiran berisi uploadId atau id."},
 	} {
 		if r := create(tc.refs...); r.Status != 422 || r.field("attachments") != tc.msg {
 			t.Fatalf("%s: %d %v", name, r.Status, r.Body)
 		}
 	}
-	// A failed save does not burn the upload.
+
 	if n := e.scalar(`SELECT count(*) FROM uploads WHERE id::text = $1 AND consumed_at IS NULL`, ktp); n != int64(1) {
 		t.Fatalf("ktp consumed by a failed save: %v", n)
 	}
 
-	// Update: keep the PDF (now first), add a new photo; the dropped photo's file is deleted.
 	photo2 := e.upload(c, "listing_attachment", "image/jpeg", jpegBytes(t))
 	r = e.call(c, "PATCH", "/me/listings/"+id, map[string]any{"attachments": []map[string]any{keep(a[1]["id"]), up(photo2)}})
 	u := att(r)
@@ -117,12 +113,11 @@ func TestListingAttachments(t *testing.T) {
 	if _, err := e.server.Storage.Inspect(t0(), keys[a[1]["id"].(string)]); err != nil {
 		t.Fatalf("kept object: %v", err)
 	}
-	// A patch without attachments leaves them alone.
+
 	if r := e.call(c, "PATCH", "/me/listings/"+id, map[string]any{"spec": "Grade 2"}); r.Status != 200 || len(att(r)) != 2 {
 		t.Fatalf("patch without attachments: %d %v", r.Status, r.Body)
 	}
 
-	// Legacy name-only rows (before uploads) are listed without a URL and can be kept.
 	legacy := e.scalar(`INSERT INTO listing_attachments (listing_id, file_name, content_type, position) VALUES ($1, 'lama.jpg', 'image/jpeg', 2) RETURNING id::text`, id)
 	d = e.call(c, "GET", "/me/listings/"+id, nil)
 	if a := att(d); len(a) != 3 || a[2]["fileName"] != "lama.jpg" || a[2]["url"] != nil || a[2]["sizeBytes"] != nil {
@@ -132,7 +127,6 @@ func TestListingAttachments(t *testing.T) {
 		t.Fatalf("keep legacy: %d %v", r.Status, r.Body)
 	}
 
-	// Public catalog: the listing's files while it is public, nothing once archived.
 	anon := e.client()
 	catalog := func() []any {
 		r := e.call(anon, "GET", "/listings?q="+url.QueryEscape(item), nil)

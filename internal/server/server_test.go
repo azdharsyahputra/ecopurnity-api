@@ -39,8 +39,6 @@ func TestRoutingValidationAndErrors(t *testing.T) {
 		t.Fatalf("healthz: %d", status)
 	}
 
-	// An operation without a handler (the embedded api.Unimplemented) answers 501 in the error contract. Checked on the
-	// error mapping itself, so it does not depend on which operations are still unimplemented.
 	rec := httptest.NewRecorder()
 	(&Server{}).handlerError(rec, httptest.NewRequest("GET", "/api/v1/x", nil), api.ErrNotImplemented)
 	var body map[string]any
@@ -50,7 +48,6 @@ func TestRoutingValidationAndErrors(t *testing.T) {
 	}
 	var status int
 
-	// Request validation against the spec: wrong type in the body is a 422 with fields.
 	status, body = do(t, h, "POST", "/api/v1/auth/login", `{"email": 5, "password": "x"}`)
 	if status != http.StatusUnprocessableEntity || code(body) != "validation" {
 		t.Fatalf("login validation: %d %v", status, body)
@@ -59,23 +56,18 @@ func TestRoutingValidationAndErrors(t *testing.T) {
 		t.Fatalf("login validation: no fields in %v", body)
 	}
 
-	// Query parameter outside its schema (pageSize max 50).
 	status, body = do(t, h, "GET", "/api/v1/markets?pageSize=500", "")
 	if fields, _ := body["error"].(map[string]any)["fields"].(map[string]any); status != http.StatusUnprocessableEntity || fields["pageSize"] == nil {
 		t.Fatalf("pageSize: %d %v", status, body)
 	}
 
-	// Unknown endpoint under the API prefix.
 	if status, body = do(t, h, "GET", "/api/v1/nope", ""); status != http.StatusNotFound || code(body) != "not_found" {
 		t.Fatalf("unknown: %d %v", status, body)
 	}
 }
 
-// Every operation in the spec is routed: with placeholder path params, no body and no session it must reach request
-// validation (422), the handler (501 until implemented, or the handler's own 2xx/401/403/404...), never the router's
-// 404, 405 or 5xx.
 func TestEveryOperationIsRouted(t *testing.T) {
-	e := newEnv(t) // a real database: public reads run their queries
+	e := newEnv(t)
 	h := e.srv.Config.Handler
 	spec, err := apiSpec()
 	if err != nil {

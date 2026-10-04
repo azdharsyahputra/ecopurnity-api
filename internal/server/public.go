@@ -13,9 +13,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Public network stats, activity feed, explorer (ClickHouse) and search (Postgres). Analytics is never the system of
-// record: when ClickHouse is down or slow these answer zeros / empty lists and log a warning instead of failing.
-
 const analyticsTimeout = 2 * time.Second
 
 func (s *Server) chWarn(what string, err error) {
@@ -24,7 +21,6 @@ func (s *Server) chWarn(what string, err error) {
 	}
 }
 
-// analyticsCtx bounds a ClickHouse read; ok=false when analytics is not configured.
 func (s *Server) analyticsCtx(ctx context.Context) (context.Context, context.CancelFunc, bool) {
 	if s.Analytics == nil {
 		return ctx, func() {}, false
@@ -49,7 +45,6 @@ func (s *Server) GetPublicStats(ctx context.Context, _ api.GetPublicStatsRequest
 	return api.GetPublicStats200JSONResponse(s.publicStats(ctx)), nil
 }
 
-// publicActivity is the newest n events of the public feed ([] when ClickHouse is unavailable).
 func (s *Server) publicActivity(ctx context.Context, n int) []api.ActivityEvent {
 	out := []api.ActivityEvent{}
 	ctx, cancel, ok := s.analyticsCtx(ctx)
@@ -97,7 +92,7 @@ func (s *Server) GetExplorerOverview(ctx context.Context, req api.GetExplorerOve
 	}
 	out := api.GetExplorerOverview200JSONResponse{Stats: s.publicStats(ctx)}
 	today := time.Now().UTC().Truncate(24 * time.Hour)
-	for k := range days { // a zero series when analytics is down
+	for k := range days {
 		out.Volume = append(out.Volume, struct {
 			Date      openapi_types.Date `json:"date"`
 			VolumeIdr int                `json:"volumeIdr"`
@@ -158,8 +153,6 @@ func (s *Server) GetExplorerOverview(ctx context.Context, req api.GetExplorerOve
 	return out, nil
 }
 
-// pivotIndex turns long (day, category, index) rows into one point per day of the range with one key per category,
-// carrying a category's last index forward over days without deals (absent before its first deal).
 func pivotIndex(points []analytics.IndexPoint, today time.Time, days int) []map[string]any {
 	byDay := map[string]map[string]float64{}
 	for _, p := range points {
@@ -209,17 +202,10 @@ func (s *Server) ListExplorerAggregates(ctx context.Context, req api.ListExplore
 	return out, nil
 }
 
-// ── Search ───────────────────────────────────────────────────────
-
-// slugify is the business profile slug: lower case, runs of anything but a-z0-9 become "-" (same as orgs.slug).
-// ponytail: accented letters are dropped instead of folded (the frontend NFKD-normalises first).
 func slugify(name string) string {
 	return strings.Trim(notSlug.ReplaceAllString(strings.ToLower(name), "-"), "-")
 }
 
-// Search: case-insensitive substring over title and subtitle of opportunities, markets, auctions, businesses (orgs and
-// market makers) and products/services (auction lots and offered supply listings). Users are not searchable: the
-// SearchType enum has no person type.
 func (s *Server) Search(ctx context.Context, req api.SearchRequestObject) (api.SearchResponseObject, error) {
 	out := api.Search200JSONResponse{}
 	term := ""
@@ -238,7 +224,7 @@ func (s *Server) Search(ctx context.Context, req api.SearchRequestObject) (api.S
 		typ = string(*req.Params.Type)
 	}
 	like := "%" + likeEscape(term) + "%"
-	// Each source builds title and subtitle and matches on both; sources come in the mock's order.
+
 	for _, src := range searchSources {
 		if len(out) >= limit {
 			break
@@ -257,7 +243,7 @@ func (s *Server) Search(ctx context.Context, req api.SearchRequestObject) (api.S
 				rows.Close()
 				return nil, err
 			}
-			if h.Id == "biz-" { // external market maker: no org slug, derive it from the name
+			if h.Id == "biz-" {
 				slug := slugify(h.Title)
 				h.Id, h.Href = "biz-"+slug, "/b/"+slug
 			}
@@ -271,7 +257,6 @@ func (s *Server) Search(ctx context.Context, req api.SearchRequestObject) (api.S
 	return out, nil
 }
 
-// searchSources: each yields (type, id, title, subtitle, href, sort).
 var searchSources = []struct {
 	types []string
 	sql   string

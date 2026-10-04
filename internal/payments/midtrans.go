@@ -10,17 +10,13 @@ import (
 	"github.com/midtrans/midtrans-go/coreapi"
 )
 
-// Midtrans is the Core API gateway (github.com/midtrans/midtrans-go). The SDK's own logger is off: in sandbox it
-// prints request headers, including the Basic auth made from the server key.
 type Midtrans struct {
 	c   coreapi.Client
 	key string
 }
 
-// wib: Midtrans reports times (expiry_time) in Jakarta time without a zone.
 var wib = time.FixedZone("WIB", 7*3600)
 
-// NewMidtrans: hc nil uses a client with a 20 s timeout (tests pass one that points at an httptest server).
 func NewMidtrans(serverKey string, production bool, hc *http.Client) *Midtrans {
 	env := midtrans.Sandbox
 	if production {
@@ -36,7 +32,7 @@ func NewMidtrans(serverKey string, production bool, hc *http.Client) *Midtrans {
 }
 
 func (m *Midtrans) Charge(_ context.Context, c Charge) (Instructions, error) {
-	// ponytail: the SDK ignores request contexts (it drops req.WithContext); the http.Client timeout bounds each call.
+
 	req := &coreapi.ChargeReq{
 		PaymentType:        coreapi.CoreapiPaymentType(c.Method),
 		TransactionDetails: midtrans.TransactionDetails{OrderID: c.OrderID, GrossAmt: c.Amount},

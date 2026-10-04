@@ -10,14 +10,12 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Public listing catalog and price suggestion (spec tag Public). Reads go to the replica.
-
 func (s *Server) ListPublicListings(ctx context.Context, req api.ListPublicListingsRequestObject) (api.ListPublicListingsResponseObject, error) {
 	p := req.Params
 	page, size := pageParams(p.Page, p.PageSize)
 	where := []string{
 		`l.status IN ('available','in_market','open','matched')`,
-		// Restricted and suspended owners are hidden.
+
 		`(pt.user_id IS NULL OR u.status = 'active')`,
 	}
 	var args []any
@@ -73,7 +71,7 @@ func (s *Server) ListPublicListings(ctx context.Context, req api.ListPublicListi
 			&l.CreatedAt, &unitPrice, &l.Owner.Name, &userID, &l.Owner.Username, &l.Owner.Verified, &total, &atts); err != nil {
 			return nil, err
 		}
-		// Public statuses only (WHERE above), so the files may be shown to anyone.
+
 		if l.Attachments, err = s.signAttachments(ctx, atts); err != nil {
 			return nil, err
 		}
@@ -87,7 +85,7 @@ func (s *Server) ListPublicListings(ctx context.Context, req api.ListPublicListi
 		return nil, err
 	}
 	if len(out.Data) == 0 && page > 1 {
-		// The window count is only known when a row comes back; count separately for an out-of-range page.
+
 		if err := s.DB.Reader().QueryRow(ctx, `
 			SELECT count(*) FROM listings l JOIN parties pt ON pt.id = l.owner_party_id LEFT JOIN users u ON u.id = pt.user_id
 			WHERE `+strings.Join(where, " AND "), args[:len(args)-2]...).Scan(&out.Meta.Total); err != nil {
@@ -97,7 +95,6 @@ func (s *Server) ListPublicListings(ctx context.Context, req api.ListPublicListi
 	return out, nil
 }
 
-// nullPriceSuggestion is the documented `null` answer when there is not enough data.
 type nullPriceSuggestion struct{}
 
 func (nullPriceSuggestion) VisitGetPriceSuggestionResponse(w http.ResponseWriter) error {
@@ -107,8 +104,6 @@ func (nullPriceSuggestion) VisitGetPriceSuggestionResponse(w http.ResponseWriter
 	return err
 }
 
-// GetPriceSuggestion: quartiles over the last 8 weekly medians of comparable markets (ClickHouse) and the unit
-// prices of comparable public listings, narrowed to similar item names when that still leaves 3+ data points.
 func (s *Server) GetPriceSuggestion(ctx context.Context, req api.GetPriceSuggestionRequestObject) (api.GetPriceSuggestionResponseObject, error) {
 	p := req.Params
 	unit := strings.ToLower(strings.TrimSpace(p.Unit))
@@ -177,7 +172,7 @@ func (s *Server) GetPriceSuggestion(ctx context.Context, req api.GetPriceSuggest
 			medians, err := s.Analytics.WeeklyMedians(ctxCH, ids, 8)
 			cancel()
 			if err != nil {
-				// Analytics down: fall back to listings only rather than failing the form hint.
+
 				if s.Log != nil {
 					s.Log.Warn("price suggestion: clickhouse", "err", err)
 				}
@@ -218,7 +213,6 @@ func (s *Server) GetPriceSuggestion(ctx context.Context, req api.GetPriceSuggest
 	return out, nil
 }
 
-// pageParams applies the list contract defaults: page >= 1, pageSize 1..50 (default 12).
 func pageParams(page, size *int) (int, int) {
 	p, n := 1, 12
 	if page != nil && *page > 1 {

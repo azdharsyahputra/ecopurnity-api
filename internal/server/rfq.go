@@ -16,15 +16,8 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// RFQs and quotes (PRD F6 direct trade): a buyer asks, suppliers quote, the two negotiate (counter / revise), and
-// accepting a quote creates the trade (createTrade). Every RFQ has its conversation (conversations.go). Fictional
-// suppliers that quote and answer counters are a demo simulation in counterparties.go, off unless
-// SIMULATE_COUNTERPARTIES=true.
-
-// ── Negotiation rules (frontend src/domain/rfq.ts) ───────────────
-
 type quoteRule struct {
-	by   string // buyer | supplier
+	by   string
 	from []string
 	to   string
 }
@@ -38,7 +31,6 @@ var quoteFlow = map[api.QuoteAction]quoteRule{
 	"withdraw":       {"supplier", []string{"submitted", "countered"}, "withdrawn"},
 }
 
-// quoteTransition is the status a quote moves to, or "" when side may not take the action now.
 func quoteTransition(status, side string, a api.QuoteAction, rfqOpen bool) string {
 	r, ok := quoteFlow[a]
 	if !ok || !rfqOpen || r.by != side || !slices.Contains(r.from, status) {
@@ -47,7 +39,6 @@ func quoteTransition(status, side string, a api.QuoteAction, rfqOpen bool) strin
 	return r.to
 }
 
-// dealPrice is the unit price the deal closes at: the counter when the supplier accepted it, else the quoted price.
 func dealPrice(price int64, counter *int64, a api.QuoteAction) int64 {
 	if a == "accept_counter" && counter != nil {
 		return *counter
@@ -55,7 +46,6 @@ func dealPrice(price int64, counter *int64, a api.QuoteAction) int64 {
 	return price
 }
 
-// botCounterReply is how a simulated supplier answers a counter: accept within 5% of its price, else meet halfway.
 func botCounterReply(quoted, counter int64) (accept bool, revise int64) {
 	if float64(counter) >= float64(quoted)*0.95 {
 		return true, 0
@@ -69,13 +59,10 @@ var (
 	errRfqClosed     = &Error{Status: http.StatusConflict, Code: "closed", Message: "RFQ sudah ditutup"}
 )
 
-// ── Read model ───────────────────────────────────────────────────
-
 const partyCols = `p.name, p.display_kind, p.verified, p.user_id::text`
 
 func scanParty(p *api.TradeParty) []any { return []any{&p.Name, &p.Kind, &p.Verified, &p.UserId} }
 
-// partyOf is the user's party id, nil when they never needed one.
 func partyOf(ctx context.Context, q dbtx, userID string) (*string, error) {
 	var id string
 	err := q.QueryRow(ctx, `SELECT id::text FROM parties WHERE user_id = $1`, userID).Scan(&id)
@@ -85,13 +72,10 @@ func partyOf(ctx context.Context, q dbtx, userID string) (*string, error) {
 	return &id, err
 }
 
-// rfqRelevant: $1 (the caller's party) is invited, already quoted, or holds supply listings in the RFQ's category.
 const rfqRelevant = `(EXISTS (SELECT 1 FROM rfq_invitations ri WHERE ri.rfq_id = r.id AND ri.party_id = $1::uuid)
 	OR EXISTS (SELECT 1 FROM quotes rq WHERE rq.rfq_id = r.id AND rq.supplier_party_id = $1::uuid)
 	OR EXISTS (SELECT 1 FROM listings rl WHERE rl.owner_party_id = $1::uuid AND rl.kind = 'supply' AND rl.category_id = r.category_id))`
 
-// loadRfqs returns the RFQs matching where ($1 = me, the caller's party, may be nil; more args from $2) as the caller
-// sees them: the buyer sees every quote, a supplier only their own.
 func loadRfqs(ctx context.Context, q dbtx, me *string, where string, args ...any) ([]api.RfqView, error) {
 	rows, err := q.Query(ctx, `
 		SELECT r.id::text, r.code, `+strings.ReplaceAll(partyCols, "p.", "bp.")+`, r.item, r.category_id, r.quantity::float8, r.unit,
@@ -197,7 +181,6 @@ func loadRfq(ctx context.Context, q dbtx, me *string, id string) (api.RfqView, e
 	return list[0], nil
 }
 
-// rfqRow is what the write paths need of an RFQ, read under its row lock.
 type rfqRow struct {
 	ID, Code, BuyerParty, BuyerName, Item, Category, Unit, Location, Status, ConversationID string
 	BuyerUser                                                                               *string
@@ -254,8 +237,6 @@ func derefSlice[T any](p *[]T) []T {
 }
 
 func unitPrice(v int64, unit string) string { return rupiah(v) + "/" + unit }
-
-// ── Handlers ─────────────────────────────────────────────────────
 
 func (s *Server) ListRfqs(ctx context.Context, req api.ListRfqsRequestObject) (api.ListRfqsResponseObject, error) {
 	sess, err := requireUser(ctx)
@@ -355,7 +336,6 @@ func (s *Server) CreateRfq(ctx context.Context, req api.CreateRfqRequestObject) 
 			srcKind = &kind
 		}
 
-		// Participants: the buyer, invited platform users (not the caller), invited external businesses by name.
 		parties := []convParty{{PartyID: buyer, UserID: &sess.UserID}}
 		var inviteIDs []string
 		for _, id := range derefSlice(in.InviteUserIds) {
@@ -411,8 +391,7 @@ func (s *Server) CreateRfq(ctx context.Context, req api.CreateRfqRequestObject) 
 			EntityType: "procurement", EntityID: id, EntityLabel: code + " · " + in.Item}); err != nil {
 			return err
 		}
-		// Every platform supplier relevant to it. ponytail: one notification per supplier in the category; a digest
-		// (or a cap) when categories hold thousands of suppliers.
+
 		rows, _ = tx.Query(ctx, `
 			SELECT DISTINCT p.user_id::text FROM parties p JOIN users u ON u.id = p.user_id
 			WHERE p.user_id <> $2 AND u.status <> 'suspended' AND (
@@ -553,8 +532,7 @@ func (s *Server) ActOnQuote(ctx context.Context, req api.ActOnQuoteRequestObject
 		if (in.Action == "counter" || in.Action == "revise") && price <= 0 {
 			return &Error{Status: http.StatusUnprocessableEntity, Code: "validation", Message: "Isi harga", Fields: map[string]string{"priceIdr": "Isi harga per unit"}}
 		}
-		// The buyer commits at accept, and already at counter (the supplier can accept a counter alone); the
-		// supplier at revise, as at submit.
+
 		guard := func(userID *string, unit int64) error {
 			if userID == nil {
 				return nil
@@ -594,8 +572,6 @@ func (s *Server) ActOnQuote(ctx context.Context, req api.ActOnQuoteRequestObject
 	return api.ActOnQuote200JSONResponse(out), nil
 }
 
-// negotiate applies counter / revise / decline / withdraw (already checked by quoteTransition), records it in the
-// quote history and notifies the other side.
 func negotiate(ctx context.Context, tx pgx.Tx, r rfqRow, qt quoteRow, a api.QuoteAction, price int64, note string, actor *string, actorName string) error {
 	var err error
 	switch a {
@@ -634,8 +610,6 @@ func negotiate(ctx context.Context, tx pgx.Tx, r rfqRow, qt quoteRow, a api.Quot
 	return notify(ctx, tx, *other, notification{Type: "transaction_update", Title: fmt.Sprintf("%s: %s %s", r.Code, actorName, verb), Body: body, Href: "/app/rfq/" + r.ID})
 }
 
-// acceptQuote closes the deal at price: the quote is accepted, the other open quotes declined, the RFQ awarded, and
-// the trade created (createTrade, linked through trades.source_quote_id). The caller ran the buyer's commitGuard.
 func acceptQuote(ctx context.Context, tx pgx.Tx, r rfqRow, qt quoteRow, price int64, actor *string, actorName string) (string, error) {
 	if _, err := tx.Exec(ctx, `UPDATE quotes SET status = 'accepted' WHERE id = $1`, qt.ID); err != nil {
 		return "", err
@@ -652,7 +626,7 @@ func acceptQuote(ctx context.Context, tx pgx.Tx, r rfqRow, qt quoteRow, price in
 	if err != nil {
 		return "", err
 	}
-	// createTrade has no quote field; link it here rather than widen the shared helper.
+
 	if _, err := tx.Exec(ctx, `UPDATE trades SET source_quote_id = $2 WHERE id = $1`, t.ID, qt.ID); err != nil {
 		return "", err
 	}

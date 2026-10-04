@@ -14,30 +14,10 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/secure"
 )
 
-// Money: double-entry ledger (00004_trade.sql) and personal finance (GET/PUT /me/finance...).
-//
-// Signs: debit > 0, credit < 0; every journal sums to zero (deferred trigger). Liability accounts (wallet_available,
-// escrow, ppn_payable, platform_revenue, maker_commission, payout_pending) carry negative balances; bank_clearing (money
-// at the bank) is the platform's asset. Postings per trade action are listed in trade_engine.go; withdrawals: request
-// wallet → payout_pending (here), then an admin marks it paid (payout_pending → bank_clearing) or rejects it
-// (payout_pending → back to the wallet lines), payouts.go.
-//
-// Finance (one party):
-//   - escrowHeldIdr  = -balance(escrow)                          what the buyer has in escrow
-//   - availableIdr   = -(balance(wallet_available) + balance(ppn_payable))   withdrawable: released earnings and refunds;
-//     the supplier's collected PPN is paid out with them (the supplier remits it), but booked apart so it is visible
-//   - receivableIdr  = supplier's claims not yet released: escrowed invoices (frozen supplier_receives) and net-terms
-//     trades delivered/accepted but unpaid. Not a ledger balance: for net terms no money exists yet, and escrowed money
-//     already sits in the buyer's escrow account (one amount cannot be in two liability accounts).
-//   - withdrawnIdr   = withdrawals not rejected (processing or paid)
-//   - entries        = the party's statement, cash view (as the frontend shows it): lines on its accounts grouped per
-//     journal and kind; wallet/ppn/commission credits show positive; escrow lines show only when money goes in (as the
-//     negative payment), its outflows (release, refund) are not the party's cash and are hidden.
-
 type ledgerLine struct {
 	Account string
 	Amount  int64
-	Kind    string // escrow | payout | refund | payment | withdrawal | fee
+	Kind    string
 }
 
 type journal struct {
@@ -48,7 +28,6 @@ type journal struct {
 	Lines        []ledgerLine
 }
 
-// ledgerAccount returns the account of (party, kind), creating it on first use. party "" = platform account.
 func ledgerAccount(ctx context.Context, q dbtx, party, kind string) (string, error) {
 	var owner *string
 	if party != "" {
@@ -62,7 +41,6 @@ func ledgerAccount(ctx context.Context, q dbtx, party, kind string) (string, err
 	return id, err
 }
 
-// post writes one journal; zero lines are dropped. Balance is checked by the database at commit.
 func post(ctx context.Context, q dbtx, j journal) error {
 	var sum int64
 	for _, l := range j.Lines {
@@ -88,7 +66,6 @@ func post(ctx context.Context, q dbtx, j journal) error {
 	return nil
 }
 
-// accounts resolves several (party, kind) accounts at once: keys "kind" (platform) or "kind:party".
 func accounts(ctx context.Context, q dbtx, keys ...string) (map[string]string, error) {
 	out := map[string]string{}
 	for _, k := range keys {
@@ -110,9 +87,6 @@ func balance(ctx context.Context, q dbtx, party, kind string) (int64, error) {
 	return v, err
 }
 
-// ── Finance read model ───────────────────────────────────────────
-
-// myPartyID returns the user's party without creating it ("" when the user never traded).
 func myPartyID(ctx context.Context, q dbtx, userID string) (string, error) {
 	var id string
 	err := q.QueryRow(ctx, `SELECT id::text FROM parties WHERE user_id = $1`, userID).Scan(&id)
@@ -122,7 +96,6 @@ func myPartyID(ctx context.Context, q dbtx, userID string) (string, error) {
 	return id, err
 }
 
-// financeWithdrawal is the generated Finance.withdrawals element (an inline struct in the spec).
 type financeWithdrawal = struct {
 	AmountIdr   int                  `json:"amountIdr"`
 	At          time.Time            `json:"at"`
@@ -165,7 +138,7 @@ func loadFinance(ctx context.Context, q dbtx, party string) (api.Finance, error)
 		Scan(&bank, &holder, &last4)
 	switch {
 	case err == nil:
-		// Only the last 4 digits ever leave the API; the full number is decrypted for payouts only.
+
 		f.Bank = &struct {
 			AccountNo string `json:"accountNo"`
 			Bank      string `json:"bank"`
@@ -191,7 +164,6 @@ func loadFinance(ctx context.Context, q dbtx, party string) (api.Finance, error)
 		return f, err
 	}
 
-	// ponytail: newest 500 statement lines; paginate when the contract grows a cursor.
 	rows, err = q.Query(ctx, `
 		SELECT e.journal_id::text || ':' || e.kind, e.kind, min(e.label), min(e.created_at),
 		       sum(CASE WHEN a.kind = 'escrow' THEN e.amount ELSE -e.amount END)
@@ -262,7 +234,7 @@ func (s *Server) SaveMyBankAccount(ctx context.Context, req api.SaveMyBankAccoun
 		if err != nil {
 			return err
 		}
-		// The party id is the AAD: a ciphertext copied to another party's row does not decrypt.
+
 		sealed, err := secure.Encrypt(s.Keys.BankCipher, []byte(b.AccountNo), []byte(party))
 		if err != nil {
 			return err
@@ -302,9 +274,6 @@ func accountNoPattern(s string) bool {
 	return true
 }
 
-// CreateMyWithdrawal pays available funds out to the active bank account. The wallet account row is locked first, so
-// concurrent withdrawals of one party serialize and never overdraw; the journal moves the money to payout_pending (owed,
-// not yet transferred). It stays `processing` until an admin transfers it by hand and records it (payouts.go).
 func (s *Server) CreateMyWithdrawal(ctx context.Context, req api.CreateMyWithdrawalRequestObject) (api.CreateMyWithdrawalResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -350,7 +319,7 @@ func (s *Server) CreateMyWithdrawal(ctx context.Context, req api.CreateMyWithdra
 			party, bankID, amount, sess.UserID).Scan(&wid); err != nil {
 			return err
 		}
-		fromWallet := min(amount, max(0, -wallet)) // the wallet first, then the collected PPN
+		fromWallet := min(amount, max(0, -wallet))
 		if err := post(ctx, tx, journal{Label: "Tarik dana ke " + bank, WithdrawalID: &wid, CreatedBy: &sess.UserID, Lines: []ledgerLine{
 			{acc["wallet_available:"+party], fromWallet, "withdrawal"},
 			{acc["ppn_payable:"+party], amount - fromWallet, "withdrawal"},

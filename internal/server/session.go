@@ -13,19 +13,16 @@ import (
 
 const sessionCookie = "ecp_session"
 
-// session is the signed-in user of a request.
 type session struct {
 	UserID      string
 	TokenHash   []byte
 	Name        string
-	Status      string // active | restricted | suspended
+	Status      string
 	SuspendedAt *time.Time
 }
 
 type reqKey struct{}
 
-// reqState is per-request plumbing the typed handlers can't reach otherwise: the ResponseWriter (cookies) and the
-// session loaded by the middleware.
 type reqState struct {
 	w       http.ResponseWriter
 	r       *http.Request
@@ -40,8 +37,6 @@ func state(ctx context.Context) *reqState {
 	return st
 }
 
-// withSession loads the session from the cookie (on the primary: a login must be visible to the very next request)
-// and slides its expiry at most once an hour.
 func (s *Server) withSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		st := &reqState{w: w, r: r}
@@ -78,7 +73,6 @@ var (
 
 const suspendedMessage = "Akun ini disuspend oleh tim governance."
 
-// requireUser returns the signed-in, non-suspended user, or the 401/403 error to return.
 func requireUser(ctx context.Context) (*session, error) {
 	sess := state(ctx).session
 	if sess == nil {
@@ -90,7 +84,6 @@ func requireUser(ctx context.Context) (*session, error) {
 	return sess, nil
 }
 
-// requireActive additionally rejects restricted accounts (no new bids, listings, auctions).
 func requireActive(ctx context.Context) (*session, error) {
 	sess, err := requireUser(ctx)
 	if err == nil && sess.Status == "restricted" {
@@ -99,7 +92,6 @@ func requireActive(ctx context.Context) (*session, error) {
 	return sess, err
 }
 
-// startSession creates a session for userID and sets the cookie on the current response.
 func (s *Server) startSession(ctx context.Context, q dbtx, userID string) error {
 	token, hash := auth.NewToken()
 	st := state(ctx)

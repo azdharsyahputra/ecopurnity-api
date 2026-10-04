@@ -12,16 +12,8 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Governance of the economy: market moderation, auction freezes and findings, fraud alerts and their escalations.
-
 const activeAuctionStatuses = `('scheduled','qualification','live','extended')`
 
-// ── Findings ─────────────────────────────────────────────────────
-
-// auctionFindings returns the findings of the auctions matching where (alias a), keyed by auction id; auctions
-// without findings are absent. Findings are the non-dismissed fraud alerts on the auction plus two rules over the bid
-// ledger: "Bid beruntun" (one bidder places 3 bids in a row) and "Lonjakan harga" (a step over 20x the minimum step).
-// A sealed auction's ledger stays closed until it closes, so its rules run only then.
 func auctionFindings(ctx context.Context, q dbtx, where string, args ...any) (map[string][]api.Finding, error) {
 	out := map[string][]api.Finding{}
 	rows, err := q.Query(ctx, `
@@ -86,7 +78,6 @@ func auctionFindings(ctx context.Context, q dbtx, where string, args ...any) (ma
 	return out, rules.Err()
 }
 
-// bidderName is the real identity of a bidder party (alias p) in the admin ledger.
 const bidderName = `CASE WHEN p.kind = 'user' THEN p.name || ' (akun pengguna)' ELSE p.name END`
 
 func adminAuctions(ctx context.Context, q dbtx, where string, args ...any) ([]api.AdminAuction, error) {
@@ -107,8 +98,6 @@ func adminAuctions(ctx context.Context, q dbtx, where string, args ...any) ([]ap
 	}
 	return out, nil
 }
-
-// ── Markets ──────────────────────────────────────────────────────
 
 func adminMarkets(ctx context.Context, q dbtx, where string, args ...any) ([]api.AdminMarket, error) {
 	markets, err := loadMarkets(ctx, q, where, args...)
@@ -271,7 +260,7 @@ func (s *Server) ActOnAdminMarket(ctx context.Context, req api.ActOnAdminMarketR
 				return conflict("no_change", "Market sudah disuspend")
 			}
 			return setMarketStatus(ctx, tx, a, m, "suspended", reason, "")
-		default: // restore
+		default:
 			if m.Status != "suspended" {
 				return conflict("no_change", "Market tidak sedang disuspend")
 			}
@@ -283,8 +272,6 @@ func (s *Server) ActOnAdminMarket(ctx context.Context, req api.ActOnAdminMarketR
 	}
 	return api.ActOnAdminMarket200JSONResponse{Ok: api.AdminOkOkTrue}, nil
 }
-
-// ── Auctions ─────────────────────────────────────────────────────
 
 func (s *Server) ListAdminAuctions(ctx context.Context, _ api.ListAdminAuctionsRequestObject) (api.ListAdminAuctionsResponseObject, error) {
 	if _, err := s.requireAdmin(ctx); err != nil {
@@ -365,8 +352,6 @@ func (s *Server) GetAdminAuction(ctx context.Context, req api.GetAdminAuctionReq
 
 func (r auctionRow) label() string { return r.Code + " · " + r.Title }
 
-// freezeAuction holds an active auction (r locked by the caller): bids, the clock and winner selection stop until
-// unfreeze restores frozen_from.
 func freezeAuction(ctx context.Context, tx pgx.Tx, a adminActor, r auctionRow, reason, via string) error {
 	if _, err := tx.Exec(ctx, `UPDATE auctions SET frozen_from = status, status = 'frozen' WHERE id = $1`, r.ID); err != nil {
 		return err
@@ -424,7 +409,7 @@ func (s *Server) ActOnAdminAuction(ctx context.Context, req api.ActOnAdminAuctio
 			if r.Status != "frozen" {
 				return conflict("not_frozen", "Auction tidak sedang dibekukan")
 			}
-			// An auction whose end passed while frozen goes back to live; the auction clock closes it on its next tick.
+
 			var to string
 			if err := tx.QueryRow(ctx, `UPDATE auctions SET status = frozen_from, frozen_from = NULL WHERE id = $1 RETURNING status`, r.ID).Scan(&to); err != nil {
 				return err
@@ -436,7 +421,7 @@ func (s *Server) ActOnAdminAuction(ctx context.Context, req api.ActOnAdminAuctio
 				MarketID: r.MarketID, Reason: &reason, Changes: []change{diff("status", "frozen", to)}}); err != nil {
 				return err
 			}
-		default: // open_case
+		default:
 			id, err := openAuctionCase(ctx, tx, a, r, req.Body.Type, reason)
 			if err != nil {
 				return err
@@ -451,7 +436,6 @@ func (s *Server) ActOnAdminAuction(ctx context.Context, req api.ActOnAdminAuctio
 	return out, nil
 }
 
-// openAuctionCase opens a manual fraud case (investigating) on an auction; the reason is its first note.
 func openAuctionCase(ctx context.Context, tx pgx.Tx, a adminActor, r auctionRow, typ *api.AlertType, reason string) (string, error) {
 	t := api.AlertTypeBidManipulation
 	if typ != nil {
@@ -483,9 +467,6 @@ func openAuctionCase(ctx context.Context, tx pgx.Tx, a adminActor, r auctionRow,
 		MarketID: r.MarketID, Reason: &reason})
 }
 
-// ── Fraud alerts ─────────────────────────────────────────────────
-
-// loadAlerts builds FraudAlerts in SQL (where/order over alias a).
 func loadAlerts(ctx context.Context, q dbtx, where string, args ...any) ([]api.FraudAlert, error) {
 	rows, err := q.Query(ctx, `
 		SELECT json_build_object(
@@ -555,7 +536,7 @@ func (s *Server) GetAdminAlert(ctx context.Context, req api.GetAdminAlertRequest
 	if err := widen(al, &d); err != nil {
 		return nil, err
 	}
-	// The case history: entries on the alert, plus the actions it escalated to (tagged "(eskalasi FRD-…)").
+
 	if d.Audit, err = loadAudit(ctx, q, `(entity_type = 'alert' AND entity_id = $1) OR action LIKE '%(eskalasi ' || $2 || ')'`, 200, al.Id, al.Code); err != nil {
 		return nil, err
 	}
@@ -567,7 +548,6 @@ var alertLabel = map[string]string{
 	"wash_trading": "Wash trading", "price_manipulation": "Sudden price manipulation", "transaction_network": "Suspicious transaction network",
 }
 
-// escalations allowed per subject type, with the outcome verb.
 var escalations = map[string]map[api.EscalationAction]string{
 	"user":    {api.EscalationActionSuspendUser: "Suspend", api.EscalationActionRestrictUser: "Batasi"},
 	"auction": {api.EscalationActionFreezeAuction: "Freeze"},
@@ -687,7 +667,6 @@ func (s *Server) ActOnAdminAlert(ctx context.Context, req api.ActOnAdminAlertReq
 	return api.ActOnAdminAlert200JSONResponse(out), nil
 }
 
-// escalate performs an alert's escalation exactly like the direct admin action (audit tagged with the alert code).
 func escalate(ctx context.Context, tx pgx.Tx, a adminActor, subjectType, subjectID string, e api.EscalationAction, reason, code string) error {
 	switch subjectType {
 	case "user":

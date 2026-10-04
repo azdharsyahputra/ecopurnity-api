@@ -1,6 +1,3 @@
-// Package analytics is the ClickHouse side: append-only events and read-heavy aggregates (explorer stats,
-// market price history, activity feed, audit search). PostgreSQL stays the system of record; ClickHouse is fed by
-// the outbox publisher and can be rebuilt from it.
 package analytics
 
 import (
@@ -28,7 +25,6 @@ func Open(addr, database, user, password string) (*Client, error) {
 func (c *Client) Ping(ctx context.Context) error { return c.conn.Ping(ctx) }
 func (c *Client) Close() error                   { return c.conn.Close() }
 
-// WeeklyMedians returns one median deal price per market per week over the last `weeks` weeks (market_price_daily).
 func (c *Client) WeeklyMedians(ctx context.Context, marketIDs []string, weeks int) ([]float64, error) {
 	if len(marketIDs) == 0 {
 		return nil, nil
@@ -53,15 +49,12 @@ func (c *Client) WeeklyMedians(ctx context.Context, marketIDs []string, weeks in
 	return out, rows.Err()
 }
 
-// WeekPrice is one week of a market's deal prices (market_price_daily merged per ISO week).
 type WeekPrice struct {
-	Week      time.Time // Monday
+	Week      time.Time
 	Median    float64
 	Low, High uint64
 }
 
-// PriceHistory returns the weekly median/low/high of one market over the last `weeks` weeks (current one included),
-// oldest first. Weeks without deals are absent.
 func (c *Client) PriceHistory(ctx context.Context, marketID string, weeks int) ([]WeekPrice, error) {
 	rows, err := c.conn.Query(ctx, `
 		SELECT toMonday(day) AS week, quantileMerge(0.5)(median_state), min(low_idr), max(high_idr)
@@ -83,14 +76,12 @@ func (c *Client) PriceHistory(ctx context.Context, marketID string, weeks int) (
 	return out, rows.Err()
 }
 
-// Activity is one public activity feed row (ActivityEvent).
 type Activity struct {
 	ID, Type, Title string
 	AmountIdr       *uint64
 	At              time.Time
 }
 
-// MarketActivity returns the newest `limit` activity events of one market, newest first.
 func (c *Client) MarketActivity(ctx context.Context, marketID string, limit int) ([]Activity, error) {
 	rows, err := c.conn.Query(ctx, `
 		SELECT id, type, title, amount_idr, at FROM activity WHERE market_id = ? ORDER BY at DESC LIMIT ?`, marketID, limit)
@@ -109,7 +100,6 @@ func (c *Client) MarketActivity(ctx context.Context, marketID string, limit int)
 	return out, rows.Err()
 }
 
-// Event is one outbox row as stored in `events` (README: dedupe).
 type Event struct {
 	OutboxID    int64
 	Topic       string
@@ -118,8 +108,6 @@ type Event struct {
 	Payload     string
 }
 
-// KnownEvents returns which of the outbox ids are already in `events`: the publisher's dedupe check (README step 3),
-// covering a crash between the insert and marking the rows, and an insert that timed out but landed.
 func (c *Client) KnownEvents(ctx context.Context, ids []int64) (map[int64]bool, error) {
 	known := map[int64]bool{}
 	if len(ids) == 0 {
@@ -144,7 +132,6 @@ func (c *Client) KnownEvents(ctx context.Context, ids []int64) (map[int64]bool, 
 	return known, rows.Err()
 }
 
-// InsertEvents appends outbox rows to `events` in one block (README step 4).
 func (c *Client) InsertEvents(ctx context.Context, evs []Event) error {
 	if len(evs) == 0 {
 		return nil
@@ -161,14 +148,11 @@ func (c *Client) InsertEvents(ctx context.Context, evs []Event) error {
 	return b.Send()
 }
 
-// MmEfficiencyWeek is one week of value-weighted matched demand and supply utilization (README /mm/analytics).
 type MmEfficiencyWeek struct {
-	Week                 time.Time // Monday
+	Week                 time.Time
 	Matched, Utilization float64
 }
 
-// MmEfficiency returns the last 8 weeks (current included) of the markets' closed rounds, oldest first; weeks without
-// closed rounds are absent.
 func (c *Client) MmEfficiency(ctx context.Context, marketIDs []string) ([]MmEfficiencyWeek, error) {
 	rows, err := c.conn.Query(ctx, `
 		SELECT toMonday(at) AS week,
@@ -192,13 +176,11 @@ func (c *Client) MmEfficiency(ctx context.Context, marketIDs []string) ([]MmEffi
 	return out, rows.Err()
 }
 
-// MmGrowthWeek is one week of active parties, completed trades, distinct buyer-supplier pairs and repeat trades.
 type MmGrowthWeek struct {
-	Week                                            time.Time // Monday
+	Week                                            time.Time
 	Participants, Transactions, Connections, Repeat uint64
 }
 
-// MmGrowth returns the last 8 weeks (current included) of the markets, oldest first; empty weeks are absent.
 func (c *Client) MmGrowth(ctx context.Context, marketIDs []string) ([]MmGrowthWeek, error) {
 	rows, err := c.conn.Query(ctx, `
 		WITH toMonday(today()) - 49 AS since
@@ -239,10 +221,6 @@ func (c *Client) MmGrowth(ctx context.Context, marketIDs []string) ([]MmGrowthWe
 	return out, rows.Err()
 }
 
-// Public stats, activity and explorer reads (queries from migrations/clickhouse/README.md). `days` is a range the
-// caller validated; `category` "" means every category.
-
-// Stats is PublicStats: parties and markets active in the last 30 days, opportunities and volume since launch.
 type Stats struct {
 	ActiveParticipants, ActiveMarkets, OpportunitiesDetected, TransactionVolumeIdr uint64
 }
@@ -259,7 +237,6 @@ func (c *Client) PublicStats(ctx context.Context) (Stats, error) {
 	return s, err
 }
 
-// PublicActivity returns the newest `limit` activity events, newest first.
 func (c *Client) PublicActivity(ctx context.Context, limit int) ([]Activity, error) {
 	rows, err := c.conn.Query(ctx, `SELECT id, type, title, amount_idr, at FROM activity ORDER BY at DESC LIMIT ?`, limit)
 	if err != nil {
@@ -277,7 +254,6 @@ func (c *Client) PublicActivity(ctx context.Context, limit int) ([]Activity, err
 	return out, rows.Err()
 }
 
-// Deltas are this period vs the previous one of the same length, as fractions; nil = nothing in the previous period.
 type Deltas struct{ Participants, Markets, Opportunities, Volume *float64 }
 
 func (c *Client) ExplorerDeltas(ctx context.Context, days int, category string) (Deltas, error) {
@@ -299,13 +275,11 @@ func (c *Client) ExplorerDeltas(ctx context.Context, days int, category string) 
 	return d, err
 }
 
-// DayVolume is completed-trade volume on one day.
 type DayVolume struct {
 	Day    time.Time
 	Volume uint64
 }
 
-// VolumeSeries returns one row per day of the range, oldest first, gaps filled with 0.
 func (c *Client) VolumeSeries(ctx context.Context, days int, category string) ([]DayVolume, error) {
 	rows, err := c.conn.Query(ctx, fmt.Sprintf(`
 		SELECT day, sum(volume_idr) FROM trade_daily
@@ -326,8 +300,6 @@ func (c *Client) VolumeSeries(ctx context.Context, days int, category string) ([
 	return out, rows.Err()
 }
 
-// IndexPoint is one category's price index on one day (each market's median relative to its first day in range,
-// averaged per category; start = 100).
 type IndexPoint struct {
 	Day      time.Time
 	Category string
@@ -365,7 +337,6 @@ func (c *Client) PriceIndex(ctx context.Context, days int, category string) ([]I
 	return out, rows.Err()
 }
 
-// CategoryValue is the listed demand and supply value of one category.
 type CategoryValue struct {
 	Category       string
 	Demand, Supply uint64
@@ -392,8 +363,6 @@ func (c *Client) DemandSupply(ctx context.Context, days int, category string) ([
 	return out, rows.Err()
 }
 
-// Aggregate is one explorer row: listed quantity of an item in a region over the last 60 days, listings in the last
-// 30, and the trend (last 30 days vs the 30 before; nil = nothing before).
 type Aggregate struct {
 	Category, Item, Region, Unit string
 	Quantity                     float64
@@ -401,7 +370,6 @@ type Aggregate struct {
 	Trend                        *float64
 }
 
-// ponytail: top 200 rows; page when the explorer table pages.
 func (c *Client) Aggregates(ctx context.Context, side, category string) ([]Aggregate, error) {
 	rows, err := c.conn.Query(ctx, `
 		SELECT category_id, item, region, sum(quantity), unit,

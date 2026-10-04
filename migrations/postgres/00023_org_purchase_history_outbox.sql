@@ -1,9 +1,4 @@
 -- +goose Up
--- Imported org purchase history reaches ClickHouse like live purchases (migrations/clickhouse/README.md): every inserted
--- org_purchase_history row queues a `trade.status` fact with status `agreement` (org_purchase_monthly, the org's history),
--- and an auction row also an `auction.closed` fact keyed by the same id (bidders and opening price for the org's auction
--- list). The outbox row is dated at the purchase month, so the publisher sends it with that occurred_at. The supplier is
--- its party when the directory entry has one, else "s:<supplier id>" (the API resolves both).
 -- +goose StatementBegin
 CREATE FUNCTION org_purchase_history_outbox() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE

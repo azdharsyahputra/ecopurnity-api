@@ -16,14 +16,12 @@ import (
 	"time"
 )
 
-// SMTP sends through an SMTP server. TLS: "tls" (implicit, port 465), "starttls" (port 587, required), or "none"
-// (local catchers such as Mailpit only).
 type SMTP struct {
 	Host     string
 	Port     int
 	Username string
 	Password string
-	From     string // "Ecopurnity <no-reply@example.com>"
+	From     string
 	TLS      string
 }
 
@@ -60,7 +58,7 @@ func (s SMTP) Send(ctx context.Context, m Message) error {
 		}
 	}
 	if s.Username != "" {
-		// net/smtp refuses PLAIN auth over an unencrypted connection unless the host is localhost.
+
 		if err := c.Auth(smtp.PlainAuth("", s.Username, s.Password, s.Host)); err != nil {
 			return fmt.Errorf("auth: %w", err)
 		}
@@ -84,7 +82,6 @@ func (s SMTP) Send(ctx context.Context, m Message) error {
 	return c.Quit()
 }
 
-// build renders a UTF-8 multipart/alternative message (plain text + HTML).
 func build(from *mail.Address, m Message) []byte {
 	var b bytes.Buffer
 	boundary := randomHex(12)

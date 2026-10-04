@@ -1,4 +1,3 @@
-// Package config reads the service configuration from the environment (12-factor).
 package config
 
 import (
@@ -12,40 +11,32 @@ import (
 type Config struct {
 	HTTPAddr string
 
-	// PostgresPrimaryURL takes every write and any read that must see its own write.
 	PostgresPrimaryURL string
-	// PostgresReplicaURL serves read-only queries (lists, dashboards, public pages).
-	// Empty means "no replica": reads fall back to the primary.
+
 	PostgresReplicaURL string
 
-	// ClickHouseAddr is host:port of the native protocol; ClickHouse holds analytics, activity feeds and audit search,
-	// never the system of record.
 	ClickHouseAddr     string
 	ClickHouseDatabase string
 	ClickHouseUser     string
 	ClickHousePassword string
 
-	// ReplicaMaxLag is how far behind the replica may be before readiness fails and reads fall back to the primary.
 	ReplicaMaxLag time.Duration
 
-	// AppURL is the frontend origin used in email links (verification, password reset).
 	AppURL string
-	// CookieSecure marks the session cookie Secure; true everywhere except plain-http local development.
+
 	CookieSecure bool
-	// SessionTTL is the sliding lifetime of a session.
+
 	SessionTTL time.Duration
-	// Secret keys HMACs of one-time codes (and later app-level encryption). At least 32 bytes; never commit it.
+
 	Secret []byte
 
-	// SMTP for transactional email. Empty SMTPHost logs messages instead of sending them.
 	SMTPHost     string
 	SMTPPort     int
 	SMTPUsername string
 	SMTPPassword string
 	SMTPFrom     string
-	SMTPTLS      string // tls | starttls | none (default from the port: 465 tls, 25/1025 none, else starttls)
+	SMTPTLS      string
 
-	// Object storage (S3-compatible; Cloudflare R2 in production). Empty S3Bucket disables uploads (503).
 	S3Endpoint        string
 	S3PublicEndpoint  string
 	S3Region          string
@@ -53,19 +44,13 @@ type Config struct {
 	S3AccessKeyID     string
 	S3SecretAccessKey string
 	S3PathStyle       bool
-	S3CreateBucket    bool     // create the bucket at startup if missing (local only)
-	S3CORSOrigins     []string // when set, apply a CORS rule for these browser origins at startup
+	S3CreateBucket    bool
+	S3CORSOrigins     []string
 
-	// GoogleDevLogin enables the mock-compatible POST /auth/google (fixed test account). Never in production;
-	// the real OAuth flow replaces it.
 	GoogleDevLogin bool
 
-	// SimulateCounterparties runs the demo bots: external (off-platform) trade and contract counterparties
-	// (trade_clock.go) and fictional RFQ suppliers that quote, counter and chat (counterparties.go). Dev/demo only.
 	SimulateCounterparties bool
 
-	// Midtrans Core API (payments). Empty MidtransServerKey runs the fake gateway (dev only). The client key is for
-	// browser-side card tokenization (not used yet). MidtransProduction: MIDTRANS_ENV=production (default sandbox).
 	MidtransServerKey  string
 	MidtransClientKey  string
 	MidtransProduction bool

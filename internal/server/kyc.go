@@ -14,10 +14,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/secure"
 )
 
-// KYC (spec tag Verification): commitment limits by verification level (email, then KTP + selfie review). Email only:
-// no phone/SMS verification (phone_verifications from migration 00002 is no longer read or written).
-
-// kycLevels mirrors the frontend's src/domain/kyc.ts KYC_LEVELS.
 var kycLevels = [2]struct {
 	Label string
 	Limit int
@@ -27,10 +23,9 @@ var kycLevels = [2]struct {
 	{"KTP", 2_000_000_000, ""},
 }
 
-// verification is the user's current verification state (Identity.profile.verification).
 type verification struct {
 	Email    bool
-	Identity string // none | pending | verified
+	Identity string
 }
 
 func loadVerification(ctx context.Context, q dbtx, userID string) (verification, error) {
@@ -45,7 +40,6 @@ func loadVerification(ctx context.Context, q dbtx, userID string) (verification,
 	return v, err
 }
 
-// kycLevel: 1 when the KTP is verified, else 0 (frontend kycLevel()).
 func (v verification) level() int {
 	if v.Identity == "verified" {
 		return 1
@@ -68,8 +62,6 @@ func (s *Server) kycStatus(ctx context.Context, q dbtx, userID string) (api.Kyc,
 	return k, nil
 }
 
-// commitGuard is the per-commitment limit check every bid / accept / auction / quote / direct order runs:
-// 403 kyc_limit when valueIdr is above the user's level (frontend limitError()).
 func (s *Server) commitGuard(ctx context.Context, q dbtx, userID string, valueIdr int64) error {
 	v, err := loadVerification(ctx, q, userID)
 	if err != nil {
@@ -99,7 +91,6 @@ func (s *Server) GetMyKyc(ctx context.Context, _ api.GetMyKycRequestObject) (api
 	return api.GetMyKyc200JSONResponse(k), nil
 }
 
-// maskNIK keeps the region code and the last 4 digits: 3205********0001.
 func maskNIK(nik string) string { return nik[:4] + strings.Repeat("*", 8) + nik[12:] }
 
 var nikPattern = regexp.MustCompile(`^\d{16}$`)
@@ -162,7 +153,7 @@ func (s *Server) SubmitKtpVerification(ctx context.Context, req api.SubmitKtpVer
 		if err != nil {
 			return err
 		}
-		// The NIK never goes into the jsonb form/OCR fields in clear; reviewers see it masked and decrypt on demand.
+
 		form := fmt.Sprintf(`[{"label":"Nama lengkap","value":%q},{"label":"NIK","value":%q}]`, fullName, maskNIK(nik))
 		var requestID string
 		err = tx.QueryRow(ctx, `
@@ -200,7 +191,6 @@ func (s *Server) SubmitKtpVerification(ctx context.Context, req api.SubmitKtpVer
 	return api.SubmitKtpVerification200JSONResponse(out), nil
 }
 
-// rupiah formats like the frontend's formatIdr: "Rp 10.000.000".
 func rupiah(v int64) string {
 	s := strconv.FormatInt(v, 10)
 	var b strings.Builder

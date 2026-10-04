@@ -13,15 +13,8 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Aggregated settlement of market rounds (PRD F6, mocks/settle.ts): the winning offer of a closed round is split
-// pro-rata across the members who contributed to the lot (demand in procurement rounds, supply in selling rounds), one
-// trade per member. A collective pool round splits over the pool's member businesses instead, each getting its own
-// sub-PO. The auction clock already marked the bids won/lost at close; settlement creates the trades, once.
-
 var errRoundNotFound = &Error{Status: http.StatusNotFound, Code: "not_found", Message: "Round tidak ditemukan"}
 
-// settlementRound: the round of an operated market. Anything else — signed out, no market_maker capability, a market
-// the caller does not operate, a round of another market — is the same 404 (spec).
 func (s *Server) settlementRound(ctx context.Context, q dbtx, marketID, auctionID string, lock bool) (*session, mmMarket, auctionRow, error) {
 	sess, err := s.requireMaker(ctx)
 	if err != nil {
@@ -45,10 +38,9 @@ func (s *Server) settlementRound(ctx context.Context, q dbtx, marketID, auctionI
 	return sess, m, r, err
 }
 
-// settleLine is one member's share plus what settling it needs.
 type settleLine struct {
 	MemberID, Member, Location string
-	UserID, OrgID, PartyID     *string // PartyID nil: nothing is stored for this member (external pool business)
+	UserID, OrgID, PartyID     *string
 	PoolMemberID               string
 	Quantity, Share            float64
 	AmountIdr                  int64
@@ -57,7 +49,7 @@ type settleLine struct {
 type settlementPreview struct {
 	Side, Winner      string
 	WinnerUserID      *string
-	WinnerParty       string // "" when nobody bid
+	WinnerParty       string
 	PriceIdr          int64
 	Lines             []settleLine
 	PoolID, PoolTitle string
@@ -97,7 +89,7 @@ func previewSettlement(ctx context.Context, q dbtx, r auctionRow) (settlementPre
 	}
 	var members []member
 	if pv.PoolID != "" {
-		// Collective pool round: the lot goes back to the pool's member businesses (names masked unless they opted in).
+
 		rows, err := q.Query(ctx, `
 			SELECT pm.id::text, pm.org_id::text, pm.opt_in, coalesce(o.name, pm.name), pm.quantity, p.id::text,
 			       coalesce(nullif(btrim(pm.drop_point), ''),
@@ -131,8 +123,7 @@ func previewSettlement(ctx context.Context, q dbtx, r auctionRow) (settlementPre
 			return pv, err
 		}
 	} else {
-		// Platform accounts' in-market listings on the round's side, then up to four active participants that are not
-		// platform accounts filling the rest of the lot.
+
 		kind, role := "supply", "supplier"
 		if pv.Side == "procurement" {
 			kind, role = "demand", "buyer"
@@ -183,7 +174,7 @@ func previewSettlement(ctx context.Context, q dbtx, r auctionRow) (settlementPre
 			return pv, err
 		}
 		members = membersForLot(r.Quantity, contrib, fillers)
-		pv.Lines = pv.Lines[:len(members)] // fillers get nothing when the contributions cover the lot
+		pv.Lines = pv.Lines[:len(members)]
 	}
 	split := splitProRata(r.Quantity, members)
 	lines := pv.Lines[:0]
@@ -221,7 +212,7 @@ func (pv settlementPreview) api(r auctionRow) api.MmSettlementResult {
 			UserId    *string `json:"userId,omitempty"`
 		}{AmountIdr: int(l.AmountIdr), Member: l.Member, MemberId: l.MemberID, Quantity: l.Quantity, Share: l.Share, UserId: l.UserID}
 		if pv.PoolID != "" {
-			line.OrgId = l.OrgID // marks a business pool member (sub-PO)
+			line.OrgId = l.OrgID
 		}
 		out.Lines = append(out.Lines, line)
 	}
@@ -258,7 +249,7 @@ func (s *Server) SettleMmRound(ctx context.Context, req api.SettleMmRoundRequest
 		if r.Status != "closed" && r.Status != "awarded" {
 			return &Error{Status: http.StatusConflict, Code: "not_closed", Message: "Settlement hanya untuk round yang sudah ditutup"}
 		}
-		// A recorded settlement, or a Dutch round whose accept already made the trade.
+
 		var done bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM settlements WHERE auction_id = $1) OR EXISTS (SELECT 1 FROM trades WHERE auction_id = $1)`,
 			r.ID).Scan(&done); err != nil {
@@ -285,10 +276,10 @@ func (s *Server) SettleMmRound(ctx context.Context, req api.SettleMmRoundRequest
 		for _, l := range pv.Lines {
 			changes = append(changes, change{Field: l.Member, After: idNumber(l.Quantity) + " " + r.Unit})
 			if l.PartyID == nil {
-				continue // external pool business: only in the split
+				continue
 			}
 			var tradeID *string
-			// A member who is also the winner gets no trade with itself.
+
 			if *l.PartyID != pv.WinnerParty && (pv.PoolID == "" || l.OrgID != nil) {
 				id, err := s.settleTrade(ctx, tx, sess, m, r, pv, l)
 				if err != nil {
@@ -338,8 +329,6 @@ func (s *Server) SettleMmRound(ctx context.Context, req api.SettleMmRoundRequest
 	return api.SettleMmRound200JSONResponse(out), nil
 }
 
-// settleTrade creates one member's escrow trade with the winner (maker fee 0.5%) and tells the member about it. Pool
-// members get a buyer-side sub-PO delivered to their own drop point; their procurement request moves to po_issued.
 func (s *Server) settleTrade(ctx context.Context, tx pgx.Tx, sess *session, m mmMarket, r auctionRow, pv settlementPreview, l settleLine) (string, error) {
 	buyer, supplier := *l.PartyID, pv.WinnerParty
 	if pv.Side == "selling" {
@@ -357,7 +346,7 @@ func (s *Server) settleTrade(ctx context.Context, tx pgx.Tx, sess *session, m mm
 	if err != nil {
 		return "", err
 	}
-	// ponytail: the group columns are set here rather than through newTrade, which other areas share.
+
 	if _, err := tx.Exec(ctx, `UPDATE trades SET group_label = $2, group_share = $3 WHERE id = $1`, t.ID, group, l.Share); err != nil {
 		return "", err
 	}

@@ -16,7 +16,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/secure"
 )
 
-// partyOf returns (creating) the user's party.
 func (e *testEnv) partyOf(userID string) string {
 	e.t.Helper()
 	id, err := userParty(t0(), e.db.Primary(), userID)
@@ -31,7 +30,6 @@ func (e *testEnv) externalParty(name string) string {
 	return e.scalar(`INSERT INTO parties (kind, name) VALUES ('external', $1) RETURNING id::text`, name).(string)
 }
 
-// newTestTrade creates a trade directly through createTrade.
 func (e *testEnv) newTestTrade(nt newTrade) string {
 	e.t.Helper()
 	if nt.Unit == "" {
@@ -63,7 +61,6 @@ func (e *testEnv) mustAct(c *http.Client, id string, body map[string]any, status
 	return r
 }
 
-// needStorage skips a test that attaches files when the docker-compose SeaweedFS is not running.
 func (e *testEnv) needStorage() {
 	e.t.Helper()
 	if e.server.Storage == nil {
@@ -71,7 +68,6 @@ func (e *testEnv) needStorage() {
 	}
 }
 
-// fetch GETs a presigned file URL (as the browser would) and returns the status and body.
 func fetch(t *testing.T, url any) (int, []byte) {
 	t.Helper()
 	s, _ := url.(string)
@@ -101,7 +97,6 @@ func TestTradeEscrowFlowBetweenUsers(t *testing.T) {
 	id := e.newTestTrade(newTrade{Title: "Green bean 100 kg", BuyerParty: e.partyOf(buyerID), SupplierParty: e.partyOf(supplierID),
 		Quantity: 100, UnitPriceIdr: 10_000, MakerFeeRate: 0.005, MarketID: &market})
 
-	// Each side sees the one row from its own side.
 	if l := e.callList(supplier, "/me/transactions?role=supplier&status=agreement"); !slices.ContainsFunc(l, func(x map[string]any) bool { return x["id"] == id }) {
 		t.Fatal("supplier list", l)
 	}
@@ -124,7 +119,6 @@ func TestTradeEscrowFlowBetweenUsers(t *testing.T) {
 		t.Fatal("outsider action", r.Status)
 	}
 
-	// Agreement by both before the invoice; the buyer cannot invoice.
 	if r := e.act(supplier, id, map[string]any{"action": "issue_invoice"}); r.Status != 409 || r.code() != "invalid_transition" {
 		t.Fatal("invoice before agreement", r.Status, r.Body)
 	}
@@ -144,7 +138,6 @@ func TestTradeEscrowFlowBetweenUsers(t *testing.T) {
 		t.Fatal("buyer not notified of the invoice", n)
 	}
 
-	// Pay into escrow: 1.000.000 + PPN 110.000.
 	r = e.payViaGateway(buyer, "/me/transactions/"+id, "paid")
 	if r.Body["payment"].(map[string]any)["status"] != "escrow" {
 		t.Fatal(r.Body["payment"])
@@ -161,7 +154,6 @@ func TestTradeEscrowFlowBetweenUsers(t *testing.T) {
 		t.Fatalf("supplier finance: %v", fs.Body)
 	}
 
-	// Staged shipments.
 	ship := func(q float64) map[string]any {
 		return map[string]any{"action": "ship", "shipment": map[string]any{"quantity": q, "dropPoint": "Gudang Bandung", "carrier": "", "scheduledAt": time.Now().UTC().Format(time.RFC3339)}}
 	}
@@ -170,7 +162,7 @@ func TestTradeEscrowFlowBetweenUsers(t *testing.T) {
 		t.Fatal("over-ship", r.Status, r.Body)
 	}
 	e.mustAct(supplier, id, ship(40), "fulfilling")
-	// Proof files are verified uploads (purpose trade_proof) of the acting user; a bare file name is the demo bot's only.
+
 	if r := e.act(supplier, id, map[string]any{"action": "upload_proof"}); r.Status != 422 || r.field("uploadId") != "Pilih file bukti pengiriman" {
 		t.Fatal("proof without file", r.Status, r.Body)
 	}
@@ -194,7 +186,7 @@ func TestTradeEscrowFlowBetweenUsers(t *testing.T) {
 	if len(sh) != 2 || sh[0].(map[string]any)["carrier"] != "Armada supplier" || sh[1].(map[string]any)["proof"] != "foto.jpeg" {
 		t.Fatalf("shipments: %v", sh)
 	}
-	// The buyer gets a working presigned link to the file; generated documents have none; strangers see no trade.
+
 	got = e.call(buyer, "GET", "/me/transactions/"+id, nil)
 	if code, body := fetch(t, got.Body["shipments"].([]any)[1].(map[string]any)["proofUrl"]); code != 200 || !bytes.Equal(body, jpg) {
 		t.Fatalf("proof url: %d", code)
@@ -208,7 +200,6 @@ func TestTradeEscrowFlowBetweenUsers(t *testing.T) {
 		t.Fatal("outsider after proof", r.Status)
 	}
 
-	// Partial QC: 90 accepted, the short 10 kg refunded with its PPN, the rest released minus fees.
 	if r := e.act(buyer, id, map[string]any{"action": "confirm_receipt", "qc": map[string]any{"outcome": "partial", "acceptedQty": 100, "note": "x"}}); r.Status != 422 || r.field("acceptedQty") == "" {
 		t.Fatal("partial out of range", r.Status, r.Body)
 	}
@@ -224,7 +215,7 @@ func TestTradeEscrowFlowBetweenUsers(t *testing.T) {
 		t.Fatalf("buyer after QC: %v", fb.Body)
 	}
 	fs = e.call(supplier, "GET", "/me/finance", nil)
-	// Released 999.000 (1.110.000 - refund 111.000) minus fees on 900.000: platform 9.000 + maker 4.500.
+
 	if num(fs.Body["availableIdr"]) != 985_500 || num(fs.Body["receivableIdr"]) != 0 {
 		t.Fatalf("supplier after QC: %v", fs.Body)
 	}
@@ -248,7 +239,6 @@ func TestTradeEscrowFlowBetweenUsers(t *testing.T) {
 		t.Fatal("supplier PPN", v)
 	}
 
-	// Reviews, once per side.
 	review := map[string]any{"action": "review", "review": map[string]any{"rating": 4, "quality": 4, "timeliness": 5, "communication": 4.5, "text": "Oke"}}
 	e.mustAct(buyer, id, review, "completed")
 	if r := e.act(buyer, id, review); r.Status != 409 {
@@ -263,7 +253,6 @@ func TestTradeEscrowFlowBetweenUsers(t *testing.T) {
 		t.Fatalf("timeline: %v", tl)
 	}
 
-	// Realtime and analytics side effects.
 	for _, u := range []string{buyerID, supplierID} {
 		n := 0
 		for _, f := range e.frames("user:" + u) {
@@ -282,7 +271,6 @@ func TestTradeEscrowFlowBetweenUsers(t *testing.T) {
 		t.Fatal("audit", n)
 	}
 
-	// List shape: summary without detail fields, with F6 fields.
 	lr := e.callList(buyer, "/me/transactions?status=completed,paid&role=buyer")
 	var mine map[string]any
 	for _, x := range lr {
@@ -297,7 +285,6 @@ func TestTradeEscrowFlowBetweenUsers(t *testing.T) {
 		t.Fatal("role filter")
 	}
 
-	// Withdrawals: bank first, never more than available.
 	wd := func(amount int) resp {
 		return e.call(supplier, "POST", "/me/finance/withdrawals", map[string]any{"amountIdr": amount})
 	}
@@ -363,11 +350,11 @@ func TestTradeNetTermsWithSimulatedSupplier(t *testing.T) {
 	}
 	status := func() string { return e.scalar(`SELECT status FROM trades WHERE id = $1`, id).(string) }
 
-	tick() // supplier bot accepts the agreement
+	tick()
 	if n := e.scalar(`SELECT count(*) FROM trade_acceptances WHERE trade_id = $1 AND side = 'supplier' AND accepted_by IS NULL`, id).(int64); n != 1 {
 		t.Fatal("bot acceptance", n)
 	}
-	tick() // nothing to do until the buyer accepts
+	tick()
 	e.mustAct(buyer, id, map[string]any{"action": "accept_agreement"}, "agreement")
 	tick()
 	if status() != "invoiced" {
@@ -376,8 +363,8 @@ func TestTradeNetTermsWithSimulatedSupplier(t *testing.T) {
 	if r := e.act(buyer, id, map[string]any{"action": "pay"}); r.Status != 409 {
 		t.Fatal("net terms: no payment before receipt", r.Status)
 	}
-	tick() // ship everything
-	tick() // proof
+	tick()
+	tick()
 	if status() != "delivered" {
 		t.Fatal("bot delivery", status())
 	}
@@ -397,7 +384,7 @@ func TestTradeNetTermsWithSimulatedSupplier(t *testing.T) {
 	if num(f.Body["escrowHeldIdr"]) != 0 || len(es) != 1 || num(es[0].(map[string]any)["amountIdr"]) != -666_000 || es[0].(map[string]any)["kind"] != "payment" {
 		t.Fatalf("buyer finance: %v", f.Body)
 	}
-	tick() // supplier reviews
+	tick()
 	r = e.call(buyer, "GET", "/me/transactions/"+id, nil)
 	if rv := r.Body["reviews"].(map[string]any); rv["supplier"].(map[string]any)["by"] != "CV Kemasan Jaya" {
 		t.Fatalf("bot review: %v", rv)
@@ -421,7 +408,6 @@ func TestTradeDisputes(t *testing.T) {
 		return id
 	}
 
-	// Dispute while paid; evidence from the other side moves it to `evidence`; escrow stays held.
 	id := mk()
 	if r := e.act(supplier, id, map[string]any{"action": "dispute", "note": "  "}); r.Status != 422 || r.field("note") == "" {
 		t.Fatal("dispute without reason", r.Status, r.Body)
@@ -438,7 +424,7 @@ func TestTradeDisputes(t *testing.T) {
 	if d := r.Body["dispute"].(map[string]any); d["status"] != "evidence" || len(d["evidence"].([]any)) != 2 || d["evidence"].([]any)[1].(map[string]any)["file"] != nil {
 		t.Fatalf("evidence (a user's bare file name is ignored): %v", d)
 	}
-	// The admin case links the evidence file.
+
 	admin, _ := e.admin("Admin Bukti")
 	dc := e.call(admin, "GET", "/admin/disputes/"+e.scalar(`SELECT id::text FROM disputes WHERE trade_id = $1`, id).(string), nil)
 	if code, body := fetch(t, dc.Body["evidence"].([]any)[0].(map[string]any)["url"]); dc.Status != 200 || code != 200 || !bytes.Equal(body, chat) {
@@ -454,7 +440,6 @@ func TestTradeDisputes(t *testing.T) {
 		t.Fatal("cancel after payment", r.Status)
 	}
 
-	// QC rejection opens a dispute with the note as evidence.
 	id = mk()
 	e.mustAct(supplier, id, map[string]any{"action": "ship", "shipment": map[string]any{"quantity": 10, "dropPoint": "Toko", "carrier": "JNE", "scheduledAt": time.Now().UTC().Format(time.RFC3339)}}, "fulfilling")
 	e.mustAct(supplier, id, map[string]any{"action": "upload_proof", "uploadId": e.upload(supplier, "trade_proof", "image/png", pngBytes(t))}, "delivered")
@@ -463,7 +448,6 @@ func TestTradeDisputes(t *testing.T) {
 		t.Fatalf("rejected QC: %v", r.Body)
 	}
 
-	// Cancel before payment.
 	id = e.newTestTrade(newTrade{Title: "Gula batal", BuyerParty: e.partyOf(buyerID), SupplierParty: e.partyOf(supplierID), Quantity: 1, UnitPriceIdr: 15_000})
 	r = e.mustAct(buyer, id, map[string]any{"action": "cancel"}, "cancelled")
 	tl := r.Body["timeline"].([]any)
@@ -527,13 +511,12 @@ func TestDirectMarketOrder(t *testing.T) {
 		t.Fatal(d.Body)
 	}
 
-	// The KYC limit applies to the order value (email level: Rp 10 jt).
 	big := e.call(seller, "POST", "/me/listings", supplyBody("Kopi mahal", 1_000_000, 100, "kg"))
 	e.exec(`UPDATE listings SET market_id = $2, status = 'in_market' WHERE id = $1`, big.Body["id"], market)
 	if r := e.call(buyer, "POST", "/markets/"+market+"/orders", map[string]any{"listingId": big.Body["id"], "quantity": 11}); r.Status != 403 || r.code() != "kyc_limit" {
 		t.Fatal("kyc limit", r.Status, r.Body)
 	}
-	// Buying the rest sells the listing out.
+
 	if r := e.call(buyer, "POST", "/markets/"+market+"/orders", map[string]any{"listingId": big.Body["id"], "quantity": 10}); r.Status != 201 {
 		t.Fatal(r.Status, r.Body)
 	}
@@ -559,7 +542,7 @@ func TestDisputeResolutionMoney(t *testing.T) {
 		f := e.call(c, "GET", "/me/finance", nil)
 		return num(f.Body["escrowHeldIdr"]), num(f.Body["availableIdr"])
 	}
-	// One disputed escrow trade of 1.000.000 (buyer paid 1.110.000) resolved by an admin.
+
 	resolve := func(resolution map[string]any) (string, map[string]any) {
 		t.Helper()
 		id := e.newTestTrade(newTrade{Title: "Kakao 100 kg", BuyerParty: e.partyOf(buyerID), SupplierParty: e.partyOf(supplierID), Quantity: 100, UnitPriceIdr: 10_000})
@@ -612,9 +595,8 @@ func TestDisputeResolutionMoney(t *testing.T) {
 		!strings.HasPrefix(fmt.Sprint(tl[len(tl)-1].(map[string]any)["note"]), "Putusan dispute: ") {
 		t.Fatalf("release: %v %v", d["status"], tl)
 	}
-	check("release", 0, 1_110_000-10_000) // platform fee 1% of 1.000.000, no maker
+	check("release", 0, 1_110_000-10_000)
 
-	// Partial: 250.000 (+ PPN 27.500) back to the buyer, 750.000 (+ PPN) to the supplier minus 7.500 fee.
 	_, d = resolve(map[string]any{"kind": "partial", "refundIdr": 250_000})
 	if d["status"] != "completed" {
 		t.Fatal(d["status"])
@@ -646,7 +628,7 @@ func TestTradeOrgFanout(t *testing.T) {
 			n++
 		}
 	}
-	if n != 2 { // created + accepted
+	if n != 2 {
 		t.Fatal("org member frames", n)
 	}
 	if !e.notified(ownerID, e.scalar(`SELECT code FROM trades WHERE id = $1`, id).(string)+": Agreement disetujui") {

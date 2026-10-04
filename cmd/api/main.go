@@ -1,5 +1,3 @@
-// Command api is the Ecopurnity HTTP API: every operation in api/openapi.yaml is routed and validated; operations that
-// are not implemented yet answer 501 not_implemented.
 package main
 
 import (
@@ -92,7 +90,7 @@ func run(log *slog.Logger) error {
 		AppURL: cfg.AppURL, CookieSecure: cfg.CookieSecure, SessionTTL: cfg.SessionTTL, GoogleDevLogin: cfg.GoogleDevLogin,
 		SimulateCounterparties: cfg.SimulateCounterparties, Payments: gateway,
 	}
-	defer api.WaitMail() // let queued emails go out on shutdown
+	defer api.WaitMail()
 	go api.RunAuctionClock(ctx, time.Second)
 	go api.RunOpportunityEngine(ctx, time.Minute)
 	go api.RunNotificationMailer(ctx, 5*time.Second)
@@ -107,8 +105,6 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
-	// Realtime: every instance listens for frames (LISTEN ecp_rt); one of them (advisory lock) publishes the outbox.
-	// Both stop with rtCtx; Listen closes this instance's sockets with 1001 on the way out.
 	rtCtx, stopRT := context.WithCancel(context.Background())
 	var rt sync.WaitGroup
 	rt.Add(2)
@@ -129,7 +125,7 @@ func run(log *slog.Logger) error {
 	case <-ctx.Done():
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		// Shutdown does not wait for hijacked (WebSocket) connections: close them first so clients reconnect elsewhere.
+
 		stopRT()
 		return srv.Shutdown(shutdown)
 	}

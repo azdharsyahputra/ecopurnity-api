@@ -175,8 +175,8 @@ Email verification is a 6-digit code: 10 minutes, 5 attempts, one resend per min
 ## Trades, money and payouts
 
 The F6 settlement flow (agreement, invoice, payment, staged shipments, QC, disputes, reviews) is one engine,
-`applyTradeAction` in `internal/server/trade_engine.go`; its header lists who may call it and the ledger journal each
-action posts. Money is a double-entry ledger (`ledger_entries`, balanced per journal at commit); `/me/finance` is derived
+`applyTradeAction` in `internal/server/trade_engine.go`; `docs/trade-engine.md` lists who may call it and the ledger
+journal each action posts. Money is a double-entry ledger (`ledger_entries`, balanced per journal at commit); `/me/finance` is derived
 from it (`internal/server/finance.go`). `RunTradeClock` places due standing-contract orders.
 
 Sellers withdraw their available balance to a registered bank account; an admin transfers it by hand and records the

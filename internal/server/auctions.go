@@ -14,9 +14,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Auctions: public reads, qualification, the caller's state. Bidding and awards are in bids.go, the clock in
-// auction_engine.go.
-
 var errAuctionNotFound = &Error{Status: http.StatusNotFound, Code: "not_found", Message: "Auction tidak ditemukan"}
 
 func viewerID(ctx context.Context) string {
@@ -61,7 +58,7 @@ func (s *Server) ListAuctions(ctx context.Context, req api.ListAuctionsRequestOb
 }
 
 func (s *Server) GetAuction(ctx context.Context, req api.GetAuctionRequestObject) (api.GetAuctionResponseObject, error) {
-	// Primary: right after placing a bid the room refetches and must see it.
+
 	r, err := loadAuction(ctx, s.DB.Primary(), req.Id, false)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errAuctionNotFound
@@ -75,8 +72,6 @@ func (s *Server) GetAuction(ctx context.Context, req api.GetAuctionRequestObject
 	}
 	return api.GetAuction200JSONResponse(d), nil
 }
-
-// ── Qualification ────────────────────────────────────────────────
 
 func qualificationOf(ctx context.Context, q dbtx, auctionID, userID string) (api.Qualification, error) {
 	var status string
@@ -124,7 +119,6 @@ func qualificationOf(ctx context.Context, q dbtx, auctionID, userID string) (api
 	return qual, nil
 }
 
-// reputationGate: accounts with a trade history need a score of at least 80; new accounts may bid on their first lots.
 func reputationGate(score, trades int) (bool, string) {
 	switch {
 	case trades == 0:
@@ -187,7 +181,6 @@ func (s *Server) QualifyForAuction(ctx context.Context, req api.QualifyForAuctio
 	return api.QualifyForAuction200JSONResponse(out), nil
 }
 
-// isOwner: the caller created the auction as a buyer, or belongs to the org that owns it (neither may bid).
 func isOwner(ctx context.Context, q dbtx, r auctionRow, userID string) (bool, error) {
 	if r.OwnerUserID != nil && *r.OwnerUserID == userID {
 		return true, nil
@@ -226,7 +219,7 @@ func (s *Server) GetMyAuctionState(ctx context.Context, req api.GetMyAuctionStat
 	case r.OwnerUserID != nil && *r.OwnerUserID == sess.UserID:
 		out.Owner, out.EvaluateHref = true, ptr("/app/auctions/"+r.ID+"/evaluate")
 	case r.OwnerOrgID != nil:
-		// Members who can see the org's auctions evaluate the business auction (all lots), not this lot.
+
 		var view bool
 		if err := q.QueryRow(ctx, `
 			SELECT m.role = 'owner' OR 'auctions.view' = ANY(ro.permissions)
@@ -235,15 +228,13 @@ func (s *Server) GetMyAuctionState(ctx context.Context, req api.GetMyAuctionStat
 			return nil, err
 		}
 		if view {
-			// Org-owned auctions are always lots of a business auction (goLive).
+
 			out.Owner, out.EvaluateHref = true, ptr("/org/"+*r.OwnerOrgID+"/auctions/"+deref(r.OrgAuctionID)+"/evaluate")
 		}
 	}
 	return out, nil
 }
 
-// myAuctionState writes PersonalAuctionMe with `bid: null` when the caller has not bid (the generated type can't
-// express a nullable union member).
 type myAuctionState struct {
 	Qualification api.Qualification `json:"qualification"`
 	Bid           *api.MyBid        `json:"bid"`
@@ -257,7 +248,6 @@ func (m myAuctionState) VisitGetMyAuctionStateResponse(w http.ResponseWriter) er
 	return json.NewEncoder(w).Encode(m)
 }
 
-// myBid is the caller's current bid (latest non-withdrawn, or the withdrawn one if that is all there is) with rank.
 func myBid(ctx context.Context, q dbtx, r auctionRow, userID string) (*api.MyBid, error) {
 	var id, status string
 	var price int64
@@ -292,9 +282,6 @@ func myBid(ctx context.Context, q dbtx, r auctionRow, userID string) (*api.MyBid
 	return b, nil
 }
 
-// withdrawBlock is why the caller's bid cannot be withdrawn now, "" when it can (src/domain/auction.ts withdrawBlock).
-// Lots of a business auction follow its withdraw rule; every other auction allows it until 30 minutes before the close.
-// A leading bid never: it is the auction's best price.
 func withdrawBlock(r auctionRow, status string, now time.Time) string {
 	rule := "before_last_30"
 	if r.WithdrawRule != nil {
@@ -315,7 +302,6 @@ func withdrawBlock(r auctionRow, status string, now time.Time) string {
 	return ""
 }
 
-// rankOf: 1 + the number of other bidders whose best active price is at least as good (ties favour the earlier bid).
 func rankOf(ctx context.Context, q dbtx, r auctionRow, userID string, price int64) (int, error) {
 	cmp := ">="
 	agg := "max"

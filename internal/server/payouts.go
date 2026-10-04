@@ -16,14 +16,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/secure"
 )
 
-// Manual payouts (spec /admin/withdrawals). A withdrawal request (finance.go) books wallet → payout_pending and waits
-// as `processing`. An admin transfers the money from the company bank account by hand, then records it here:
-//   - mark_paid: payout_pending +A / bank_clearing −A   (the money left the bank; the seller's wallet does not move)
-//   - reject:    payout_pending +A / the request's wallet lines reversed (wallet_available, ppn_payable: available again)
-// The full account number is decrypted only for a `processing` withdrawal's detail, and every such view is audited.
-
-// withdrawalSLA is the overview's target; dueAt is one working day (Friday to Sunday requests are due Monday, WIB).
-// ponytail: no public-holiday calendar; add one when holidays push payouts past their dueAt.
 const withdrawalSLA = 24 * time.Hour
 
 const withdrawalDue = `(w.created_at + CASE extract(isodow FROM w.created_at AT TIME ZONE 'Asia/Jakarta') WHEN 5 THEN 3 WHEN 6 THEN 2 ELSE 1 END * interval '1 day')`
@@ -58,7 +50,7 @@ func (s *Server) ListAdminWithdrawals(ctx context.Context, req api.ListAdminWith
 	if _, err := s.requireAdmin(ctx); err != nil {
 		return nil, err
 	}
-	// ponytail: capped at 500, no pagination; the queue (processing) is oldest first, history newest first.
+
 	where, args := `true ORDER BY w.created_at DESC LIMIT 500`, []any{}
 	if st := req.Params.Status; st != nil {
 		order := "DESC"
@@ -74,7 +66,6 @@ func (s *Server) ListAdminWithdrawals(ctx context.Context, req api.ListAdminWith
 	return api.ListAdminWithdrawals200JSONResponse(out), nil
 }
 
-// normName compares holder and KTP names: letters only, upper case, single spaces.
 func normName(s string) string {
 	return strings.Join(strings.FieldsFunc(strings.ToUpper(s), func(r rune) bool { return !unicode.IsLetter(r) }), " ")
 }
@@ -112,7 +103,6 @@ func (s *Server) GetAdminWithdrawal(ctx context.Context, req api.GetAdminWithdra
 		return nil, err
 	}
 
-	// The full number only while it is still to be transferred, and every view of it is on the record.
 	if w.Status == api.WithdrawalStatusProcessing {
 		var sealed []byte
 		if err := q.QueryRow(ctx, `SELECT b.account_no_enc FROM withdrawals w JOIN bank_accounts b ON b.id = w.bank_account_id WHERE w.id::text = $1`,
@@ -212,7 +202,7 @@ func (s *Server) ActOnAdminWithdrawal(ctx context.Context, req api.ActOnAdminWit
 				w.Id, reason, a.ID); err != nil {
 				return err
 			}
-			// Reverse exactly what the request took from the party (wallet first, then collected PPN).
+
 			taken, err := tx.Query(ctx, `
 				SELECT e.account_id::text, sum(e.amount)::bigint FROM ledger_entries e JOIN ledger_accounts la ON la.id = e.account_id
 				WHERE e.withdrawal_id = $1 AND la.owner_party_id IS NOT NULL GROUP BY e.account_id`, w.Id)

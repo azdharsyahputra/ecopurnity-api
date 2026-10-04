@@ -9,9 +9,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// GET /me/dashboard: the personal workspace summary (PRD §8.1), from the caller's listings, bids, trades and
-// opportunities. Read on the primary: the dashboard is the landing page right after most actions.
-
 type dashAction = struct {
 	Detail string                          `json:"detail"`
 	Href   string                          `json:"href"`
@@ -33,7 +30,6 @@ func (s *Server) GetMyDashboard(ctx context.Context, _ api.GetMyDashboardRequest
 		return nil, err
 	}
 
-	// Listings and money.
 	if err := q.QueryRow(ctx, `
 		SELECT
 		  (SELECT count(*) FROM listings WHERE owner_party_id = ANY($1::uuid[]) AND kind = 'demand' AND status IN ('open','matched','in_market')),
@@ -56,7 +52,6 @@ func (s *Server) GetMyDashboard(ctx context.Context, _ api.GetMyDashboardRequest
 	}
 	d.Stats.Reputation = float64(rep.Score)
 
-	// Live bids: outbid (red), ending within the hour (orange).
 	d.LiveBids = []api.MyBid{}
 	rows, err := q.Query(ctx, auctionSelect+`
 		WHERE a.status IN ('live','extended')
@@ -104,7 +99,6 @@ func (s *Server) GetMyDashboard(ctx context.Context, _ api.GetMyDashboardRequest
 	d.Stats.ActiveBids = len(d.LiveBids)
 	d.Actions = append(d.Actions, ending...)
 
-	// Trades waiting for the caller (blue).
 	rows, err = q.Query(ctx, `
 		SELECT t.id::text, t.title, t.status, t.terms, CASE WHEN t.buyer_party_id = ANY($1::uuid[]) THEN 'buyer' ELSE 'supplier' END AS role,
 		       EXISTS (SELECT 1 FROM trade_acceptances x WHERE x.trade_id = t.id AND x.side = 'buyer'),
@@ -143,14 +137,13 @@ func (s *Server) GetMyDashboard(ctx context.Context, _ api.GetMyDashboardRequest
 		return nil, err
 	}
 
-	// Opportunities: related count, top 3 unrelated, one fresh match with 2+ reasons (lime).
 	opps, err := personalOpportunities(ctx, q, sess.UserID)
 	if err != nil {
 		return nil, err
 	}
 	d.TopMatches = []api.PersonalOpportunity{}
 	lime := false
-	for _, o := range opps { // already sorted by score
+	for _, o := range opps {
 		if o.Relation != api.PersonalOpportunityRelationNone {
 			d.Stats.ActiveOpportunities++
 			continue
@@ -171,7 +164,6 @@ func (s *Server) GetMyDashboard(ctx context.Context, _ api.GetMyDashboardRequest
 
 	d.Activity = s.publicActivity(ctx, 6)
 
-	// Connections: distinct counterparties the caller has traded with, most recent first.
 	d.Connections.Sample = []api.PartyRef{}
 	rows, err = q.Query(ctx, `
 		SELECT p.name, p.display_kind, p.verified, count(*) OVER () FROM (

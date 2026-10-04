@@ -18,8 +18,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
 )
 
-// Auth & session (spec tag Auth). Messages match the frontend mock (src/mocks/handlers.ts) word for word.
-
 const (
 	emailCodeTTL      = 10 * time.Minute
 	emailCodeAttempts = 5
@@ -35,7 +33,6 @@ var (
 
 func normalizeEmail(e string) string { return strings.ToLower(strings.TrimSpace(e)) }
 
-// GetCurrentUser is the frontend's source of truth for the session.
 func (s *Server) GetCurrentUser(ctx context.Context, _ api.GetCurrentUserRequestObject) (api.GetCurrentUserResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -55,8 +52,6 @@ type credentialUser struct {
 	SuspendedAt *time.Time
 }
 
-// checkCredentials returns the account for email+password, or errInvalidCredentials. Unknown email and wrong password
-// cost the same time and give the same answer.
 func (s *Server) checkCredentials(ctx context.Context, email, password string) (credentialUser, error) {
 	var u credentialUser
 	err := s.DB.Primary().QueryRow(ctx,
@@ -101,8 +96,6 @@ func (s *Server) Login(ctx context.Context, req api.LoginRequestObject) (api.Log
 	return api.Login200JSONResponse{Body: out}, nil
 }
 
-// suspendedLoginError tells a suspended user where their appeal stands (the login page offers the appeal form only
-// when there is none for the current suspension).
 func (s *Server) suspendedLoginError(ctx context.Context, u credentialUser) error {
 	var status string
 	var note *string
@@ -145,7 +138,7 @@ func (s *Server) Register(ctx context.Context, req api.RegisterRequestObject) (a
 	if len(fields) > 0 {
 		return nil, &Error{Status: http.StatusUnprocessableEntity, Code: "validation", Message: "Periksa kembali isian", Fields: fields}
 	}
-	// Same order as the mock: a taken email is reported before a short password.
+
 	var taken bool
 	if err := s.DB.Primary().QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE email = $1)`, email).Scan(&taken); err != nil {
 		return nil, err
@@ -187,7 +180,6 @@ func (s *Server) Register(ctx context.Context, req api.RegisterRequestObject) (a
 var errEmailTaken = &Error{Status: http.StatusConflict, Code: "email_taken", Message: "Email sudah terdaftar",
 	Fields: map[string]string{"email": "Email ini sudah punya akun. Masuk saja."}}
 
-// insertUser creates the account, its identity row and a unique username derived from the email.
 func insertUser(ctx context.Context, tx pgx.Tx, name, email string, passwordHash, googleSub *string, verified bool) (string, error) {
 	base := usernameBase(email)
 	for attempt := 0; ; attempt++ {
@@ -196,7 +188,7 @@ func insertUser(ctx context.Context, tx pgx.Tx, name, email string, passwordHash
 			username = fmt.Sprintf("%s%d", base, attempt+1)
 		}
 		var id string
-		// A savepoint per attempt: a unique violation aborts only the attempt, not the transaction.
+
 		err := pgx.BeginFunc(ctx, tx, func(sp pgx.Tx) error {
 			return sp.QueryRow(ctx, `
 				INSERT INTO users (name, username, email, password_hash, google_sub, email_verified_at)
@@ -217,7 +209,6 @@ func insertUser(ctx context.Context, tx pgx.Tx, name, email string, passwordHash
 	}
 }
 
-// issueToken replaces any unused token of the same purpose and returns the frontend link carrying the new one.
 func (s *Server) issueToken(ctx context.Context, q dbtx, userID, purpose string, ttl time.Duration, path string) (string, error) {
 	if _, err := q.Exec(ctx, `UPDATE auth_tokens SET used_at = now() WHERE user_id = $1 AND purpose = $2 AND used_at IS NULL`, userID, purpose); err != nil {
 		return "", err
@@ -230,9 +221,6 @@ func (s *Server) issueToken(ctx context.Context, q dbtx, userID, purpose string,
 	return strings.TrimRight(s.AppURL, "/") + path + "?token=" + token, nil
 }
 
-// send delivers email after the transaction committed, without holding up the response; a failed send is logged, not
-// surfaced (the user can resend). ponytail: in-process goroutine, so a crash between commit and send loses the mail;
-// move to the outbox worker when delivery must be guaranteed.
 func (s *Server) send(ctx context.Context, m mail.Message) {
 	if s.Mail == nil {
 		return
@@ -248,10 +236,8 @@ func (s *Server) send(ctx context.Context, m mail.Message) {
 	}()
 }
 
-// WaitMail blocks until queued emails are sent (graceful shutdown, tests).
 func (s *Server) WaitMail() { s.mailWG.Wait() }
 
-// useToken consumes a valid token and returns its user.
 func useToken(ctx context.Context, tx pgx.Tx, token, purpose string) (string, bool, error) {
 	var userID string
 	err := tx.QueryRow(ctx, `
@@ -264,7 +250,6 @@ func useToken(ctx context.Context, tx pgx.Tx, token, purpose string) (string, bo
 	return userID, err == nil, err
 }
 
-// issueEmailCode burns any live verification code of the user and stores a new one (as an HMAC); returns the code.
 func (s *Server) issueEmailCode(ctx context.Context, q dbtx, userID string) (string, error) {
 	if _, err := q.Exec(ctx, `UPDATE auth_tokens SET used_at = now() WHERE user_id = $1 AND purpose = 'verify_email' AND used_at IS NULL`, userID); err != nil {
 		return "", err
@@ -283,7 +268,6 @@ func codeError(status int, code, message string) *Error {
 	return &Error{Status: status, Code: code, Message: message, Fields: map[string]string{"code": message}}
 }
 
-// VerifyEmail checks the signed-in user's 6-digit code: 10 minutes, 5 attempts, then it is burned.
 func (s *Server) VerifyEmail(ctx context.Context, req api.VerifyEmailRequestObject) (api.VerifyEmailResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -312,7 +296,7 @@ func (s *Server) VerifyEmail(ctx context.Context, req api.VerifyEmailRequestObje
 			}
 			if !hmac.Equal(hash, auth.OTPHash(s.Keys.OTP, "verify_email", sess.UserID, req.Body.Code)) {
 				attempts++
-				// The wrong guess is committed (not rolled back) so attempts really count.
+
 				if attempts >= emailCodeAttempts {
 					_, err = tx.Exec(ctx, `UPDATE auth_tokens SET attempts = $2, used_at = now() WHERE token_hash = $1`, hash, attempts)
 					codeErr = codeError(429, "too_many_attempts", "Terlalu banyak percobaan. Minta kode baru.")
@@ -344,7 +328,6 @@ func (s *Server) VerifyEmail(ctx context.Context, req api.VerifyEmailRequestObje
 	return api.VerifyEmail200JSONResponse(out), nil
 }
 
-// ResendVerificationEmail emails a fresh code, at most once per minute.
 func (s *Server) ResendVerificationEmail(ctx context.Context, _ api.ResendVerificationEmailRequestObject) (api.ResendVerificationEmailResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -383,7 +366,6 @@ func (s *Server) ResendVerificationEmail(ctx context.Context, _ api.ResendVerifi
 	return api.ResendVerificationEmail204Response{}, nil
 }
 
-// ForgotPassword always answers 204 so it never reveals whether an email has an account.
 func (s *Server) ForgotPassword(ctx context.Context, req api.ForgotPasswordRequestObject) (api.ForgotPasswordResponseObject, error) {
 	email := normalizeEmail(req.Body.Email)
 	var userID, name string
@@ -402,11 +384,9 @@ func (s *Server) ForgotPassword(ctx context.Context, req api.ForgotPasswordReque
 	return api.ForgotPassword204Response{}, nil
 }
 
-// ResetPassword replaces the password and signs out every session of the account (a reset usually means the old
-// password is compromised). It does not sign the user in.
 func (s *Server) ResetPassword(ctx context.Context, req api.ResetPasswordRequestObject) (api.ResetPasswordResponseObject, error) {
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		// The token is checked first; a short password leaves the token usable (the user just retries).
+
 		var userID string
 		err := tx.QueryRow(ctx, `
 			SELECT user_id FROM auth_tokens WHERE token_hash = $1 AND purpose = 'reset_password' AND used_at IS NULL AND expires_at > now()
@@ -439,8 +419,6 @@ func (s *Server) ResetPassword(ctx context.Context, req api.ResetPasswordRequest
 	return api.ResetPassword204Response{}, nil
 }
 
-// AppealSuspension lets a suspended account (which cannot sign in) appeal; credentials are re-checked. One appeal per
-// suspension episode (users.suspended_at).
 func (s *Server) AppealSuspension(ctx context.Context, req api.AppealSuspensionRequestObject) (api.AppealSuspensionResponseObject, error) {
 	u, err := s.checkCredentials(ctx, req.Body.Email, req.Body.Password)
 	if err != nil {
@@ -464,7 +442,7 @@ func (s *Server) AppealSuspension(ctx context.Context, req api.AppealSuspensionR
 				Fields: map[string]string{"reason": "Minimal 20 karakter"}}
 		}
 		_, err := tx.Exec(ctx, `INSERT INTO suspension_appeals (user_id, suspended_at, reason) VALUES ($1, $2, $3)`, u.ID, u.SuspendedAt, reason)
-		if uniqueViolation(err, "") { // a concurrent appeal won the race
+		if uniqueViolation(err, "") {
 			return &Error{Status: http.StatusConflict, Code: "already_appealed", Message: "Banding sudah pernah diajukan"}
 		}
 		if err != nil {
@@ -483,8 +461,6 @@ func (s *Server) AppealSuspension(ctx context.Context, req api.AppealSuspensionR
 	return api.AppealSuspension200JSONResponse{Ok: true}, nil
 }
 
-// LoginWithGoogle is the mock-compatible stand-in (fixed test account) behind GOOGLE_DEV_LOGIN; the real OAuth code
-// exchange replaces it and changes the request contract.
 func (s *Server) LoginWithGoogle(ctx context.Context, _ api.LoginWithGoogleRequestObject) (api.LoginWithGoogleResponseObject, error) {
 	if !s.GoogleDevLogin {
 		return nil, api.ErrNotImplemented

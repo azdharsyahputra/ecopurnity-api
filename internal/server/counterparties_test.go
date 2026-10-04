@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// The demo bots act on a tick, from database state; tests age the rows instead of waiting.
 func TestSimulatedCounterparties(t *testing.T) {
 	e := newEnv(t)
 	buyer, buyerID := e.bidder("Bu Simulasi")
@@ -23,7 +22,6 @@ func TestSimulatedCounterparties(t *testing.T) {
 		}
 	}
 
-	// Not due yet: nothing. 12 s old: the first two bots (invited one first). 20 s: the third.
 	tick()
 	e.exec(`UPDATE rfqs SET created_at = now() - interval '12 seconds' WHERE id = $1`, id)
 	tick()
@@ -34,7 +32,7 @@ func TestSimulatedCounterparties(t *testing.T) {
 	}
 	e.exec(`UPDATE rfqs SET created_at = now() - interval '20 seconds' WHERE id = $1`, id)
 	tick()
-	tick() // idempotent
+	tick()
 	r = e.call(buyer, "GET", "/me/rfqs/"+id, nil)
 	q := quotesOf(r)
 	if len(q) != 3 || q[2]["supplier"].(map[string]any)["verified"] != false || q[2]["terms"] != "net30" || q[2]["leadTimeDays"] != 7.0 {
@@ -47,7 +45,6 @@ func TestSimulatedCounterparties(t *testing.T) {
 		t.Fatalf("bots joined the conversation: %v", n)
 	}
 
-	// A low counter: the bot meets halfway after 6 s.
 	low, close := q[0]["id"].(string), q[1]["id"].(string)
 	act := func(qid string, body map[string]any) resp {
 		return e.call(buyer, "POST", "/me/rfqs/"+id+"/quotes/"+qid+"/actions", body)
@@ -70,7 +67,6 @@ func TestSimulatedCounterparties(t *testing.T) {
 		t.Fatalf("bot revise: %s %d", status, price)
 	}
 
-	// A counter within 5%: the bot accepts, which awards the RFQ and creates the trade.
 	if r := act(close, map[string]any{"action": "counter", "priceIdr": 48000}); r.Status != 200 {
 		t.Fatalf("counter: %d %v", r.Status, r.Body)
 	}
@@ -87,7 +83,6 @@ func TestSimulatedCounterparties(t *testing.T) {
 		t.Fatalf("buyer told: %v", n)
 	}
 
-	// Chat: the first external participant answers the latest human message once.
 	if r := e.call(buyer, "POST", "/me/conversations/"+conv+"/messages", map[string]any{"text": "Bisa kirim Senin?"}); r.Status != 201 {
 		t.Fatalf("send: %d %v", r.Status, r.Body)
 	}

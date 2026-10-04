@@ -7,10 +7,6 @@ import (
 	"time"
 )
 
-// Market maker domain rules, ported from the frontend's src/domain/{mm,marketRules,settlement}.ts (tests in
-// mm_domain_test.go mirror theirs).
-
-// pipelineMoves: manual moves. market_live is only reached by publishing a market; dismissing needs a reason.
 var pipelineMoves = map[string][]string{
 	"detected":    {"evaluating", "forming", "dismissed"},
 	"evaluating":  {"detected", "forming", "dismissed"},
@@ -38,12 +34,11 @@ var (
 		"collective_procurement": "Collective procurement"}
 	objectiveLabel = map[string]string{"procurement": "Procurement", "selling": "Selling", "resource_exchange": "Resource exchange",
 		"service_exchange": "Service exchange"}
-	// roundType: auction type a market's rounds run as (ROUND_TYPE).
+
 	roundType = map[string]string{"forward_auction": "forward", "reverse_auction": "reverse", "sealed_bid": "sealed",
 		"dutch_auction": "dutch", "direct_market": "reverse", "collective_procurement": "reverse"}
 )
 
-// validate is validateRules: field errors keyed like the form inputs; empty = valid.
 func (r marketRules) validate() map[string]string {
 	e := map[string]string{}
 	if !(r.MinQuantity > 0) {
@@ -70,13 +65,11 @@ func (r marketRules) validate() map[string]string {
 	return e
 }
 
-// raw is the rule values in RULE_FIELDS order (the order of labeled).
 func (r marketRules) raw() []any {
 	return []any{r.Eligibility, r.Visibility, r.MinStepPct, r.MinQuantity, r.MaxQuantity, r.WindowStart, r.WindowEnd,
 		r.Region, r.RadiusKm, r.Award}
 }
 
-// diffRules: field-level before → after with display text; empty when nothing changed.
 func diffRules(before, after marketRules, unit string) []change {
 	b, a := before.labeled(unit), after.labeled(unit)
 	rb, ra := before.raw(), after.raw()
@@ -95,7 +88,6 @@ type ruleVersion struct {
 	ID                          string
 }
 
-// activeVersion: the version governing round `round` (latest that has taken effect); v1 before any round has run.
 func activeVersion(versions []ruleVersion, round int) ruleVersion {
 	for i := len(versions) - 1; i >= 0; i-- {
 		if versions[i].EffectiveFromRound <= round {
@@ -105,10 +97,8 @@ func activeVersion(versions []ruleVersion, round int) ruleVersion {
 	return versions[0]
 }
 
-// defaultRules: today until this week's Friday (next week's Mon–Fri on a weekend), 1% of demand as minimum order, 40%
-// of supply as cap (frontend domain/marketRules.ts).
 func defaultRules(demand, supply float64, region, mechanism string, today time.Time) marketRules {
-	today = today.In(wib) // the frontend's clock for date-only rule windows (wib: contracts.go)
+	today = today.In(wib)
 	weekend := today.Weekday() == time.Saturday || today.Weekday() == time.Sunday
 	monday := today.AddDate(0, 0, -((int(today.Weekday()) + 6) % 7))
 	start := today
@@ -132,11 +122,9 @@ func defaultRules(demand, supply float64, region, mechanism string, today time.T
 	}
 }
 
-// ── Aggregated settlement (settlement.ts) ────────────────────────
-
 type member struct {
 	ID       string
-	Quantity float64 // what the member contributed (demand or supply), in lot units
+	Quantity float64
 }
 
 type share struct {
@@ -144,8 +132,6 @@ type share struct {
 	Quantity, Share float64
 }
 
-// splitProRata splits `total` units across members in proportion to their contribution, in whole units
-// (largest-remainder method, ties go to the bigger contributor). Members with nothing get nothing.
 func splitProRata(total float64, members []member) []share {
 	out := make([]share, len(members))
 	var pool float64
@@ -189,8 +175,6 @@ func splitProRata(total float64, members []member) []share {
 	return out
 }
 
-// membersForLot: real contributions first, then the rest of the lot spread evenly over `fillers` (participants
-// whose volumes aren't tracked as listings).
 func membersForLot(lotQty float64, contributions []member, fillers []string) []member {
 	var contributed float64
 	for _, c := range contributions {

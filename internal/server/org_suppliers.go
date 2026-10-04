@@ -17,12 +17,8 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Supplier directory as an org sees it (PRD 9.7) and purchase analytics (PRD 9.9).
-
 var errSupplierNotFound = notFound("Supplier tidak ditemukan")
 
-// loadOrgSuppliers: directory suppliers matching cond (alias s, args from $2) with this org's relation and rating, the
-// platform rating (seed = 10 reviews, plus buyers' reviews and this org's rating) and this org's trades + history.
 func loadOrgSuppliers(ctx context.Context, q dbtx, orgID, cond string, args ...any) ([]api.OrgSupplier, error) {
 	rows, err := q.Query(ctx, `
 		WITH me AS (SELECT id FROM parties WHERE org_id = $1)
@@ -103,7 +99,7 @@ func (s *Server) ListOrgSuppliers(ctx context.Context, req api.ListOrgSuppliersR
 		where = append(where, "s.region = "+arg(strings.TrimSpace(*p.Region)))
 	}
 	if p.Verified != nil {
-		if v, err := strconv.ParseBool(*p.Verified); err == nil { // the frontend sends verified=1
+		if v, err := strconv.ParseBool(*p.Verified); err == nil {
 			where = append(where, "s.verified = "+arg(v))
 		}
 	}
@@ -269,7 +265,6 @@ func (s *Server) ActOnOrgSupplier(ctx context.Context, req api.ActOnOrgSupplierR
 	return api.ActOnOrgSupplier200JSONResponse(out), nil
 }
 
-// supplierHistory: the org's trades with a directory supplier, newest first, as the transactions area renders them.
 func supplierHistory(ctx context.Context, q dbtx, orgID, supplierID string) ([]api.TransactionDetail, error) {
 	var party string
 	err := q.QueryRow(ctx, `SELECT id::text FROM parties WHERE org_id = $1`, orgID).Scan(&party)
@@ -291,7 +286,7 @@ func supplierHistory(ctx context.Context, q dbtx, orgID, supplierID string) ([]a
 	}
 	out := []api.TransactionDetail{}
 	for _, id := range ids {
-		d, err := loadTransaction(ctx, q, party, id, nil) // supplier history: no file links (not gated by transactions.view)
+		d, err := loadTransaction(ctx, q, party, id, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -300,10 +295,6 @@ func supplierHistory(ctx context.Context, q dbtx, orgID, supplierID string) ([]a
 	return out, nil
 }
 
-// ── Analytics ────────────────────────────────────────────────────
-
-// purchase is one aggregated group of an org's purchases; purchaseLine one purchase. Supplier keys are "s:<supplier id>"
-// (directory, purchase history) or "p:<party id>" (trades).
 type purchase struct {
 	Month, Category, Item, Unit, Supplier, Via string
 	Qty                                        float64
@@ -319,8 +310,6 @@ type purchaseLine struct {
 	Bidders, Opening int64
 }
 
-// pgPurchases: purchase history plus every line of the org's awarded procurement auctions (the Postgres source, also the
-// fallback when ClickHouse is down), oldest first.
 func (s *Server) pgPurchases(ctx context.Context, q dbtx, orgID string) ([]purchaseLine, error) {
 	rows, err := q.Query(ctx, `
 		SELECT code, to_char(month, 'YYYY-MM'), item, category_id, 's:' || supplier_id, via, quantity, unit, unit_price_idr,
@@ -350,9 +339,8 @@ func (s *Server) pgPurchases(ctx context.Context, q dbtx, orgID string) ([]purch
 	})
 }
 
-// chPurchases: the same from ClickHouse (org_purchase_monthly for the aggregates, trades for the lines).
 func (s *Server) chPurchases(ctx context.Context, orgID string) ([]purchase, []purchaseLine, error) {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second) // a hung ClickHouse must not hang the page
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	ps, err := s.Analytics.OrgPurchases(ctx, orgID)
 	if err != nil {
@@ -377,12 +365,10 @@ func (s *Server) chPurchases(ctx context.Context, orgID string) ([]purchase, []p
 			Supplier: supplierKey(t.SupplierParty), Via: t.Via, Qty: t.Quantity, Spend: int64(t.Value), Count: 1},
 			Code: t.Code, At: t.At, UnitPrice: int64(t.UnitPrice), Bidders: int64(t.Bidders), Opening: opening}
 	}
-	slices.Reverse(lines) // oldest first, like the Postgres source
+	slices.Reverse(lines)
 	return aggs, lines, nil
 }
 
-// supplierKey: a ClickHouse supplier is a party id, or "s:<directory id>" for imported history whose supplier has no party
-// yet (migrations/postgres/00023).
 func supplierKey(party string) string {
 	if strings.HasPrefix(party, "s:") {
 		return party
@@ -395,8 +381,6 @@ type supplierInfo struct {
 	Score, OnTime float64
 }
 
-// resolveSuppliers names supplier keys: directory suppliers (by id or by their party) with their latest scorecard,
-// other parties by name with an 80 baseline.
 func resolveSuppliers(ctx context.Context, q dbtx, keys []string) (map[string]supplierInfo, error) {
 	var ids, parties []string
 	for _, k := range keys {
@@ -447,7 +431,7 @@ func resolveSuppliers(ctx context.Context, q dbtx, keys []string) (map[string]su
 		return nil, err
 	}
 	rows.Close()
-	// Bidders outside the directory: their platform reputation.
+
 	for _, i := range fresh {
 		score, _, err := reputationOf(ctx, q, i.ID)
 		if err != nil {
@@ -478,7 +462,7 @@ func (s *Server) GetOrgAnalytics(ctx context.Context, req api.GetOrgAnalyticsReq
 	if s.Analytics != nil {
 		aggs, lines, err = s.chPurchases(ctx, c.OrgID)
 		if err != nil && s.Log != nil {
-			// Analytics down degrades to the Postgres figures; it never fails the page.
+
 			s.Log.Warn("org analytics: clickhouse unavailable, using postgres", "err", err)
 		}
 	}
@@ -509,7 +493,6 @@ func (s *Server) GetOrgAnalytics(ctx context.Context, req api.GetOrgAnalyticsReq
 	return api.GetOrgAnalytics200JSONResponse(orgAnalytics(aggs, lines, months, category, catOrder, sups)), nil
 }
 
-// orgAnalytics is the frontend mock's analytics(): over the latest `months` months that have data, optionally one category.
 func orgAnalytics(aggs []purchase, lines []purchaseLine, months int, category string, catOrder []string, sups map[string]supplierInfo) api.OrgAnalytics {
 	var keys []string
 	for _, a := range aggs {
@@ -655,7 +638,7 @@ func orgAnalytics(aggs []purchase, lines []purchaseLine, months int, category st
 		out.Suppliers = append(out.Suppliers, *bySup[id])
 	}
 	sort.SliceStable(out.Suppliers, func(i, j int) bool { return out.Suppliers[i].SpendIdr > out.Suppliers[j].SpendIdr })
-	// Lines newest first.
+
 	var hist []purchaseLine
 	for i := len(lines) - 1; i >= 0; i-- {
 		if in(lines[i].Month, lines[i].Category) {

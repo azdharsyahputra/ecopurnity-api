@@ -20,7 +20,6 @@ func demandBody(item string, budget int) map[string]any {
 		"budgetIdr": budget, "deadline": time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)}
 }
 
-// seedMarket inserts a market (and its maker party) directly; the market-maker endpoints that create them come later.
 func (e *testEnv) seedMarket(name, category, unit, status, approval string) string {
 	e.t.Helper()
 	var party, id string
@@ -41,7 +40,6 @@ func TestMyListingsLifecycle(t *testing.T) {
 	e := newEnv(t)
 	c, _ := e.signedIn("Lina")
 
-	// Create and validate.
 	r := e.call(c, "POST", "/me/listings", supplyBody("Biji kopi arabika", 82000, 500, "kg"))
 	if r.Status != 201 || r.Body["status"] != "available" || !strings.HasPrefix(r.Body["code"].(string), "SUP-") || r.Body["priceIdr"] != float64(82000) {
 		t.Fatalf("create supply: %d %v", r.Status, r.Body)
@@ -66,7 +64,6 @@ func TestMyListingsLifecycle(t *testing.T) {
 		t.Fatalf("past deadline: %d %v", r.Status, r.Body)
 	}
 
-	// Lists and ownership.
 	if r := e.call(c, "GET", "/me/listings?kind=supply", nil); r.Status != 200 {
 		t.Fatalf("list: %d", r.Status)
 	}
@@ -75,7 +72,6 @@ func TestMyListingsLifecycle(t *testing.T) {
 		t.Fatalf("other user's listing: %d", r.Status)
 	}
 
-	// Detail: history, related markets and opportunities by category.
 	market := e.seedMarket("Kopi Garut", "agri", "kg", "active", "auto")
 	e.seedMarket("Pupuk Jateng", "agri", "kg", "closed", "manual")
 	e.exec(`INSERT INTO opportunities (code, title, kind, category_id, region, status, unit, demand_value, supply_value, potential_value_idr, suggested_mechanism, confidence, mechanism_reason, description, required_contribution)
@@ -98,7 +94,6 @@ func TestMyListingsLifecycle(t *testing.T) {
 		t.Fatalf("detail parts: history %v markets %d matches %d", hist, len(markets), len(matches))
 	}
 
-	// Patch: editable fields only, per kind.
 	r = e.call(c, "PATCH", "/me/listings/"+supplyID, map[string]any{"kind": "supply", "item": "Biji kopi arabika grade 1", "priceIdr": 85000,
 		"quantity": map[string]any{"value": 450, "unit": "kg"}, "availableFrom": time.Now().Format("2006-01-02")})
 	if r.Status != 200 || r.Body["item"] != "Biji kopi arabika grade 1" || r.Body["priceIdr"] != float64(85000) || r.Body["quantity"].(map[string]any)["value"] != float64(450) {
@@ -111,7 +106,6 @@ func TestMyListingsLifecycle(t *testing.T) {
 		t.Fatalf("kind change: %d %v", r.Status, r.Body)
 	}
 
-	// Into a market: closed and wrong-category markets are refused; auto-approval makes the owner an active participant.
 	closed := e.seedMarket("Tutup", "agri", "kg", "closed", "auto")
 	if r := e.call(c, "POST", "/me/listings/"+supplyID+"/market", map[string]any{"marketId": closed}); r.Status != 409 || r.code() != "market_closed" {
 		t.Fatalf("closed market: %d %v", r.Status, r.Body)
@@ -129,7 +123,6 @@ func TestMyListingsLifecycle(t *testing.T) {
 		t.Fatalf("participant: %v", st)
 	}
 
-	// Archive: supply expired, demand cancelled; finished listings are read-only.
 	if r := e.call(c, "POST", "/me/listings/"+demandID+"/archive", nil); r.Status != 200 || r.Body["status"] != "cancelled" {
 		t.Fatalf("archive demand: %d %v", r.Status, r.Body)
 	}
@@ -137,7 +130,6 @@ func TestMyListingsLifecycle(t *testing.T) {
 		t.Fatalf("edit finished: %d %v", r.Status, r.Body)
 	}
 
-	// Restricted accounts cannot create.
 	e.exec(`UPDATE users SET status = 'restricted' WHERE name = 'Lina'`)
 	if r := e.call(c, "POST", "/me/listings", supplyBody("Teh", 1000, 1, "kg")); r.Status != 403 || r.code() != "account_restricted" {
 		t.Fatalf("restricted: %d %v", r.Status, r.Body)
@@ -146,10 +138,10 @@ func TestMyListingsLifecycle(t *testing.T) {
 
 func TestCatalogAndPriceSuggestion(t *testing.T) {
 	e := newEnv(t)
-	tag := fmt.Sprint(time.Now().UnixNano()) // isolates this test's rows in the shared test database
+	tag := fmt.Sprint(time.Now().UnixNano())
 	seller, _ := e.signedIn("Penjual " + tag)
 	hidden, _ := e.signedIn("Dibatasi " + tag)
-	unit := "Kg" + tag[len(tag)-6:] // a unit no other test uses keeps the price samples to this test's listings
+	unit := "Kg" + tag[len(tag)-6:]
 	for i, price := range []int{80000, 82000, 84000, 86000} {
 		e.call(seller, "POST", "/me/listings", supplyBody(fmt.Sprintf("Kopi arabika %s #%d", tag, i), price, 100, unit))
 	}
@@ -182,12 +174,11 @@ func TestCatalogAndPriceSuggestion(t *testing.T) {
 	if r := e.call(anon, "GET", "/listings?q=Garut&region=jawa%20barat&category=agri", nil); r.Status != 200 {
 		t.Fatalf("region filter: %d", r.Status)
 	}
-	// LIKE wildcards in q are literal.
+
 	if r := e.call(anon, "GET", "/listings?q=%25%25"+tag, nil); r.Body["meta"].(map[string]any)["total"] != float64(0) {
 		t.Fatalf("wildcards: %v", r.Body["meta"])
 	}
 
-	// Price suggestion: narrowed to "kopi arabika" listings (units compared case-insensitively), not the pupuk one.
 	r = e.call(anon, "GET", "/listings/price-suggestion?category=agri&unit="+strings.ToUpper(unit)+"&item=Kopi%20arabika", nil)
 	if r.Status != 200 || r.Body["sample"] != float64(4) || r.Body["medianIdr"] != float64(83000) || r.Body["unit"] != strings.ToLower(unit) {
 		t.Fatalf("suggestion: %d %v", r.Status, r.Body)

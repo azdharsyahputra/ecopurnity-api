@@ -10,11 +10,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Organization transactions (/orgs/{orgId}/transactions): the org's side of trades, on the same read model
-// (transactions.go) and engine (trade_engine.go) as personal ones. Members with transactions.view read them; each step
-// is gated per role by txActionRoles (org.go) before the engine checks the trade state.
-
-// orgPartyID returns the org's party without creating it ("" when the org never traded).
 func orgPartyID(ctx context.Context, q dbtx, orgID string) (string, error) {
 	var id string
 	err := q.QueryRow(ctx, `SELECT id::text FROM parties WHERE org_id = $1`, orgID).Scan(&id)
@@ -57,7 +52,6 @@ func (s *Server) ListOrgTransactions(ctx context.Context, req api.ListOrgTransac
 	return out, rows.Err()
 }
 
-// orgTxPage is the trade from the org's side with the team's activity on it and, for a pool sub-PO, the pool split.
 func orgTxPage(ctx context.Context, q dbtx, orgID, party, tradeID string, files fileURL) (api.OrgTransactionPage, error) {
 	var p api.OrgTransactionPage
 	d, err := loadTransaction(ctx, q, party, tradeID, files)
@@ -106,8 +100,6 @@ func (s *Server) GetOrgTransaction(ctx context.Context, req api.GetOrgTransactio
 	return api.GetOrgTransaction200JSONResponse(p), nil
 }
 
-// ActOnOrgTransaction: the member acts for the org's side; the role gate (403 with the frontend's copy) runs before
-// the state machine (409).
 func (s *Server) ActOnOrgTransaction(ctx context.Context, req api.ActOnOrgTransactionRequestObject) (api.ActOnOrgTransactionResponseObject, error) {
 	var p api.OrgTransactionPage
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
@@ -136,7 +128,7 @@ func (s *Server) ActOnOrgTransaction(ctx context.Context, req api.ActOnOrgTransa
 		if err := applyTradeAction(ctx, tx, req.Tid, tradeActor{Side: side, UserID: &c.sess.UserID, Name: c.actor(), OrgID: &c.OrgID, File: file}, *req.Body); err != nil {
 			return err
 		}
-		var files fileURL // the page's file links only for members who may view transactions
+		var files fileURL
 		if c.can("transactions", "view") {
 			files = s.fileURLs(ctx)
 		}

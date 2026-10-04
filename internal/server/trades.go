@@ -8,28 +8,25 @@ import (
 	"time"
 )
 
-// Trade creation, shared by auction award, Dutch accept, direct orders, contracts and (later) RFQ and settlements. One
-// row per trade with both parties; the settlement flow (agreement, invoice, shipments, ...) is trade_engine.go.
-
 type newTrade struct {
 	Title                     string
 	BuyerParty, SupplierParty string
 	Quantity                  float64
 	Unit                      string
 	UnitPriceIdr              int64
-	Terms                     string // escrow (default) | net14 | net30
+	Terms                     string
 	MakerFeeRate              float64
 	MarketID, AuctionID       *string
-	SourceListingID           *string // direct order at a posted price
+	SourceListingID           *string
 	DeliveryAddress           string
 	DueIn                     time.Duration
-	Via                       string // analytics channel: auction | dutch | rfq | contract | direct | settlement
+	Via                       string
 	Category, Region          string
 	ActorUserID               *string
-	// Org sides and price references for org purchase analytics (ClickHouse org_purchase_monthly); optional.
+
 	BuyerOrgID, SupplierOrgID    *string
 	BudgetUnitIdr, MarketUnitIdr int64
-	Item                         string // the analytics item (groups unit prices and trends); default Title
+	Item                         string
 }
 
 type createdTrade struct{ ID, Code string }
@@ -52,7 +49,7 @@ func createTrade(ctx context.Context, q dbtx, t newTrade) (createdTrade, error) 
 		t.MarketID, t.AuctionID, t.SourceListingID, t.DeliveryAddress, t.DueIn).Scan(&out.ID, &out.Code); err != nil {
 		return out, err
 	}
-	// The purchase order every trade starts with (TransactionDetail.documents, rendered on demand).
+
 	if _, err := q.Exec(ctx, `INSERT INTO trade_documents (trade_id, kind, name, uploaded_by) VALUES ($1, 'order', $2, $3)`,
 		out.ID, "PO-"+strings.TrimPrefix(out.Code, "TRX-")+".pdf", t.ActorUserID); err != nil {
 		return out, err
@@ -70,5 +67,5 @@ func createTrade(ctx context.Context, q dbtx, t newTrade) (createdTrade, error) 
 	if err := emit(ctx, q, "trade.status", out.ID, payload); err != nil {
 		return out, err
 	}
-	return out, emitTradeUpdated(ctx, q, out.ID) // every creation path tells both sides' users
+	return out, emitTradeUpdated(ctx, q, out.ID)
 }

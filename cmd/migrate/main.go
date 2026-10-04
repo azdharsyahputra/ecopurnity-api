@@ -1,6 +1,3 @@
-// Command migrate applies the PostgreSQL migrations to the primary (never the replica: it follows via WAL).
-//
-//	go run ./cmd/migrate up | down | status | redo | reset | version
 package main
 
 import (

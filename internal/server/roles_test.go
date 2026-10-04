@@ -117,7 +117,6 @@ func TestOrgCreateAndInvitations(t *testing.T) {
 		t.Fatalf("duplicate name: %d %v", r.Status, r.Body)
 	}
 
-	// Invitations are matched by email.
 	member, memberEmail := e.signedIn("Mira Anggota")
 	other, _ := e.signedIn("Orang Lain")
 	inv := e.scalar(`INSERT INTO org_members (org_id, email, name, role, department, invited_by) VALUES ($1, $2, 'Mira', 'finance', 'Keuangan', $3) RETURNING id::text`,
@@ -143,7 +142,6 @@ func TestOrgCreateAndInvitations(t *testing.T) {
 		t.Fatalf("org audit: %d", n)
 	}
 
-	// Decline removes the invitation.
 	inv2 := e.scalar(`INSERT INTO org_members (org_id, email, name, role) VALUES ($1, $2, 'X', 'sales') RETURNING id::text`, orgID, strings.ToUpper(e.scalar(`SELECT email FROM users WHERE name = 'Orang Lain' ORDER BY created_at DESC LIMIT 1`).(string))).(string)
 	if r := e.call(other, "POST", "/me/invitations/"+inv2, map[string]any{"action": "decline"}); r.Status != 200 {
 		t.Fatalf("decline: %d %v", r.Status, r.Body)

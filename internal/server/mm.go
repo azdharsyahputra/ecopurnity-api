@@ -16,10 +16,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Market maker workspace (/mm, PRD §10). Access: the market_maker capability (403 otherwise); market endpoints also need
-// the caller to operate the market — a market_operators row, or active membership of the maker's org — else 404.
-// Every mutation is audited; the caller's actions also go out live as `mm.activity` frames on user:{id}.
-
 var errNotMaker = &Error{Status: http.StatusForbidden, Code: "forbidden", Message: "Butuh capability Market Maker"}
 
 func (s *Server) requireMaker(ctx context.Context) (*session, error) {
@@ -38,7 +34,6 @@ func (s *Server) requireMaker(ctx context.Context) (*session, error) {
 	return sess, nil
 }
 
-// operates is a WHERE fragment over markets m: the user in placeholder $n operates m.
 func operates(n int) string {
 	return fmt.Sprintf(`(EXISTS (SELECT 1 FROM market_operators mo WHERE mo.market_id = m.id AND mo.user_id = $%[1]d)
 		OR EXISTS (SELECT 1 FROM parties mk JOIN org_members om ON om.org_id = mk.org_id
@@ -51,7 +46,6 @@ type mmMarket struct {
 	Demand, Supply                                            float64
 }
 
-// operatedMarket loads a market the user operates (404 otherwise), optionally locked for an update.
 func operatedMarket(ctx context.Context, q dbtx, userID, id string, lock bool) (mmMarket, error) {
 	sql := `SELECT m.id, m.code, m.name, m.status, m.unit, m.category_id, m.region, m.mechanism, m.price_max_idr,
 		       m.demand_value, m.supply_value
@@ -69,7 +63,6 @@ func operatedMarket(ctx context.Context, q dbtx, userID, id string, lock bool) (
 
 func mmActor(sess *session) string { return sess.Name + " (Market Maker)" }
 
-// mmEventType maps an audited market maker action to the ActivityEvent type of its feed item.
 func mmEventType(entityType, action string) string {
 	switch {
 	case entityType == "opportunity":
@@ -82,9 +75,6 @@ func mmEventType(entityType, action string) string {
 	return "market_formed"
 }
 
-// mmAudit writes the audit entry of a market maker action and pushes it as the actor's `mm.activity` feed item (the
-// overview reads the same entries back, titled "<action> · <entity>"). publicTitle != "" also puts it on the public
-// activity feed (outbox topic `activity` for ClickHouse, frame on public:activity).
 func mmAudit(ctx context.Context, q dbtx, sess *session, a audit, publicTitle string, amountIdr *int64) error {
 	a.ActorUserID, a.ActorLabel = &sess.UserID, mmActor(sess)
 	if err := writeAudit(ctx, q, a); err != nil {
@@ -117,7 +107,6 @@ func mmAudit(ctx context.Context, q dbtx, sess *session, a audit, publicTitle st
 	return emitFrame(ctx, q, "public:activity", "activity.created", nil, pub)
 }
 
-// notifyMarket notifies the platform accounts in a market: active participants plus users who joined it.
 func notifyMarket(ctx context.Context, q dbtx, marketID string, n notification) error {
 	rows, err := q.Query(ctx, `
 		SELECT p.user_id::text FROM market_participants mp JOIN parties p ON p.id = mp.party_id
@@ -139,11 +128,8 @@ func notifyMarket(ctx context.Context, q dbtx, marketID string, n notification) 
 	return nil
 }
 
-// ── Alerts ───────────────────────────────────────────────────────
-
 type marketQueues struct{ pending, disputes int }
 
-// queues counts pending participants and open disputes (an escalated one follows its admin case) per market.
 func queues(ctx context.Context, q dbtx, ids []string) (map[string]marketQueues, error) {
 	rows, err := q.Query(ctx, `
 		SELECT m.id::text,
@@ -172,7 +158,7 @@ func mmAlerts(m api.Market, c marketQueues) []api.MmAlert {
 	if m.Status == "closed" {
 		return out
 	}
-	// lowLiquidity (domain/mm.ts): shared by the overview and detail views.
+
 	if m.Suppliers < 8 || float64(m.Buyers)/math.Max(1, float64(m.Suppliers)) > 10 {
 		out = append(out, api.MmAlert{Kind: "low_liquidity", Label: fmt.Sprintf("Likuiditas rendah (%d:%d)", m.Buyers, m.Suppliers)})
 	}
@@ -184,8 +170,6 @@ func mmAlerts(m api.Market, c marketQueues) []api.MmAlert {
 	}
 	return out
 }
-
-// ── Overview ─────────────────────────────────────────────────────
 
 func (s *Server) GetMmOverview(ctx context.Context, _ api.GetMmOverviewRequestObject) (api.GetMmOverviewResponseObject, error) {
 	sess, err := s.requireMaker(ctx)
@@ -225,7 +209,6 @@ func (s *Server) GetMmOverview(ctx context.Context, _ api.GetMmOverviewRequestOb
 		out.Stats.VolumeIdr += m.Volume30dIdr
 	}
 
-	// Feed: the latest two bids of each live round (public prices only) and the caller's own market maker actions.
 	rows, err := q.Query(ctx, auctionSelect+` WHERE a.market_id::text = ANY($1) AND a.status IN ('live','extended') ORDER BY a.ends_at, a.id`, ids)
 	if err != nil {
 		return nil, err
@@ -272,7 +255,7 @@ func (s *Server) GetMmOverview(ctx context.Context, _ api.GetMmOverviewRequestOb
 			return nil, err
 		}
 	}
-	// ponytail: filtered scan of the newest audit rows; add an (actor_user_id, at) index when the log gets big.
+
 	arows, err := q.Query(ctx, `
 		SELECT id, entity_type, action, entity_label, at FROM audit_log
 		WHERE actor_user_id = $1 AND actor_label LIKE '%(Market Maker)' ORDER BY at DESC, id DESC LIMIT 15`, sess.UserID)
@@ -303,8 +286,6 @@ func (s *Server) GetMmOverview(ctx context.Context, _ api.GetMmOverviewRequestOb
 	}
 	return out, nil
 }
-
-// ── Pipeline ─────────────────────────────────────────────────────
 
 func (s *Server) ListMmPipeline(ctx context.Context, _ api.ListMmPipelineRequestObject) (api.ListMmPipelineResponseObject, error) {
 	if _, err := s.requireMaker(ctx); err != nil {
@@ -399,16 +380,12 @@ func (s *Server) MoveMmPipelineStage(ctx context.Context, req api.MoveMmPipeline
 	return api.MoveMmPipelineStage204Response{}, nil
 }
 
-// ── Analytics ────────────────────────────────────────────────────
-
 type mmWeek struct {
 	Week                                            string
 	Matched, Utilization                            float64
 	Participants, Transactions, Connections, Repeat int
 }
 
-// mmWeeks is 8 weeks (Mondays, oldest first) of efficiency and growth from ClickHouse, zero-filled. Analytics is never
-// the system of record: when it is down the weeks stay zero (the error is logged and returned for the caller to ignore).
 func (s *Server) mmWeeks(ctx context.Context, marketIDs []string) ([]mmWeek, error) {
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 	monday := today.AddDate(0, 0, -((int(today.Weekday()) + 6) % 7))
@@ -488,7 +465,7 @@ func (s *Server) GetMmAnalytics(ctx context.Context, req api.GetMmAnalyticsReque
 	if out.Liquidity.Suppliers > 0 {
 		out.Liquidity.Ratio = float64(out.Liquidity.Buyers) / float64(out.Liquidity.Suppliers)
 	}
-	// Active orders: bids standing in live rounds plus listings placed in the markets.
+
 	if err := q.QueryRow(ctx, `
 		SELECT (SELECT coalesce(sum(bid_count), 0) FROM auctions WHERE market_id::text = ANY($1) AND status IN ('live','extended'))
 		     + (SELECT count(*) FROM listings WHERE market_id::text = ANY($1) AND status = 'in_market')`, ids).Scan(&out.Liquidity.ActiveOrders); err != nil {

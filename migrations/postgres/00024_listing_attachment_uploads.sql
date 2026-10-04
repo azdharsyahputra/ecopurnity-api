@@ -1,17 +1,13 @@
 -- +goose Up
--- Listing photos and documents arrive as verified uploads (POST /uploads, purpose listing_attachment) like org documents:
--- each attachment row keeps the object key, type and size, and the client's order. Rows from before uploads existed
--- keep their file name with no object (object_key NULL) and are listed without a URL.
 ALTER TABLE uploads DROP CONSTRAINT uploads_purpose_check;
 ALTER TABLE uploads ADD CONSTRAINT uploads_purpose_check CHECK (purpose IN ('kyc_ktp','kyc_selfie','org_document','listing_attachment'));
 
 ALTER TABLE listing_attachments
-  ADD COLUMN object_key   text UNIQUE,                     -- null only for name-only attachments from before uploads
+  ADD COLUMN object_key   text UNIQUE,
   ADD COLUMN content_type text,
-  ADD COLUMN size_bytes   bigint CHECK (size_bytes > 0),   -- null for legacy rows
-  ADD COLUMN position     integer CHECK (position >= 0);   -- 0-based order the owner chose
+  ADD COLUMN size_bytes   bigint CHECK (size_bytes > 0),
+  ADD COLUMN position     integer CHECK (position >= 0);
 
--- Legacy rows: order by creation, type guessed from the extension.
 UPDATE listing_attachments a SET
   position = n.pos,
   content_type = CASE
@@ -24,9 +20,8 @@ FROM (SELECT id, row_number() OVER (PARTITION BY listing_id ORDER BY created_at,
 WHERE n.id = a.id;
 
 ALTER TABLE listing_attachments ALTER COLUMN content_type SET NOT NULL, ALTER COLUMN position SET NOT NULL;
--- Deferred so a save can renumber kept rows in any order.
 ALTER TABLE listing_attachments ADD CONSTRAINT listing_attachments_position_key UNIQUE (listing_id, position) DEFERRABLE INITIALLY DEFERRED;
-DROP INDEX listing_attachments_listing_idx;  -- the unique constraint's index serves (listing_id) lookups
+DROP INDEX listing_attachments_listing_idx;
 
 -- +goose Down
 CREATE INDEX listing_attachments_listing_idx ON listing_attachments (listing_id, created_at);

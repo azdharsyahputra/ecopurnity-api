@@ -15,13 +15,10 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/storage"
 )
 
-// Uploads go straight from the browser to object storage through presigned URLs; the API only hands out slots and
-// verifies what arrived before a feature uses it.
-
 const uploadURLTTL = 10 * time.Minute
 
 type uploadRule struct {
-	types    map[string]string // allowed content type -> file extension
+	types    map[string]string
 	maxBytes int64
 }
 
@@ -38,7 +35,6 @@ var uploadRules = map[api.UploadPurpose]uploadRule{
 	api.UploadPurposeDisputeEvidence: {types: docTypes, maxBytes: 10 << 20},
 }
 
-// ponytail: no video evidence; MP4 would need a per-type size limit (50 MB) in uploadRule.
 var docTypes = map[string]string{"application/pdf": ".pdf", "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 
 var errStorageUnavailable = &Error{Status: http.StatusServiceUnavailable, Code: "storage_unavailable", Message: "Penyimpanan file belum tersedia. Coba lagi nanti."}
@@ -80,7 +76,7 @@ func (s *Server) CreateUpload(ctx context.Context, req api.CreateUploadRequestOb
 	if err := s.DB.Primary().QueryRow(ctx, `SELECT gen_random_uuid()`).Scan(&id); err != nil {
 		return nil, err
 	}
-	// The key never contains user input: purpose/user/upload-id.ext.
+
 	key = fmt.Sprintf("%s/%s/%s%s", in.Purpose, sess.UserID, id, ext)
 	if _, err := s.DB.Primary().Exec(ctx, `
 		INSERT INTO uploads (id, owner_user_id, purpose, object_key, file_name, content_type, size_bytes) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -98,14 +94,11 @@ func (s *Server) CreateUpload(ctx context.Context, req api.CreateUploadRequestOb
 	return api.CreateUpload201JSONResponse{UploadId: id, Method: "PUT", Url: url, Headers: h, ExpiresAt: time.Now().Add(uploadURLTTL).UTC()}, nil
 }
 
-// upload is a verified file a feature may attach.
 type upload struct {
 	ID, ObjectKey, FileName, ContentType string
 	SizeBytes                            int64
 }
 
-// claimUpload checks that uploadID is the user's, has the purpose, is in storage with the declared size and a sniffed
-// type matching the declared one, and marks it consumed (a file is attached once). field names the input for errors.
 func (s *Server) claimUpload(ctx context.Context, tx pgx.Tx, userID, uploadID string, purpose api.UploadPurpose, field string) (upload, error) {
 	bad := func(msg string) error {
 		return &Error{Status: 422, Code: "validation", Message: "Periksa kembali file yang diunggah", Fields: map[string]string{field: msg}}

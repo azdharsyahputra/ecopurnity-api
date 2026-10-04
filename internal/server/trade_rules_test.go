@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-// Ported from the frontend's src/domain/trade.test.ts and contract.test.ts.
-
 func TestTradeActions(t *testing.T) {
 	base := tradeState{Status: "agreement", Terms: "escrow", Agreement: map[string]bool{}, UnscheduledQty: 100, Reviewed: map[string]bool{}}
 	eq := func(got, want []string) {
@@ -16,14 +14,14 @@ func TestTradeActions(t *testing.T) {
 			t.Fatalf("got %v, want %v", got, want)
 		}
 	}
-	// Both parties sign before an invoice.
+
 	eq(tradeActions(base, "supplier"), []string{"accept_agreement", "cancel"})
 	both := base
 	both.Agreement = map[string]bool{"buyer": true, "supplier": true}
 	if !slices.Contains(tradeActions(both, "supplier"), "issue_invoice") || slices.Contains(tradeActions(both, "buyer"), "issue_invoice") {
 		t.Fatal("issue_invoice is the supplier's, after both accepted")
 	}
-	// Escrow pays before shipping, net terms ship before paying.
+
 	inv := both
 	inv.Status = "invoiced"
 	if !slices.Contains(tradeActions(inv, "buyer"), "pay") || slices.Contains(tradeActions(inv, "supplier"), "ship") {
@@ -39,7 +37,7 @@ func TestTradeActions(t *testing.T) {
 	if !slices.Contains(tradeActions(acc, "buyer"), "pay") || nextStatus(net, "pay", false, "") != "completed" {
 		t.Fatal("net: pay after acceptance completes")
 	}
-	// Fulfilling until every unit has arrived; QC decides.
+
 	f := base
 	f.Status, f.UnscheduledQty, f.OpenShipments = "fulfilling", 40, 1
 	eq(tradeActions(f, "supplier"), []string{"ship", "upload_proof", "dispute"})
@@ -55,7 +53,7 @@ func TestTradeActions(t *testing.T) {
 	if nextStatus(d, "confirm_receipt", false, "accepted") != "accepted" {
 		t.Fatal("confirm_receipt net")
 	}
-	// Each side reviews once.
+
 	done := base
 	done.Status, done.Reviewed = "completed", map[string]bool{"buyer": true}
 	eq(tradeActions(done, "buyer"), nil)

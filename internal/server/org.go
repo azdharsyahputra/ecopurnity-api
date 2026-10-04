@@ -17,12 +17,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
 )
 
-// Organization workspace (/orgs/{orgId}/...): membership + permission check, the role/approval rules of the
-// frontend's src/domain/org.ts, settings, overview, profile, team and inventory. Procurement and pools are in
-// org_procurement.go, business auctions in org_auctions.go, suppliers and analytics in org_suppliers.go.
-
-// ── Rules (src/domain/org.ts) ────────────────────────────────────
-
 var (
 	orgModules     = []string{"procurement", "auctions", "collective", "suppliers", "inventory", "transactions", "analytics", "team", "profile"}
 	orgActions     = []string{"view", "create", "approve", "manage"}
@@ -35,7 +29,6 @@ var (
 		"it": "Jasa IT", "energy": "Energi"}
 )
 
-// can: owner always has everything so an org can never lock itself out; everyone else per their role's matrix.
 func can(perms []string, role, module, action string) bool {
 	return role == "owner" || slices.Contains(perms, module+"."+action)
 }
@@ -44,8 +37,6 @@ func deniedReason(roleLabel, module, action string) string {
 	return fmt.Sprintf("Peran %s tidak punya izin %s %s", roleLabel, strings.ToLower(actionLabel[action]), moduleLabel[module])
 }
 
-// txActionRoles: who may take each step of an org trade (PRD 9.8): money by Finance, goods by Operations, commitments
-// by Procurement/Sales. Used by the org transaction actions.
 var txActionRoles = map[string][]string{
 	"accept_agreement": {"owner", "procurement", "sales"},
 	"issue_invoice":    {"owner", "finance", "sales"},
@@ -59,7 +50,6 @@ var txActionRoles = map[string][]string{
 	"review":           {"owner", "procurement"},
 }
 
-// canTransact: built-in roles follow txActionRoles; custom roles fall back to transactions.manage.
 func canTransact(perms []string, role, action string) bool {
 	if _, builtIn := orgRoleLabel[role]; builtIn {
 		return slices.Contains(txActionRoles[action], role)
@@ -67,7 +57,6 @@ func canTransact(perms []string, role, action string) bool {
 	return can(perms, role, "transactions", "manage")
 }
 
-// txDeniedReason is the 403 message for a trade step the role may not take ("" when allowed).
 func txDeniedReason(perms []string, role, label, action string) string {
 	if canTransact(perms, role, action) {
 		return ""
@@ -91,8 +80,6 @@ type approvalRule struct {
 
 type approval struct{ Role, Decision string }
 
-// requiredApprovers: every role that must sign off (rules whose subject matches and whose amount is strictly below the
-// value), in rule order, without duplicates.
 func requiredApprovers(amount int64, subject string, rules []approvalRule) []string {
 	out := []string{}
 	for _, r := range rules {
@@ -120,9 +107,6 @@ func approvalState(required []string, approvals []approval) (pending []string, r
 	return pending, rejected, !rejected && len(pending) == 0
 }
 
-// signingRoles: the still-pending required roles that role signs now, its own first (src/domain/org.ts signingRoles).
-// Deadlock rule: an owner also signs every pending role that no active member holds (activeRoles), so a rule like
-// "above Rp 50 jt: Finance + Owner" still completes in an org without a Finance member. nil activeRoles = all staffed.
 func signingRoles(role string, required []string, approvals []approval, activeRoles []string) []string {
 	pending, rejected, _ := approvalState(required, approvals)
 	out := []string{}
@@ -146,8 +130,6 @@ func canApprove(role string, required []string, approvals []approval, activeRole
 
 type orgMemberRole struct{ UserID, Role string }
 
-// approverUserIDs: active members who sign a still-pending role (owners included for roles nobody holds), except
-// whoever just acted.
 func approverUserIDs(required []string, approvals []approval, members []orgMemberRole, actorID string) []string {
 	active := []string{}
 	for _, m := range members {
@@ -162,15 +144,12 @@ func approverUserIDs(required []string, approvals []approval, members []orgMembe
 	return out
 }
 
-// activeRoles: role ids held by an active member (OrgSettings.activeRoles; the deadlock rule's input).
 func activeRoles(ctx context.Context, q dbtx, orgID string) ([]string, error) {
 	var out []string
 	err := q.QueryRow(ctx, `SELECT array(SELECT DISTINCT role FROM org_members WHERE org_id = $1 AND status = 'active' AND user_id IS NOT NULL ORDER BY 1)`, orgID).Scan(&out)
 	return nonNil(out), err
 }
 
-// sign records the member's decision for each role in roles (signingRoles; rows for another role are marked on_behalf).
-// A rejection is recorded once, for the first role. table is procurement_approvals or org_auction_approvals.
 func sign(ctx context.Context, tx pgx.Tx, table, idCol, id string, c *orgCtx, roles []string, decision, note string) ([]approval, error) {
 	if decision == "rejected" {
 		roles = roles[:1]
@@ -186,8 +165,6 @@ func sign(ctx context.Context, tx pgx.Tx, table, idCol, id string, c *orgCtx, ro
 	return out, nil
 }
 
-// approvalBySQL renders Approval.by for approval alias a of org column orgCol: "Name (Role)", or
-// "Name · Owner (atas nama Finance)" for an owner's on-behalf signature.
 func approvalBySQL(orgCol string) string {
 	return `u.name || CASE WHEN a.on_behalf THEN ' · Owner (atas nama ' ELSE ' (' END ||
 		coalesce((SELECT ro.label FROM org_roles ro WHERE ro.org_id = ` + orgCol + ` AND ro.key = a.role), a.role) || ')'`
@@ -224,7 +201,6 @@ func pipelineCounts(statuses []string) map[string]int {
 	return out
 }
 
-// procurementActions: what the role can do with a request now; the API accepts exactly these.
 func procurementActions(status string, required []string, approvals []approval, role string, perms, activeRoles []string) []string {
 	out := []string{}
 	manage := can(perms, role, "procurement", "manage") || can(perms, role, "procurement", "create")
@@ -246,9 +222,6 @@ func procurementActions(status string, required []string, approvals []approval, 
 	return out
 }
 
-// ── Access ───────────────────────────────────────────────────────
-
-// orgCtx is the caller as an active member of the org in the URL.
 type orgCtx struct {
 	sess                                      *session
 	OrgID, OrgName, Role, RoleLabel, MemberID string
@@ -257,8 +230,6 @@ type orgCtx struct {
 
 var errNotMember = &Error{Status: http.StatusForbidden, Code: "forbidden", Message: "Kamu bukan anggota organisasi ini"}
 
-// orgAccess loads the caller's active membership of orgID with its role permissions (401 / 403 otherwise; an unknown org
-// is 403 too, so ids are not probeable). Use the transaction for writes so the check and the change see the same rows.
 func orgAccess(ctx context.Context, q dbtx, orgID string) (*orgCtx, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -278,7 +249,6 @@ func orgAccess(ctx context.Context, q dbtx, orgID string) (*orgCtx, error) {
 
 func (c *orgCtx) can(module, action string) bool { return can(c.Perms, c.Role, module, action) }
 
-// need answers 403 with the frontend's "Peran X tidak punya izin ..." copy when the role lacks module.action.
 func (c *orgCtx) need(module, action string) error {
 	if c.can(module, action) {
 		return nil
@@ -286,7 +256,6 @@ func (c *orgCtx) need(module, action string) error {
 	return &Error{Status: http.StatusForbidden, Code: "forbidden", Message: deniedReason(c.RoleLabel, module, action)}
 }
 
-// actor is the audit label "Name (Role)".
 func (c *orgCtx) actor() string { return c.sess.Name + " (" + c.RoleLabel + ")" }
 
 func (c *orgCtx) audit(ctx context.Context, q dbtx, action, entityType, entityID, label string, reason *string, changes ...change) error {
@@ -294,7 +263,6 @@ func (c *orgCtx) audit(ctx context.Context, q dbtx, action, entityType, entityID
 		EntityID: entityID, EntityLabel: label, OrgID: &c.OrgID, Reason: reason, Changes: changes})
 }
 
-// lockOrg serialises membership/settings changes of one org (owner counts, role removal).
 func lockOrg(ctx context.Context, tx pgx.Tx, orgID string) error {
 	_, err := tx.Exec(ctx, `SELECT 1 FROM orgs WHERE id = $1 FOR UPDATE`, orgID)
 	return err
@@ -307,7 +275,6 @@ func invalid(msg string, fields map[string]string) error {
 	return &Error{Status: http.StatusUnprocessableEntity, Code: "validation", Message: msg, Fields: fields}
 }
 
-// orgParty is the org's party row, created on first use.
 func orgParty(ctx context.Context, q dbtx, orgID string) (string, error) {
 	var id string
 	err := q.QueryRow(ctx, `
@@ -318,7 +285,6 @@ func orgParty(ctx context.Context, q dbtx, orgID string) (string, error) {
 	return id, err
 }
 
-// orgMembers: active members with an account (approvers, notifications).
 func orgMembers(ctx context.Context, q dbtx, orgID string) ([]orgMemberRole, error) {
 	rows, err := q.Query(ctx, `SELECT user_id::text, role FROM org_members WHERE org_id = $1 AND status = 'active' AND user_id IS NOT NULL ORDER BY created_at`, orgID)
 	if err != nil {
@@ -330,7 +296,6 @@ func orgMembers(ctx context.Context, q dbtx, orgID string) ([]orgMemberRole, err
 	})
 }
 
-// askApprovers notifies every teammate whose sign-off is still needed (PRD 9.2).
 func askApprovers(ctx context.Context, tx pgx.Tx, c *orgCtx, kind, id, code, title string, value int64, required []string, approvals []approval) error {
 	members, err := orgMembers(ctx, tx, c.OrgID)
 	if err != nil {
@@ -360,14 +325,10 @@ func loadApprovalRules(ctx context.Context, q dbtx, orgID string) ([]approvalRul
 	})
 }
 
-// memberLabelSQL renders "Name (Role label)" for user column %[1]s in org column %[2]s (the frontend stores the actor
-// label at the time; the API derives it from the current membership, falling back to the bare name).
 func memberLabelSQL(userName, userID, orgID string) string {
 	return fmt.Sprintf(`%[1]s || coalesce(' (' || (SELECT r.label FROM org_members m JOIN org_roles r ON r.org_id = m.org_id AND r.key = m.role
 		WHERE m.org_id = %[3]s AND m.user_id = %[2]s) || ')', '')`, userName, userID, orgID)
 }
-
-// ── Reads shared by several endpoints ────────────────────────────
 
 func loadAuditEntries(ctx context.Context, q dbtx, where string, args ...any) ([]api.AuditEntry, error) {
 	rows, err := q.Query(ctx, `SELECT id::text, actor_label, action, entity_type, entity_id, entity_label, at, reason, changes FROM audit_log WHERE `+where, args...)
@@ -492,10 +453,8 @@ func loadOrgSettings(ctx context.Context, q dbtx, orgID string) (api.OrgSettings
 	return s, err
 }
 
-// ── Settings & overview ──────────────────────────────────────────
-
 func (s *Server) GetOrgSettings(ctx context.Context, req api.GetOrgSettingsRequestObject) (api.GetOrgSettingsResponseObject, error) {
-	q := s.DB.Primary() // settings drive role-aware UI right after a change
+	q := s.DB.Primary()
 	c, err := orgAccess(ctx, q, req.OrgId)
 	if err != nil {
 		return nil, err
@@ -585,15 +544,12 @@ func apiApprovals(as []api.Approval) []approval {
 	return out
 }
 
-// ── Profile ──────────────────────────────────────────────────────
-
 var (
 	npwpRe = regexp.MustCompile(`^\d{2}\.\d{3}\.\d{3}\.\d-\d{3}\.\d{3}$`)
 	nibRe  = regexp.MustCompile(`^\d{13}$`)
 	hhmmRe = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
 )
 
-// profileFlat: the audited view of a profile, in the frontend's field order.
 func profileFlat(p api.OrgProfile) [][2]string {
 	var cats []string
 	for _, c := range p.Categories {
@@ -807,8 +763,6 @@ func (s *Server) RequestOrgVerification(ctx context.Context, req api.RequestOrgV
 	return api.RequestOrgVerification200JSONResponse(out), nil
 }
 
-// ── Team ─────────────────────────────────────────────────────────
-
 func (s *Server) GetOrgTeam(ctx context.Context, req api.GetOrgTeamRequestObject) (api.GetOrgTeamResponseObject, error) {
 	q := s.DB.Primary()
 	c, err := orgAccess(ctx, q, req.OrgId)
@@ -879,8 +833,7 @@ func (s *Server) InviteOrgMember(ctx context.Context, req api.InviteOrgMemberReq
 		}
 		n := notification{Type: "transaction_update", Title: "Undangan bergabung ke " + c.OrgName,
 			Body: fmt.Sprintf("%s mengundangmu sebagai %s.", c.actor(), label), Href: "/app?invitation=" + memberID}
-		// Existing accounts get a notification (emailed by the notification mailer per their preferences); new ones get
-		// an email here and see the invitation after registering with this address (GET /me/invitations).
+
 		var userID string
 		err = tx.QueryRow(ctx, `SELECT id::text FROM users WHERE email = $1`, email).Scan(&userID)
 		switch {
@@ -898,7 +851,7 @@ func (s *Server) InviteOrgMember(ctx context.Context, req api.InviteOrgMemberReq
 		return nil, err
 	}
 	if invite != nil {
-		s.send(ctx, *invite) // after commit: no email for an invitation that did not happen
+		s.send(ctx, *invite)
 	}
 	return api.InviteOrgMember204Response{}, nil
 }
@@ -918,7 +871,6 @@ func lockMember(ctx context.Context, tx pgx.Tx, orgID, memberID string) (memberR
 	return m, err
 }
 
-// lastOwner: m is the only active owner, so it may not leave the owner role.
 func lastOwner(ctx context.Context, tx pgx.Tx, orgID string, m memberRow) (bool, error) {
 	if m.Role != "owner" || m.Status != "active" {
 		return false, nil
@@ -1087,7 +1039,7 @@ func (s *Server) UpdateOrgTeamSettings(ctx context.Context, req api.UpdateOrgTea
 				}
 			}
 		}
-		// A custom role that disappears must not be held by anyone (members' role has a foreign key).
+
 		rows, err := tx.Query(ctx, `
 			SELECT DISTINCT r.label FROM org_roles r JOIN org_members m ON m.org_id = r.org_id AND m.role = r.key
 			WHERE r.org_id = $1 AND NOT (r.key = ANY($2)) ORDER BY 1`, c.OrgID, ids)
@@ -1165,7 +1117,6 @@ func (s *Server) UpdateOrgTeamSettings(ctx context.Context, req api.UpdateOrgTea
 	return api.UpdateOrgTeamSettings200JSONResponse(out), nil
 }
 
-// settingsChanges: which of the four blocks changed (rule ids are reassigned on save, so rules compare without them).
 func settingsChanges(a, b api.OrgSettings) []change {
 	label := func(s api.OrgSettings, role string) string {
 		for _, r := range s.Roles {
@@ -1223,8 +1174,6 @@ func settingsChanges(a, b api.OrgSettings) []change {
 	}
 	return out
 }
-
-// ── Inventory ────────────────────────────────────────────────────
 
 func (s *Server) GetOrgInventory(ctx context.Context, req api.GetOrgInventoryRequestObject) (api.GetOrgInventoryResponseObject, error) {
 	q := s.DB.Primary()
@@ -1322,14 +1271,12 @@ func (s *Server) GetOrgInventory(ctx context.Context, req api.GetOrgInventoryReq
 	return api.GetOrgInventory200JSONResponse(out), nil
 }
 
-// inventoryItem is a validated, normalised item (single add or import row n, 1-based without the header).
 type inventoryItem struct {
 	SKU, Name, Category, Warehouse, Unit, Spec string
 	Qty, MOQ                                   float64
 	Lead                                       int
 }
 
-// normaliseItem mirrors the frontend's inventoryFromCsv: returns the row error ("" when valid).
 func normaliseItem(in api.OrgInventoryItemInput, n int) (inventoryItem, string) {
 	it := inventoryItem{SKU: strings.TrimSpace(deref(in.Sku)), Name: strings.TrimSpace(in.Name), Warehouse: strings.TrimSpace(deref(in.Warehouse)),
 		Unit: strings.TrimSpace(in.Quantity.Unit), Spec: strings.TrimSpace(deref(in.QualitySpec)), Qty: in.Quantity.Value, Category: string(in.CategoryId)}
@@ -1397,7 +1344,7 @@ func (s *Server) AddOrgInventoryItem(ctx context.Context, req api.AddOrgInventor
 			return err
 		}
 		it, _ := normaliseItem(in, 1)
-		it.SKU, it.Warehouse = strings.TrimSpace(deref(in.Sku)), strings.TrimSpace(deref(in.Warehouse)) // single add stores what was sent
+		it.SKU, it.Warehouse = strings.TrimSpace(deref(in.Sku)), strings.TrimSpace(deref(in.Warehouse))
 		if err := insertItem(ctx, tx, c, it); err != nil {
 			return err
 		}
@@ -1430,7 +1377,7 @@ func (s *Server) ImportOrgInventory(ctx context.Context, req api.ImportOrgInvent
 			}
 			items[i] = it
 		}
-		// Inserted in reverse so the file's first row ends up on top of the newest-first list.
+
 		for i := len(items) - 1; i >= 0; i-- {
 			if err := insertItem(ctx, tx, c, items[i]); err != nil {
 				return err

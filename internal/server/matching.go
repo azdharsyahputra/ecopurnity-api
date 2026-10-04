@@ -15,23 +15,18 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Smart Matching (PRD §8.6): what a user has (supply listings, identity items) against what open opportunities need.
-// The score is a port of the frontend's src/domain/matching.ts.
-
 var matchWeights = struct{ Category, Distance, Coverage, Confidence float64 }{35, 25, 25, 15}
 
 type matchInput struct {
 	CategoryMatch bool
 	DistanceKm    float64
-	RadiusKm      float64  // the user's delivery radius
-	Coverage      *float64 // have / gap in the same unit; nil when units differ
-	Confidence    float64  // engine confidence 0-1
+	RadiusKm      float64
+	Coverage      *float64
+	Confidence    float64
 }
 
 func clamp01(n float64) float64 { return math.Min(1, math.Max(0, n)) }
 
-// scoreMatch is 0-100. Distance is full inside the radius and fades to 0 at 3x the radius; coverage is capped at 1
-// and counts half when units differ.
 func scoreMatch(m matchInput) (float64, api.MatchParts) {
 	radius := math.Max(1, m.RadiusKm)
 	distance := 1.0
@@ -53,7 +48,6 @@ func scoreMatch(m matchInput) (float64, api.MatchParts) {
 	return p.Category + p.Distance + p.Coverage + p.Confidence, p
 }
 
-// ponytail: keyword guess only for identity items saved before they carried a category.
 var categoryHints = []struct {
 	re  *regexp.Regexp
 	cat string
@@ -66,7 +60,6 @@ var categoryHints = []struct {
 	{regexp.MustCompile(`(?i)makan|bubuk|gula|katering|beras`), "food"},
 }
 
-// itemCategory is the category an identity item is matched in: its own when set, else a keyword guess ("" = unmatched).
 func itemCategory(name, detail string, category *string) string {
 	if category != nil && *category != "" {
 		return *category
@@ -79,23 +72,17 @@ func itemCategory(name, detail string, category *string) string {
 	return ""
 }
 
-// estimateMatchValue is the value of the part of the gap this user can fill: min(have, gap) x unit price.
 func estimateMatchValue(have, gap float64, unitPriceIdr int64) int64 {
 	return int64(jsRound(math.Max(0, math.Min(have, gap)) * float64(unitPriceIdr)))
 }
 
-// ── Places ───────────────────────────────────────────────────────
-
-// ponytail: a fixed gazetteer of the regions the product covers (province -> capital) and the cities that show up in
-// listings. Locations it does not know count as far away (unknownDistanceKm). Replace with geocoded coordinates on
-// listings and identities when the product leaves these regions.
 type place struct {
-	name     string // lower case, matched as a substring of a free-text location
+	name     string
 	lat, lon float64
-	region   string // province, as opportunities.region / markets.region
+	region   string
 }
 
-var places = []place{ // cities first: "Bandung, Jawa Barat" resolves to Bandung, not the province capital
+var places = []place{
 	{"bandung", -6.9175, 107.6191, "Jawa Barat"}, {"garut", -7.2279, 107.9087, "Jawa Barat"},
 	{"bogor", -6.5950, 106.8166, "Jawa Barat"}, {"bekasi", -6.2383, 106.9756, "Jawa Barat"},
 	{"depok", -6.4025, 106.7942, "Jawa Barat"}, {"karawang", -6.3227, 107.3376, "Jawa Barat"},
@@ -108,7 +95,7 @@ var places = []place{ // cities first: "Bandung, Jawa Barat" resolves to Bandung
 	{"surabaya", -7.2575, 112.7521, "Jawa Timur"}, {"malang", -7.9666, 112.6326, "Jawa Timur"},
 	{"sidoarjo", -7.4478, 112.7183, "Jawa Timur"}, {"denpasar", -8.6705, 115.2126, "Bali"},
 	{"medan", 3.5952, 98.6722, "Sumatera Utara"}, {"toba", 2.6845, 98.8756, "Sumatera Utara"},
-	// provinces (capital coordinates)
+
 	{"dki jakarta", -6.2088, 106.8456, "DKI Jakarta"}, {"jawa barat", -6.9175, 107.6191, "Jawa Barat"},
 	{"jawa tengah", -6.9667, 110.4167, "Jawa Tengah"}, {"di yogyakarta", -7.7956, 110.3695, "DI Yogyakarta"},
 	{"jawa timur", -7.2575, 112.7521, "Jawa Timur"}, {"bali", -8.6705, 115.2126, "Bali"},
@@ -127,7 +114,6 @@ func resolvePlace(location string) (place, bool) {
 	return place{}, false
 }
 
-// regionOf maps a free-text location to its province; unknown locations keep their own trimmed text.
 func regionOf(location string) string {
 	if p, ok := resolvePlace(location); ok {
 		return p.region
@@ -135,7 +121,6 @@ func regionOf(location string) string {
 	return strings.TrimSpace(location)
 }
 
-// distanceKm between two free-text locations (great-circle, whole km).
 func distanceKm(a, b string) float64 {
 	pa, okA := resolvePlace(a)
 	pb, okB := resolvePlace(b)
@@ -150,8 +135,6 @@ func distanceKm(a, b string) float64 {
 	h := math.Sin(dLat/2)*math.Sin(dLat/2) + math.Cos(rad(pa.lat))*math.Cos(rad(pb.lat))*math.Sin(dLon/2)*math.Sin(dLon/2)
 	return math.Round(6371 * 2 * math.Asin(math.Sqrt(h)))
 }
-
-// ── Matches ──────────────────────────────────────────────────────
 
 type have struct {
 	source, id, label, detail, category, location string
@@ -181,7 +164,6 @@ type computedMatch struct {
 
 var errMatchNotFound = &Error{Status: http.StatusNotFound, Code: "not_found", Message: "Match tidak ditemukan"}
 
-// matchesFor computes the user's current matches, best first (spec: GET /me/matches).
 func matchesFor(ctx context.Context, q dbtx, userID string) ([]computedMatch, error) {
 	v, err := loadViewer(ctx, q, userID)
 	if err != nil {
@@ -300,7 +282,7 @@ func matchesFor(ctx context.Context, q dbtx, userID string) ([]computedMatch, er
 		}
 		slices.SortStableFunc(cands, func(a, b computedMatch) int { return cmp.Compare(b.Score, a.Score) })
 		for i, c := range cands {
-			// Two best per have; matches the user acted on are always kept.
+
 			if i < 2 || c.State != api.MatchStateNew {
 				out = append(out, c)
 			}
@@ -309,7 +291,7 @@ func matchesFor(ctx context.Context, q dbtx, userID string) ([]computedMatch, er
 	slices.SortStableFunc(out, func(a, b computedMatch) int {
 		return cmp.Or(cmp.Compare(b.Score, a.Score), cmp.Compare(a.DistanceKm, b.DistanceKm))
 	})
-	// Keep the inbox varied: at most two new matches per opportunity.
+
 	perOpp := map[string]int{}
 	kept := out[:0]
 	for _, m := range out {
@@ -348,7 +330,7 @@ func (s *Server) ActOnMatch(ctx context.Context, req api.ActOnMatchRequestObject
 	}
 	var out api.Match
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		// Serialise per user: two connects at once would open two conversations.
+
 		if _, err := tx.Exec(ctx, `SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, sess.UserID); err != nil {
 			return err
 		}
@@ -391,7 +373,7 @@ func (s *Server) ActOnMatch(ctx context.Context, req api.ActOnMatchRequestObject
 			return err
 		}
 		if req.Body.Action == "connect" {
-			// Connecting follows the opportunity (a joined user stays joined: joined wins over following).
+
 			if _, err := tx.Exec(ctx, `INSERT INTO opportunity_follows (user_id, opportunity_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 				sess.UserID, m.opp.id); err != nil {
 				return err
@@ -417,12 +399,6 @@ func (s *Server) ActOnMatch(ctx context.Context, req api.ActOnMatchRequestObject
 	return api.ActOnMatch200JSONResponse(out), nil
 }
 
-// openMatchConversation opens the "Match: <title>" conversation with whoever coordinates the opportunity: the maker of
-// its first market (its operators, the maker org's market makers, or the maker user), else an external "Tim <code>"
-// placeholder (answered by the demo bots in counterparties.go when they run), and posts the opening message.
-// The message is inserted directly rather than through postMessage: that would also send every maker a generic
-// "Pesan dari ..." notification next to the spec's "<name> ingin terhubung" one. Nobody is subscribed to a brand-new
-// conversation, so no message.created frame is needed.
 func openMatchConversation(ctx context.Context, tx pgx.Tx, sess *session, matchRowID string, m computedMatch) (string, error) {
 	me, err := userParty(ctx, tx, sess.UserID)
 	if err != nil {

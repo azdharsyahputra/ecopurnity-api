@@ -18,15 +18,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/payments"
 )
 
-// Payments (Midtrans Core API, internal/payments): the buyer's side pays an invoice with a gateway charge (VA, Mandiri
-// bill, QRIS, GoPay, ShopeePay) shown in our own UI. Money moves only when the gateway reports settlement (webhook
-// MidtransNotification, or ReconcilePayments polling pending payments): then the engine's `pay` step runs once, with
-// its usual journals, event, audit, notification and frames. Users cannot send `pay` themselves (409 payment_required);
-// the demo bots still call the engine directly for external buyers. Gateway fees (MDR) are absorbed by the platform.
-//
-// Lock order everywhere: the trade row, then the payment row (lockPayment), so the webhook, the reconciler and
-// "Ganti metode" never deadlock.
-
 var (
 	errPayViaGateway = &Error{Status: http.StatusConflict, Code: "payment_required", Message: "Bayar lewat tombol Bayar: pilih metode pembayaran (virtual account, QRIS, atau e-wallet)"}
 	errGateway       = &Error{Status: http.StatusBadGateway, Code: "payment_gateway", Message: "Gateway pembayaran sedang bermasalah, coba lagi sebentar lagi"}
@@ -46,7 +37,6 @@ func methodLabel(method, bank string) string {
 	return map[string]string{"qris": "QRIS", "gopay": "GoPay", "shopeepay": "ShopeePay"}[method]
 }
 
-// tradeSide is the side `party` holds on trade id (404 when none).
 func tradeSide(ctx context.Context, q dbtx, id, party string) (string, error) {
 	var side string
 	if party == "" || !isUUID(id) {
@@ -61,7 +51,6 @@ func tradeSide(ctx context.Context, q dbtx, id, party string) (string, error) {
 	return side, err
 }
 
-// payer is the caller acting on a trade's payments: their party and side, and how they appear in its history.
 type payer struct {
 	party, side, userID, label string
 	orgID                      *string
@@ -84,7 +73,6 @@ func myPayer(ctx context.Context, tradeID string) payerFunc {
 	}
 }
 
-// orgPayer: members with transactions.view read payments; paying is gated like the `pay` step (txActionRoles).
 func orgPayer(ctx context.Context, orgID, tradeID string, write bool) payerFunc {
 	return func(q dbtx) (payer, error) {
 		c, err := orgAccess(ctx, q, orgID)
@@ -121,7 +109,6 @@ func scanPayment(row pgx.Row) (api.Payment, error) {
 	return p, err
 }
 
-// paymentRow is a payment locked for a state change.
 type paymentRow struct {
 	ID, TradeID, TradeCode, TradeTitle, OrderID, Method, Bank, Status, PayerParty, PayerLabel, CreatedBy string
 	OrgID                                                                                                *string
@@ -129,7 +116,6 @@ type paymentRow struct {
 	ExpiresAt                                                                                            time.Time
 }
 
-// lockPayment locks the trade, then the payment matching `where` (on alias p); ok=false when there is none.
 func lockPayment(ctx context.Context, tx pgx.Tx, where string, args ...any) (r paymentRow, ok bool, err error) {
 	var tradeID string
 	if err = tx.QueryRow(ctx, `SELECT p.trade_id::text FROM payments p WHERE `+where+` LIMIT 1`, args...).Scan(&tradeID); errors.Is(err, pgx.ErrNoRows) {
@@ -147,20 +133,18 @@ func lockPayment(ctx context.Context, tx pgx.Tx, where string, args ...any) (r p
 		WHERE `+where+` LIMIT 1 FOR UPDATE OF p`, args...).Scan(&r.ID, &r.TradeID, &r.TradeCode, &r.TradeTitle, &r.OrderID, &r.Method, &r.Bank, &r.Status,
 		&r.PayerParty, &r.PayerLabel, &r.CreatedBy, &r.OrgID, &r.Amount, &r.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return r, false, nil // changed between the two reads
+		return r, false, nil
 	}
 	return r, err == nil, err
 }
 
-// applyPaymentStatus applies the gateway's status to a locked payment (idempotent) and returns the payment's status.
-// Settlement runs the engine's `pay` step once; expire/cancel/deny/failure close a pending payment and notify the buyer.
 func (s *Server) applyPaymentStatus(ctx context.Context, tx pgx.Tx, r paymentRow, st payments.Status) (string, error) {
 	switch {
 	case st.Settled():
 		if r.Status == "settlement" {
 			return r.Status, nil
 		}
-		// The status call's amount, never the notification body's.
+
 		if strings.TrimSuffix(st.GrossAmount, ".00") != strconv.FormatInt(r.Amount, 10) {
 			s.Log.Error("payment settled with a different amount: not applied", "order", r.OrderID, "gateway", st.GrossAmount, "expected", r.Amount)
 			return r.Status, nil
@@ -174,8 +158,7 @@ func (s *Server) applyPaymentStatus(ctx context.Context, tx pgx.Tx, r paymentRow
 			return "", err
 		}
 		if t.Party["buyer"] != r.PayerParty || !slices.Contains(tradeActions(t.state(), "buyer"), "pay") {
-			// ponytail: a second attempt paid after another settled (or after a cancel). Refunds through Midtrans are not
-			// built yet: an operator refunds it from the Midtrans dashboard.
+
 			s.Log.Error("payment settled but the invoice is no longer payable: refund it at Midtrans", "order", r.OrderID, "trade", r.TradeCode)
 			return "settlement", emitTradeUpdated(ctx, tx, r.TradeID)
 		}
@@ -193,17 +176,15 @@ func (s *Server) applyPaymentStatus(ctx context.Context, tx pgx.Tx, r paymentRow
 			Title: r.TradeCode + ": " + paymentClosedLabel[st.TransactionStatus], Body: "Pilih metode lagi untuk membayar · " + r.TradeTitle,
 			Href: "/app/transactions/" + r.TradeID})
 	}
-	return r.Status, nil // still pending (or a status we do not act on: refund, challenge, ...)
+	return r.Status, nil
 }
 
-// closeAtGateway cancels a pending payment at the gateway and closes it. When the gateway refuses (already paid or
-// expired), its status is applied instead. Returns the payment's status afterwards.
 func (s *Server) closeAtGateway(ctx context.Context, tx pgx.Tx, r paymentRow) (string, error) {
 	cerr := s.Payments.Cancel(ctx, r.OrderID)
 	if cerr != nil {
 		st, err := s.Payments.Status(ctx, r.OrderID)
 		switch {
-		case errors.Is(err, payments.ErrNotFound): // never reached the gateway: just close it
+		case errors.Is(err, payments.ErrNotFound):
 		case err != nil || st.TransactionStatus == "pending":
 			s.Log.Error("payment cancel", "order", r.OrderID, "err", cerr, "status_err", err)
 			return "", errGateway
@@ -230,8 +211,7 @@ func (s *Server) createPayment(ctx context.Context, tradeID string, in api.Payme
 		if !payments.ValidMethod(method, bank) {
 			return fieldErr("bank", "Pilih bank untuk virtual account")
 		}
-		// ponytail: the trade row stays locked across the gateway calls (one charge per invoice at a time); an
-		// http timeout of 20 s bounds it.
+
 		t, err := lockTrade(ctx, tx, tradeID)
 		if err != nil {
 			return err
@@ -251,7 +231,7 @@ func (s *Server) createPayment(ctx context.Context, tradeID string, in api.Payme
 				return err
 			}
 			if paid = st == "settlement"; paid {
-				return nil // commit the settlement, answer 409
+				return nil
 			}
 		}
 		var attempt int
@@ -262,7 +242,7 @@ func (s *Server) createPayment(ctx context.Context, tradeID string, in api.Payme
 		if err := tx.QueryRow(ctx, `SELECT name, email FROM users WHERE id = $1`, p.userID).Scan(&name, &email); err != nil {
 			return err
 		}
-		// The random tail keeps order ids unique at Midtrans across databases (dev resets reuse trade codes).
+
 		orderID := fmt.Sprintf("%s-%d-%s", t.Code, attempt, strings.ToLower(rand.Text()[:4]))
 		amount := breakdown(t.Total, t.PlatformRate, t.MakerRate).BuyerPays
 		ins, err := s.Payments.Charge(ctx, payments.Charge{OrderID: orderID, Amount: amount, Method: method, Bank: bank, CustomerName: name, CustomerEmail: email})
@@ -291,7 +271,7 @@ func (s *Server) createPayment(ctx context.Context, tradeID string, in api.Payme
 }
 
 func (s *Server) currentPayment(ctx context.Context, tradeID string, who payerFunc) (paymentOrNull, error) {
-	q := s.DB.Primary() // right after a create
+	q := s.DB.Primary()
 	p, err := who(q)
 	if err != nil {
 		return paymentOrNull{}, err
@@ -330,8 +310,6 @@ func (s *Server) cancelPayment(ctx context.Context, tradeID string, who payerFun
 	return out, err
 }
 
-// syncPayment asks the gateway for an order's status and applies it (idempotent; unknown orders are ignored). A
-// pending payment more than a minute past its expiry, or one the gateway does not know, is expired locally.
 func (s *Server) syncPayment(ctx context.Context, orderID string, notification []byte) error {
 	st, gerr := s.Payments.Status(ctx, orderID)
 	if gerr != nil && !errors.Is(gerr, payments.ErrNotFound) {
@@ -358,7 +336,6 @@ func (s *Server) syncPayment(ctx context.Context, orderID string, notification [
 	})
 }
 
-// RunPaymentReconciler polls the gateway for pending payments until ctx ends (local dev works without a public webhook).
 func (s *Server) RunPaymentReconciler(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -374,8 +351,6 @@ func (s *Server) RunPaymentReconciler(ctx context.Context, every time.Duration) 
 	}
 }
 
-// ReconcilePayments syncs every pending payment once (exported for tests).
-// ponytail: every API instance polls (row locks keep it idempotent); oldest-updated 200 per tick.
 func (s *Server) ReconcilePayments(ctx context.Context) error {
 	rows, err := s.DB.Primary().Query(ctx, `SELECT order_id FROM payments WHERE status = 'pending' ORDER BY updated_at LIMIT 200`)
 	if err != nil {
@@ -393,9 +368,6 @@ func (s *Server) ReconcilePayments(ctx context.Context) error {
 	return nil
 }
 
-// ── Handlers ─────────────────────────────────────────────────────
-
-// paymentOrNull is GET .../payments/current: the newest payment or a JSON null.
 type paymentOrNull struct{ p *api.Payment }
 
 func (r paymentOrNull) write(w http.ResponseWriter) error {
@@ -463,7 +435,6 @@ func (s *Server) CancelOrgTransactionPayment(ctx context.Context, req api.Cancel
 	return api.CancelOrgTransactionPayment200JSONResponse(p), nil
 }
 
-// MidtransNotification: verify the signature, then confirm with a status call and apply that (never the body).
 func (s *Server) MidtransNotification(ctx context.Context, req api.MidtransNotificationRequestObject) (api.MidtransNotificationResponseObject, error) {
 	b := req.Body
 	if !s.Payments.VerifySignature(b.OrderId, b.StatusCode, b.GrossAmount, b.SignatureKey) {
@@ -492,7 +463,7 @@ func (s *Server) MidtransNotification(ctx context.Context, req api.MidtransNotif
 	}
 	if err := s.syncPayment(ctx, b.OrderId, raw); err != nil {
 		s.Log.Error("midtrans notification", "order", b.OrderId, "err", err)
-		return nil, errGateway // Midtrans retries
+		return nil, errGateway
 	}
 	return api.MidtransNotification200JSONResponse{Received: true}, nil
 }

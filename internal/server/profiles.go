@@ -14,9 +14,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Public person and business profiles. Only public data: never email, phone, NIK, bank or legal numbers, and
-// transactions only as "completed X" without the counterparty.
-
 func profileActivitySort(a []api.ProfileActivity) []api.ProfileActivity {
 	slices.SortStableFunc(a, func(x, y api.ProfileActivity) int { return y.At.Compare(x.At) })
 	return a[:min(len(a), 6)]
@@ -120,7 +117,6 @@ func (s *Server) GetPersonProfile(ctx context.Context, req api.GetPersonProfileR
 	return api.GetPersonProfile200JSONResponse(p), nil
 }
 
-// collect scans every row into a new element appended to *dst (which ends up [] rather than nil).
 func collect[T any](ctx context.Context, q dbtx, dst *[]T, sql string, arg any, scan func(pgx.Rows, *T) error) error {
 	rows, err := q.Query(ctx, sql, arg)
 	if err != nil {
@@ -142,8 +138,6 @@ func collect[T any](ctx context.Context, q dbtx, dst *[]T, sql string, arg any, 
 
 var errBusinessNotFound = &Error{Status: http.StatusNotFound, Code: "not_found", Message: "Profil bisnis tidak ditemukan"}
 
-// GetBusinessProfile: an org by its slug, else a market maker that is not on the platform (external party) whose
-// slugified name matches.
 func (s *Server) GetBusinessProfile(ctx context.Context, req api.GetBusinessProfileRequestObject) (api.GetBusinessProfileResponseObject, error) {
 	q := s.DB.Reader()
 	b := api.BusinessProfile{Slug: req.Slug, Documents: []string{}}
@@ -155,7 +149,7 @@ func (s *Server) GetBusinessProfile(ctx context.Context, req api.GetBusinessProf
 		FROM orgs o LEFT JOIN org_profiles pr ON pr.org_id = o.id WHERE o.slug = $1`, req.Slug).
 		Scan(&b.Name, &b.Region, &location, &b.Description, &b.Verified, &party)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// ponytail: scans the external market makers (a handful); index a slug column if they grow.
+
 		rows, err := q.Query(ctx, `
 			SELECT DISTINCT p.id::text, p.name, p.verified FROM parties p JOIN markets m ON m.maker_party_id = p.id
 			WHERE p.kind = 'external' AND m.status <> 'draft'`)

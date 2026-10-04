@@ -30,10 +30,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/migrations"
 )
 
-// Integration tests run against a real PostgreSQL: a fresh database per test binary, migrated with the real
-// migrations, dropped at the end. TEST_POSTGRES_URL points at a server where the user may create databases
-// (default: the docker-compose primary). Tests are skipped when it is unreachable.
-
 var testDSN string
 
 func TestMain(m *testing.M) {
@@ -51,7 +47,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "integration tests skipped: no postgres:", err)
 		os.Exit(m.Run())
 	}
-	// Point the DSN at the new database. (pgx.Config.ConnString() returns the original string, so rewrite the URL.)
+
 	u, err := url.Parse(admin)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "TEST_POSTGRES_URL:", err)
@@ -117,7 +113,6 @@ func newEnv(t *testing.T) *testEnv {
 	return &testEnv{t: t, srv: srv, mail: mem, db: cluster, server: s}
 }
 
-// client is a browser: it keeps cookies.
 func (e *testEnv) client() *http.Client {
 	jar, _ := cookiejar.New(nil)
 	return &http.Client{Jar: jar}
@@ -186,18 +181,15 @@ func (e *testEnv) scalar(sql string, args ...any) any {
 	return v
 }
 
-// uniqueEmail keeps tests independent inside the shared test database.
 func uniqueEmail(t *testing.T, prefix string) string {
 	return fmt.Sprintf("%s.%d@example.id", prefix, time.Now().UnixNano())
 }
 
-// lastMail waits for queued emails and returns the last one sent to `to`.
 func (e *testEnv) lastMail(to string) (mail.Message, bool) {
 	e.server.WaitMail()
 	return e.mail.Last(to)
 }
 
-// mailCount is how many messages went to `to`.
 func (e *testEnv) mailCount(to string) int {
 	e.server.WaitMail()
 	return e.mail.Count(to)
@@ -208,8 +200,6 @@ var (
 	store     *storage.Store
 )
 
-// testStorage is the docker-compose SeaweedFS (TEST_S3_ENDPOINT to override) with a test bucket, or nil when it is not
-// running (upload tests then skip).
 func testStorage() *storage.Store {
 	storeOnce.Do(func() {
 		endpoint := os.Getenv("TEST_S3_ENDPOINT")
@@ -229,7 +219,6 @@ func testStorage() *storage.Store {
 
 func t0() context.Context { return context.Background() }
 
-// testLog sends server logs to the test's log, shown only when the test fails.
 type testLog struct{ t *testing.T }
 
 func (l testLog) Write(p []byte) (int, error) {

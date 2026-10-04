@@ -1,5 +1,3 @@
-// Package server wires the generated API (internal/api) to the stores: routing under /api/v1, request validation against
-// the spec, the error contract, and the operation implementations (one file per area, added as they are built).
 package server
 
 import (
@@ -27,8 +25,6 @@ import (
 
 const BasePath = "/api/v1"
 
-// Server implements api.StrictServerInterface. Every operation answers 501 through the embedded Unimplemented until a
-// method with the same name is defined on *Server.
 type Server struct {
 	api.Unimplemented
 
@@ -37,33 +33,32 @@ type Server struct {
 	Log       *slog.Logger
 	Mail      mail.Mailer
 
-	AppURL         string         // frontend origin for email links
-	CookieSecure   bool           // Secure flag on the session cookie
-	SessionTTL     time.Duration  // sliding session lifetime
-	GoogleDevLogin bool           // mock-compatible POST /auth/google (dev only)
-	Keys           secure.Keys    // derived from APP_SECRET: OTP HMAC, NIK hash/cipher
-	Storage        *storage.Store // object storage (nil: uploads answer 503)
+	AppURL         string
+	CookieSecure   bool
+	SessionTTL     time.Duration
+	GoogleDevLogin bool
+	Keys           secure.Keys
+	Storage        *storage.Store
 
-	Payments payments.Gateway // Midtrans Core API, or the fake gateway (payments.go)
+	Payments payments.Gateway
 
-	SimulateCounterparties bool // a bot plays external trade/contract counterparties (trade_clock.go); demo only
+	SimulateCounterparties bool
 
 	mailWG sync.WaitGroup
 
 	hubOnce sync.Once
-	hub     *hub        // realtime sockets of this instance (hub.go)
-	leader  atomic.Bool // this instance holds the outbox publisher lock (publisher.go)
+	hub     *hub
+	leader  atomic.Bool
 }
 
 var _ api.StrictServerInterface = (*Server)(nil)
 
-// Handler returns the full HTTP handler: health probes plus the API with request validation.
 func (s *Server) Handler() (http.Handler, error) {
 	spec, err := api.GetSwagger()
 	if err != nil {
 		return nil, err
 	}
-	// Spec paths are relative to BasePath; the validator strips it (Prefix) and ignores hosts (the servers entry is for docs).
+
 	spec.Servers = nil
 
 	validate := middleware.OapiRequestValidatorWithOptions(spec, &middleware.Options{
@@ -71,8 +66,7 @@ func (s *Server) Handler() (http.Handler, error) {
 		Prefix:               BasePath,
 		Options: openapi3filter.Options{
 			MultiError: true,
-			// The session cookie is checked by the auth middleware and the handlers (401/403 with the error contract),
-			// not by the validator.
+
 			AuthenticationFunc: openapi3filter.NoopAuthenticationFunc,
 		},
 		ErrorHandlerWithOpts: func(_ context.Context, err error, w http.ResponseWriter, _ *http.Request, opts middleware.ErrorHandlerOpts) {
@@ -97,24 +91,22 @@ func (s *Server) Handler() (http.Handler, error) {
 	apiHandler := api.HandlerWithOptions(strict, api.StdHTTPServerOptions{
 		BaseURL: BasePath,
 		ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
-			// Path/query parameters that fail to bind (e.g. a non-integer page).
+
 			writeError(w, &Error{Status: http.StatusUnprocessableEntity, Code: "validation", Message: err.Error()})
 		},
 	})
-	// Credential endpoints: 10 attempts per IP per minute each.
+
 	creds := newLimiter(6*time.Second, 10).limitPaths(
 		BasePath+"/auth/login", BasePath+"/auth/register", BasePath+"/auth/appeal",
 		BasePath+"/auth/forgot-password", BasePath+"/auth/reset-password", BasePath+"/auth/verify-email",
 		BasePath+"/auth/resend-verification",
 	)
-	// The WebSocket is not in the OpenAPI spec: mounted ahead of the validator (more specific pattern wins).
+
 	mux.Handle("GET "+BasePath+"/ws", s.withSession(http.HandlerFunc(s.serveWS)))
 	mux.Handle(BasePath+"/", creds(s.withSession(validate(apiHandler))))
 	return s.recoverPanics(mux), nil
 }
 
-// recoverPanics turns a panic in any handler into a 500 in the error contract (logged with the stack) instead of
-// killing the connection.
 func (s *Server) recoverPanics(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -132,7 +124,6 @@ func (s *Server) recoverPanics(next http.Handler) http.Handler {
 	})
 }
 
-// handlerError maps an error returned by an operation to the error contract.
 func (s *Server) handlerError(w http.ResponseWriter, r *http.Request, err error) {
 	var apiErr *Error
 	switch {
@@ -161,11 +152,11 @@ func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	if s.Analytics != nil {
 		body["clickhouse"] = "ok"
 		if err := s.Analytics.Ping(r.Context()); err != nil {
-			// Analytics down degrades dashboards but must not take the API out of rotation.
+
 			body["clickhouse"] = err.Error()
 		}
 	}
-	// Informational: a lost feed closes this instance's sockets and refuses new ones, REST keeps serving.
+
 	body["realtime"] = map[string]any{"feed": s.rt().live.Load(), "publisher": s.leader.Load(), "sockets": s.rt().sockets()}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)

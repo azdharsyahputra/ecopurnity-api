@@ -1,7 +1,3 @@
-// Command mailpreview sends one sample of every email template through the configured SMTP server (locally: Mailpit,
-// read them at http://localhost:8025). Use it to check how the templates look before pointing SMTP at a real provider.
-//
-//	make mail-preview [TO=you@example.com]
 package main
 
 import (

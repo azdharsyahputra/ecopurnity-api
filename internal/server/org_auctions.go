@@ -18,10 +18,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Business auctions (PRD 9.6). An org auction is a header with lots; once approved each lot runs as an economy auction
-// (auctions row owned by the org, no market), so bidding, anti-sniping, the clock and the realtime room are the
-// economy's. Award and PO happen here: the PO turns each award line into a trade with the org as one party.
-
 var errOrgAuctionNotFound = notFound("Auction tidak ditemukan")
 
 type liveLot = struct {
@@ -42,10 +38,8 @@ type orgAward = struct {
 	TransactionIds *[]string              `json:"transactionIds,omitempty"`
 }
 
-// higherWins: selling auctions (forward/Dutch) are won by the highest price.
 func higherWins(typ string) bool { return typ == "forward" || typ == "dutch" }
 
-// orgAuctionStatus: org-level status from its lots (src/domain/org.ts orgAuctionStatus).
 func orgAuctionStatus(stored string, awarded bool, lots []string) string {
 	switch {
 	case stored == "pending_approval" || stored == "rejected":
@@ -62,7 +56,6 @@ func orgAuctionStatus(stored string, awarded bool, lots []string) string {
 	return "closed"
 }
 
-// loadOrgAuctions: the org's auctions (newest first) matching cond over alias a, with lots, live facts, approvals and award.
 func loadOrgAuctions(ctx context.Context, q dbtx, orgID, cond string, args ...any) ([]api.OrgAuctionView, error) {
 	rows, err := q.Query(ctx, `
 		SELECT a.id::text, a.code, a.title, a.category_id, a.type, a.objective, a.min_step_idr, a.bid_visibility, a.auto_extension, a.withdraw_rule,
@@ -126,7 +119,7 @@ func loadOrgAuctions(ctx context.Context, q dbtx, orgID, cond string, args ...an
 		a.Lots = append(a.Lots, l)
 		if l.AuctionId != nil {
 			live := liveLot{AuctionId: *l.AuctionId, Status: api.AuctionStatus(*status), BidCount: *bids, Participants: *parts, EndsAt: *ends}
-			// The org owns the auction, so it sees the best price, except a sealed one while it runs.
+
 			if best != nil && !(a.Type == "sealed" && (*status == "live" || *status == "extended")) {
 				live.BestPriceIdr = ptr(int(*best))
 			}
@@ -225,7 +218,6 @@ func loadOrgAuction(ctx context.Context, q dbtx, orgID, id string) (api.OrgAucti
 	return as[0], nil
 }
 
-// lockOrgAuction locks the header row (404 when not this org's).
 func lockOrgAuction(ctx context.Context, tx pgx.Tx, orgID, id string) (string, error) {
 	var got string
 	err := tx.QueryRow(ctx, `SELECT id::text FROM org_auctions WHERE org_id = $1 AND id::text = $2 FOR UPDATE`, orgID, id).Scan(&got)
@@ -248,7 +240,6 @@ func (s *Server) ListOrgAuctions(ctx context.Context, req api.ListOrgAuctionsReq
 	return api.ListOrgAuctions200JSONResponse(out), nil
 }
 
-// withdrawRuleLabel: src/domain/org.ts WITHDRAW_RULES (the lot's "Penarikan bid" rule; enforced by withdrawBlock).
 var withdrawRuleLabel = map[string]string{"anytime": "Boleh tarik kapan saja", "before_last_30": "Boleh tarik sampai 30 menit terakhir",
 	"never": "Bid mengikat, tidak bisa ditarik"}
 
@@ -299,8 +290,7 @@ func (s *Server) CreateOrgAuction(ctx context.Context, req api.CreateOrgAuctionR
 			f["startsAt"] = "Waktu mulai sudah lewat"
 		}
 		if in.Type == "dutch" {
-			// ponytail: accepting a Dutch ask creates a trade with the market's maker; org lots have no market. Allow once
-			// AcceptDutchPrice can sell on behalf of an org.
+
 			f["type"] = "Dutch auction belum tersedia untuk auction bisnis"
 		}
 		if in.Rules.MinStepIdr < 0 {
@@ -403,8 +393,6 @@ func (s *Server) CreateOrgAuction(ctx context.Context, req api.CreateOrgAuctionR
 	return api.CreateOrgAuction201JSONResponse(out), nil
 }
 
-// goLive opens an approved org auction: one economy auction per lot, owned by the org (members may not bid and
-// evaluate it from the org workspace), starting at the scheduled time or now.
 func goLive(ctx context.Context, tx pgx.Tx, c *orgCtx, id string) error {
 	a, err := loadOrgAuction(ctx, tx, c.OrgID, id)
 	if err != nil {
@@ -524,7 +512,7 @@ func (s *Server) DecideOrgAuction(ctx context.Context, req api.DecideOrgAuctionR
 				return err
 			}
 		case rejected:
-			// A rejected auction hands its procurement back so it can be re-run or sourced another way.
+
 			if _, err := tx.Exec(ctx, `UPDATE org_auctions SET status = 'rejected' WHERE id = $1`, id); err != nil {
 				return err
 			}
@@ -551,11 +539,6 @@ func (s *Server) DecideOrgAuction(ctx context.Context, req api.DecideOrgAuctionR
 	return api.DecideOrgAuction200JSONResponse(out), nil
 }
 
-// notifyOrgLotsClosed tells the org's members who can view auctions (owner always) that a business auction is ready to
-// evaluate: once, in the transaction that closes its last lot, with one line per lot. Lots close in separate clock
-// transactions (possibly on different instances); the advisory lock serialises them per business auction, so exactly
-// one sees every sibling closed (each statement reads the latest commits). Not the header row lock: award holds that
-// while it locks the lots, which would deadlock with a closing lot.
 func notifyOrgLotsClosed(ctx context.Context, tx pgx.Tx, orgID, orgAuctionID string) error {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('org_auction_close:' || $1, 0))`, orgAuctionID); err != nil {
 		return err
@@ -613,19 +596,16 @@ func notifyOrgLotsClosed(ctx context.Context, tx pgx.Tx, orgID, orgAuctionID str
 	return nil
 }
 
-// lotOffer is an evaluated offer plus what award and PO need.
 type lotOffer struct {
 	api.LotOffer
 	PartyID    string
-	SupplierID *string // directory match
-	UserID     *string // bidder account, for notifications
+	SupplierID *string
+	UserID     *string
 }
 
-// evalOffers: one offer per bidder of a lot auction (their best active bid), best price first, mapped onto the supplier
-// directory (scorecard) by party; bidders not in the directory get their party id and an 80 baseline.
 func evalOffers(ctx context.Context, q dbtx, r auctionRow, higher bool) ([]lotOffer, error) {
 	src := r
-	if higher { // offers() keeps each bidder's highest bid only for forward; Dutch sells too
+	if higher {
 		src.Type = "forward"
 	}
 	os, err := offers(ctx, q, src)
@@ -827,7 +807,6 @@ func (s *Server) AwardOrgAuction(ctx context.Context, req api.AwardOrgAuctionReq
 			return err
 		}
 
-		// Snapshot every offer of every lot (the evaluation the award was made on); award lines point at them.
 		for i, l := range lots {
 			for _, o := range allOffers[i] {
 				if _, err := tx.Exec(ctx, `
@@ -886,7 +865,6 @@ func (s *Server) AwardOrgAuction(ctx context.Context, req api.AwardOrgAuctionReq
 	return api.AwardOrgAuction200JSONResponse(out), nil
 }
 
-// settleLotAuction marks a lot's economy auction awarded and its bids won/lost, and tells the losing bidders.
 func settleLotAuction(ctx context.Context, tx pgx.Tx, r auctionRow, winners map[string]bool, os []lotOffer) error {
 	if _, err := tx.Exec(ctx, `UPDATE auctions SET status = 'awarded' WHERE id = $1`, r.ID); err != nil {
 		return err
@@ -914,7 +892,6 @@ func settleLotAuction(ctx context.Context, tx pgx.Tx, r auctionRow, winners map[
 	return emitAuctionState(ctx, tx, r.ID)
 }
 
-// poInitials: capitalised words of the org name, first letters, at most 4 ("PT Solusi Kemasan Nusantara" -> PSKN).
 func poInitials(name string) string {
 	var b strings.Builder
 	for _, w := range strings.Fields(name) {
@@ -1008,7 +985,7 @@ func (s *Server) IssueOrgPurchaseOrder(ctx context.Context, req api.IssueOrgPurc
 			t := newTrade{Title: fmt.Sprintf("%s · %s %s", l.Item, qtyLabel(l.Qty), l.Unit), BuyerParty: party, SupplierParty: l.Party, Quantity: l.Qty,
 				Unit: l.Unit, UnitPriceIdr: l.Price, AuctionID: l.AuctionID, DeliveryAddress: nonEmpty(location, "-"), Via: "auction", Category: category,
 				Region: region, ActorUserID: &c.sess.UserID, BuyerOrgID: &c.OrgID, Item: l.Item,
-				// ponytail: the lot's target price stands in for budget and market until awards carry a market reference.
+
 				BudgetUnitIdr: l.Reserve, MarketUnitIdr: l.Reserve}
 			if objective == "selling" {
 				t.BuyerParty, t.SupplierParty, t.BuyerOrgID, t.SupplierOrgID = l.Party, party, nil, &c.OrgID

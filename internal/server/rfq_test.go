@@ -12,7 +12,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Port of the frontend's src/domain/rfq.test.ts.
 func TestQuoteRules(t *testing.T) {
 	cases := []struct {
 		status, side string
@@ -26,9 +25,9 @@ func TestQuoteRules(t *testing.T) {
 		{"countered", "supplier", "revise", true, "submitted"},
 		{"countered", "supplier", "accept_counter", true, "accepted"},
 		{"submitted", "supplier", "withdraw", true, "withdrawn"},
-		{"submitted", "buyer", "accept", false, ""},   // closes once the RFQ is not open
-		{"accepted", "buyer", "accept", true, ""},     // already accepted
-		{"submitted", "supplier", "accept", true, ""}, // wrong side
+		{"submitted", "buyer", "accept", false, ""},
+		{"accepted", "buyer", "accept", true, ""},
+		{"submitted", "supplier", "accept", true, ""},
 		{"countered", "buyer", "counter", true, ""},
 		{"submitted", "supplier", "accept_counter", true, ""},
 	}
@@ -70,7 +69,6 @@ func quotesOf(r resp) []map[string]any {
 	return out
 }
 
-// callArray is call for endpoints answering a JSON array (200 expected).
 func (e *testEnv) callArray(c *http.Client, path string) []map[string]any {
 	e.t.Helper()
 	res, err := c.Get(e.srv.URL + BasePath + path)
@@ -130,7 +128,6 @@ func TestRfqNegotiationAndAward(t *testing.T) {
 		t.Fatalf("conversation participants: %v", n)
 	}
 
-	// Visibility.
 	if r := e.call(outsider, "GET", "/me/rfqs/"+id, nil); r.Status != 404 {
 		t.Fatalf("outsider detail: %d", r.Status)
 	}
@@ -141,7 +138,6 @@ func TestRfqNegotiationAndAward(t *testing.T) {
 		t.Fatalf("buyer quoting own RFQ: %d", r.Status)
 	}
 
-	// Quotes.
 	r = e.call(sup, "POST", "/me/rfqs/"+id+"/quotes", quoteBody(48000))
 	if r.Status != 201 || r.Body["side"] != "supplier" || len(quotesOf(r)) != 1 {
 		t.Fatalf("quote: %d %v", r.Status, r.Body)
@@ -218,7 +214,6 @@ func TestRfqNegotiationAndAward(t *testing.T) {
 		t.Fatalf("revise: %d %v", r.Status, r.Body)
 	}
 
-	// Accept: trade at the quoted price, the other quote declined, RFQ awarded.
 	r = actOn("buyer", supQuote, map[string]any{"action": "accept"})
 	if r.Status != 200 || r.Body["status"] != "awarded" || r.Body["transactionId"] == nil {
 		t.Fatalf("accept: %d %v", r.Status, r.Body)
@@ -276,7 +271,7 @@ func TestRfqClose(t *testing.T) {
 	if r := e.call(buyer, "POST", "/me/rfqs/"+id+"/close", nil); r.Status != 409 || r.code() != "closed" {
 		t.Fatalf("close twice: %d %v", r.Status, r.Body)
 	}
-	// Closed RFQs with a quote of theirs stay in the supplier's list; actions are over.
+
 	if !slices.Contains(ids(e.callArray(sup, "/me/rfqs?side=supplier")), id) {
 		t.Fatal("closed RFQ with own quote missing from supplier list")
 	}

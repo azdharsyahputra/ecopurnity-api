@@ -10,11 +10,8 @@ import (
 	"time"
 )
 
-// Fake is the gateway for development without Midtrans keys and for tests: plausible instructions, and an order that
-// reports `settlement` once SettleAfter has passed since the charge (0: never by itself; tests call SetStatus).
-// ponytail: orders live in memory; after a restart they are unknown (ErrNotFound) and expire locally.
 type Fake struct {
-	Key         string // signs notifications (VerifySignature)
+	Key         string
 	SettleAfter time.Duration
 
 	mu     sync.Mutex
@@ -105,7 +102,6 @@ func (f *Fake) Cancel(_ context.Context, orderID string) error {
 	return nil
 }
 
-// SetStatus moves an order (tests: settlement, expire, deny, ...).
 func (f *Fake) SetStatus(orderID, status string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -118,7 +114,6 @@ func (f *Fake) VerifySignature(orderID, statusCode, grossAmount, signature strin
 	return verify(orderID, statusCode, grossAmount, signature, f.Key)
 }
 
-// fakeQR is a QR-looking SVG (three finder squares and noise from the hash) as a data URI. Nothing to scan: it is fake.
 func fakeQR(h [32]byte) string {
 	const n = 25
 	var b strings.Builder

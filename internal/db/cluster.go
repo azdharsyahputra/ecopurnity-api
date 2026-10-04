@@ -1,11 +1,3 @@
-// Package db owns the PostgreSQL primary/replica pair.
-//
-// Rules of use:
-//   - Writes and read-your-writes go through Primary().
-//   - Everything else (lists, dashboards, public pages) goes through Reader(), which prefers the replica and
-//     falls back to the primary when the replica is missing, down, or lagging past the configured limit.
-//   - A request that wrote and then reads (e.g. POST then return the resource) must read from Primary(): the
-//     replica applies WAL asynchronously.
 package db
 
 import (
@@ -19,10 +11,10 @@ import (
 
 type Cluster struct {
 	primary *pgxpool.Pool
-	replica *pgxpool.Pool // nil when no replica is configured
+	replica *pgxpool.Pool
 
 	maxLag time.Duration
-	// replicaOK is refreshed by Watch; Reader() only trusts the replica while it is true.
+
 	replicaOK atomic.Bool
 }
 
@@ -45,7 +37,6 @@ func Open(ctx context.Context, primaryURL, replicaURL string, maxLag time.Durati
 
 func (c *Cluster) Primary() *pgxpool.Pool { return c.primary }
 
-// Reader returns the pool for read-only queries.
 func (c *Cluster) Reader() *pgxpool.Pool {
 	if c.replica != nil && c.replicaOK.Load() {
 		return c.replica
@@ -53,7 +44,6 @@ func (c *Cluster) Reader() *pgxpool.Pool {
 	return c.primary
 }
 
-// Watch re-checks the replica's health and lag every interval until ctx ends. Run it in its own goroutine.
 func (c *Cluster) Watch(ctx context.Context, every time.Duration) {
 	if c.replica == nil {
 		return
@@ -74,14 +64,13 @@ func (c *Cluster) replicaHealthy(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	var lag float64
-	// Seconds since the last replayed transaction; 0 when the replica is fully caught up and idle.
+
 	err := c.replica.QueryRow(ctx, `
 		SELECT CASE WHEN pg_last_wal_receive_lsn() = pg_last_wal_replay_lsn() THEN 0
 		       ELSE COALESCE(EXTRACT(EPOCH FROM now() - pg_last_xact_replay_timestamp()), 0) END`).Scan(&lag)
 	return err == nil && time.Duration(lag*float64(time.Second)) <= c.maxLag
 }
 
-// Status is what /readyz reports.
 type Status struct {
 	Primary    string `json:"primary"`
 	Replica    string `json:"replica"`

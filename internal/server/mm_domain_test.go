@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// Ports of src/domain/settlement.test.ts and marketRules.test.ts.
-
 func TestSplitProRata(t *testing.T) {
 	q := func(s []share) (out []float64) {
 		for _, x := range s {
@@ -27,12 +25,12 @@ func TestSplitProRata(t *testing.T) {
 	if got := splitProRata(100, []member{{"a", 0}}); got[0] != (share{ID: "a"}) {
 		t.Fatal(got)
 	}
-	// Pool lot back to its members (splitPool): 60/40 of 50.
+
 	got := splitProRata(50, []member{{"0", 60}, {"1", 40}})
 	if got[0].Quantity != 30 || got[0].Share != 0.6 || got[1].Quantity != 20 || got[1].Share != 0.4 {
 		t.Fatal(got)
 	}
-	// The largest remainder gets the leftover unit.
+
 	if got := q(splitProRata(3, []member{{"s", 1}, {"b", 1.0000001}})); fmt.Sprint(got) != "[1 2]" {
 		t.Fatal(got)
 	}
@@ -77,7 +75,6 @@ func TestMarketRules(t *testing.T) {
 		t.Fatal(keys)
 	}
 
-	// New versions only take effect from the next round.
 	v := []ruleVersion{{Version: 1, EffectiveFromRound: 1}}
 	if activeVersion(v, 0).Version != 1 {
 		t.Fatal("v1 before any round")
@@ -99,7 +96,7 @@ func TestPipelineMovesAndDefaults(t *testing.T) {
 	if !canMove("detected", "evaluating") || canMove("forming", "market_live") || canMove("market_live", "dismissed") || !canMove("dismissed", "detected") {
 		t.Fatal("moves")
 	}
-	// Thursday 2026-10-08 in WIB → window from today to Fri 9; on a weekend (Sat 10) → next Mon 12 .. Fri 16.
+
 	if r := defaultRules(1, 1, "x", "dutch_auction", time.Date(2026, 10, 10, 5, 0, 0, 0, time.UTC)); r.WindowStart != "2026-10-12" || r.WindowEnd != "2026-10-16" {
 		t.Fatalf("weekend window %+v", r)
 	}

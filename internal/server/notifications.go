@@ -12,14 +12,9 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/mail"
 )
 
-// Notifications and their per-type channel preferences (PRD §8.11). Writing a notification is notify() in events.go,
-// which skips types the user turned off in-app.
-
 var notificationTypes = []string{"opportunity_detected", "new_market", "auction_invitation", "outbid", "winning_bid", "auction_ending",
 	"transaction_update", "payment", "delivery", "reputation_update"}
 
-// emailByDefault: the mock's defaultPrefs (in-app on for every type, email only for these). A type without a
-// notification_prefs row uses these defaults.
 var emailByDefault = map[string]bool{"outbid": true, "winning_bid": true, "payment": true, "transaction_update": true}
 
 type channelPref struct {
@@ -32,7 +27,7 @@ func (s *Server) ListMyNotifications(ctx context.Context, _ api.ListMyNotificati
 	if err != nil {
 		return nil, err
 	}
-	// Primary: the bell refetches right after marking read. ponytail: newest 100 (the mock keeps 100); page when needed.
+
 	rows, err := s.DB.Primary().Query(ctx, `
 		SELECT id::text, type, title, body, href, read_at IS NOT NULL, created_at FROM notifications
 		WHERE user_id = $1 ORDER BY created_at DESC, id LIMIT 100`, sess.UserID)
@@ -56,7 +51,7 @@ func (s *Server) MarkNotificationsRead(ctx context.Context, req api.MarkNotifica
 	if err != nil {
 		return nil, err
 	}
-	var ids []string // nil = all
+	var ids []string
 	if req.Body != nil && req.Body.Ids != nil {
 		ids = append([]string{}, *req.Body.Ids...)
 	}
@@ -107,7 +102,6 @@ func (s *Server) GetMyNotificationPrefs(ctx context.Context, _ api.GetMyNotifica
 	return api.GetMyNotificationPrefs200JSONResponse(p), nil
 }
 
-// SaveMyNotificationPrefs replaces every type's row (the validator already requires all ten keys).
 func (s *Server) SaveMyNotificationPrefs(ctx context.Context, req api.SaveMyNotificationPrefsRequestObject) (api.SaveMyNotificationPrefsResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -139,17 +133,8 @@ func (s *Server) SaveMyNotificationPrefs(ctx context.Context, req api.SaveMyNoti
 	return api.SaveMyNotificationPrefs200JSONResponse(out), nil
 }
 
-// ── Notification emails ──────────────────────────────────────────
-
-// Email copies of notifications: notify() only stores the row (in the caller's transaction); this job mails the ones
-// whose type has email on for the user (mock defaults when no prefs row), to verified, non-suspended accounts. Only the
-// last day is considered, so switching email on later does not mail the backlog. Each notification is claimed with
-// FOR UPDATE SKIP LOCKED (one per transaction), so any number of instances can run it. A failed send counts an attempt
-// and ends the pass (retried next tick); after mailAttempts the notification is given up and logged.
-
 const mailAttempts = 3
 
-// RunNotificationMailer ticks until ctx ends.
 func (s *Server) RunNotificationMailer(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -167,7 +152,6 @@ func (s *Server) RunNotificationMailer(ctx context.Context, every time.Duration)
 
 var errMailFailed = errors.New("send failed")
 
-// NotificationMailTick mails up to 100 pending notifications (exported for tests).
 func (s *Server) NotificationMailTick(ctx context.Context) error {
 	if s.Mail == nil {
 		return nil
@@ -175,7 +159,7 @@ func (s *Server) NotificationMailTick(ctx context.Context) error {
 	for range 100 {
 		sent, err := s.mailOne(ctx)
 		if errors.Is(err, errMailFailed) {
-			return nil // logged; retried next tick
+			return nil
 		}
 		if err != nil || !sent {
 			return err
@@ -220,7 +204,7 @@ func (s *Server) mailOne(ctx context.Context) (bool, error) {
 				s.Log.Error(msg, "notification", id, "attempts", attempts, "err", serr)
 			}
 			failed = true
-			return nil // commit the attempt count
+			return nil
 		}
 		_, err = tx.Exec(ctx, `UPDATE notifications SET emailed_at = now() WHERE id = $1`, id)
 		return err

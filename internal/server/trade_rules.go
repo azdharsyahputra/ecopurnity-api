@@ -6,16 +6,12 @@ import (
 	"time"
 )
 
-// Two-sided trade rules (PRD F6), ported from the frontend's src/domain/trade.ts and src/domain/contract.ts (tests
-// ported too: trade_rules_test.go). Pure functions: the engine (trade_engine.go) loads a tradeState and asks them.
-
 const (
-	vatRate     = 0.11 // PPN, paid by the buyer on top of the subtotal
+	vatRate     = 0.11
 	day         = 24 * time.Hour
 	carrierDflt = "Armada supplier"
 )
 
-// termsDays: net terms payment window after receipt (escrow pays before shipping).
 var termsDays = map[string]int{"escrow": 0, "net14": 14, "net30": 30}
 
 var tradeActionLabel = map[string]string{
@@ -33,13 +29,12 @@ var tradeActionLabel = map[string]string{
 
 type tradeState struct {
 	Status, Terms  string
-	Agreement      map[string]bool // side -> accepted
-	UnscheduledQty float64         // quantity not yet on a shipment
-	OpenShipments  int             // scheduled or in transit
-	Reviewed       map[string]bool // side -> reviewed
+	Agreement      map[string]bool
+	UnscheduledQty float64
+	OpenShipments  int
+	Reviewed       map[string]bool
 }
 
-// timelineFor is the happy-path order for the progress timeline.
 func timelineFor(terms string) []string {
 	if terms == "escrow" {
 		return []string{"agreement", "invoiced", "paid", "fulfilling", "delivered", "completed"}
@@ -47,10 +42,9 @@ func timelineFor(terms string) []string {
 	return []string{"agreement", "invoiced", "fulfilling", "delivered", "accepted", "completed"}
 }
 
-// tradeActions lists what `side` may do now, in the frontend's order.
 func tradeActions(s tradeState, side string) []string {
 	escrow := s.Terms == "escrow"
-	payFrom := "accepted" // net terms: pay after receipt
+	payFrom := "accepted"
 	if escrow {
 		payFrom = "invoiced"
 	}
@@ -74,7 +68,6 @@ func tradeActions(s tradeState, side string) []string {
 	return out
 }
 
-// nextStatus is the status after an action; allDelivered for upload_proof, qc for confirm_receipt.
 func nextStatus(s tradeState, action string, allDelivered bool, qc string) string {
 	escrow := s.Terms == "escrow"
 	switch action {
@@ -108,7 +101,6 @@ func nextStatus(s tradeState, action string, allDelivered bool, qc string) strin
 	return s.Status
 }
 
-// money is one invoice's breakdown: the buyer pays subtotal + PPN; fees come out of the supplier's side.
 type money struct {
 	Subtotal, VAT, BuyerPays, PlatformFee, MakerFee, SupplierReceives int64
 }
@@ -123,14 +115,10 @@ func breakdown(subtotal int64, platformRate, makerRate float64) money {
 	return m
 }
 
-// partialRefund is owed to the buyer when QC accepts fewer units than were paid for (escrow only): the short
-// quantity's subtotal plus its PPN.
 func partialRefund(unitPrice int64, paidQty, acceptedQty float64) int64 {
 	short := math.Max(0, paidQty-acceptedQty)
 	return breakdown(round(short*float64(unitPrice)), 0, 0).BuyerPays
 }
-
-// ── Standing contracts (src/domain/contract.ts) ─────────────────
 
 var contractEvery = map[string]string{"weekly": "Tiap minggu", "biweekly": "Tiap 2 minggu", "monthly": "Tiap bulan"}
 
@@ -162,7 +150,6 @@ func contractActions(status, proposedBy, side string) []string {
 	return []string{}
 }
 
-// contractTransition returns the status after action, or "" when it is not allowed from status.
 func contractTransition(status, action string) string {
 	to := map[string]struct {
 		from []string

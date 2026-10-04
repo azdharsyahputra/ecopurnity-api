@@ -39,7 +39,6 @@ func TestContractsWithExternalSupplier(t *testing.T) {
 		t.Fatal("proposer accepts", r.Status)
 	}
 
-	// The simulated supplier accepts (the first run is tomorrow).
 	if err := e.server.ContractTick(t0(), 0); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +63,6 @@ func TestContractsWithExternalSupplier(t *testing.T) {
 		t.Fatal("order notification", n)
 	}
 
-	// The clock places the due run; after the last run the contract ends.
 	e.exec(`UPDATE supply_contracts SET next_at = now() - interval '1 minute' WHERE id = $1`, id)
 	if err := e.server.ContractTick(t0(), 0); err != nil {
 		t.Fatal(err)

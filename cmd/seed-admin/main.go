@@ -1,7 +1,3 @@
-// Command seed-admin grants the admin capability to an existing account (audited). No credentials are created here:
-// register the account normally first.
-//
-//	make seed-admin EMAIL=sari@example.id
 package main
 
 import (

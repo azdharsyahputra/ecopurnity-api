@@ -15,7 +15,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/analytics"
 )
 
-// maker: a signed-in, email-verified user with the market_maker capability.
 func (e *testEnv) maker(name string) (*http.Client, string) {
 	e.t.Helper()
 	c, id := e.bidder(name)
@@ -41,7 +40,6 @@ func (e *testEnv) createMarket(c *http.Client, body map[string]any) string {
 	return r.Body["id"].(string)
 }
 
-// org: an organization (owned by the first member) with its party and the other members as active procurement members.
 func (e *testEnv) org(name string, owner string, members ...string) (orgID, partyID string) {
 	e.t.Helper()
 	full := name + " " + fmt.Sprint(time.Now().UnixNano())
@@ -73,7 +71,6 @@ func TestMmAccessAndMarketCreation(t *testing.T) {
 	mm, mmID := e.maker("Dimas")
 	tag := fmt.Sprint(time.Now().UnixNano())
 
-	// An opportunity with a contributor (listing) and a follower.
 	contributor, contributorID := e.bidder("Rina")
 	_ = contributor
 	follower, followerID := e.signedIn("Fani")
@@ -89,7 +86,6 @@ func TestMmAccessAndMarketCreation(t *testing.T) {
 	e.exec(`INSERT INTO opportunity_participants (opportunity_id, party_id, role, listing_id, quantity) VALUES ($1, $2, 'buyer', $3, 200)`, opp, party, listing)
 	e.exec(`INSERT INTO opportunity_follows (user_id, opportunity_id) VALUES ($1, $2)`, followerID, opp)
 
-	// Validation.
 	bad := marketInput(" ")
 	bad["referencePriceIdr"] = 0
 	bad["rules"].(map[string]any)["maxQuantity"] = 5
@@ -116,7 +112,7 @@ func TestMmAccessAndMarketCreation(t *testing.T) {
 	if v := e.scalar(`SELECT version || ':' || effective_from_round || ':' || author FROM market_rule_versions WHERE market_id = $1`, id); v != "1:1:Dimas (Market Maker)" {
 		t.Fatalf("rule version: %v", v)
 	}
-	// autoInvite with auto approval: the opportunity's participant is active.
+
 	if st := e.scalar(`SELECT status FROM market_participants WHERE market_id = $1 AND party_id = $2`, id, party); st != "active" {
 		t.Fatalf("participant: %v", st)
 	}
@@ -136,7 +132,6 @@ func TestMmAccessAndMarketCreation(t *testing.T) {
 		t.Fatalf("mm.activity frame: %v", f)
 	}
 
-	// Other makers get 404; members of the maker's org operate it too.
 	other, otherID := e.maker("Lain")
 	if r := e.call(other, "GET", "/mm/markets/"+id, nil); r.Status != 404 {
 		t.Fatalf("other maker: %d", r.Status)
@@ -154,7 +149,6 @@ func TestMmAccessAndMarketCreation(t *testing.T) {
 		t.Fatalf("org member: %d %v", r.Status, r.Body)
 	}
 
-	// Overview: both markets, the creation in the feed.
 	r := e.call(mm, "GET", "/mm/overview", nil)
 	if r.Status != 200 || len(r.Body["markets"].([]any)) != 2 || r.Body["stats"].(map[string]any)["activeMarkets"] != float64(2) {
 		t.Fatalf("overview: %d %v", r.Status, r.Body)
@@ -200,7 +194,6 @@ func TestMmRoundsRulesAndStatus(t *testing.T) {
 		t.Fatalf("round_result fact: %v", n)
 	}
 
-	// Rules: invalid, unchanged, then v2 from round 2.
 	rules := marketInput("")["rules"].(map[string]any)
 	if r := e.call(mm, "PUT", "/mm/markets/"+id+"/rules", map[string]any{"rules": rules}); r.Status != 422 || r.code() != "no_change" {
 		t.Fatalf("no change: %d %v", r.Status, r.Body)
@@ -217,7 +210,7 @@ func TestMmRoundsRulesAndStatus(t *testing.T) {
 	if ch := e.scalar(`SELECT changes::text FROM audit_log WHERE entity_id = $1 AND action LIKE 'Aturan v2%' AND reason = 'Perketat'`, id).(string); !strings.Contains(ch, "Kuantitas minimum") {
 		t.Fatalf("diff: %v", ch)
 	}
-	// Round 2 starts later: it waits in qualification (eligibility not open) under v2.
+
 	later := map[string]any{"title": "Lot depan", "quantity": 50, "openingPriceIdr": 10000, "durationMinutes": 60,
 		"startsAt": time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)}
 	r = e.call(mm, "POST", "/mm/markets/"+id+"/rounds", later)
@@ -229,7 +222,6 @@ func TestMmRoundsRulesAndStatus(t *testing.T) {
 		t.Fatalf("round 2: %v", st)
 	}
 
-	// Ops detail.
 	r = e.call(mm, "GET", "/mm/markets/"+id, nil)
 	if r.Status != 200 || r.Body["currentRound"] != float64(2) || len(r.Body["ruleVersions"].([]any)) != 2 || len(r.Body["rounds"].([]any)) != 2 ||
 		len(r.Body["results"].([]any)) != 1 || r.Body["settings"].(map[string]any)["approval"] != "auto" || len(r.Body["participants"].([]any)) != 1 {
@@ -242,7 +234,6 @@ func TestMmRoundsRulesAndStatus(t *testing.T) {
 		t.Fatalf("v2: %v", v2)
 	}
 
-	// Status: pause blocks rounds, resume, close is final.
 	if r := e.call(mm, "POST", "/mm/markets/"+id+"/status", map[string]any{"action": "pause", "reason": "  "}); r.Status != 422 || r.field("reason") == "" {
 		t.Fatalf("blank reason: %d %v", r.Status, r.Body)
 	}
@@ -267,14 +258,13 @@ func TestMmRoundsRulesAndStatus(t *testing.T) {
 	if r := e.call(mm, "PUT", "/mm/markets/"+id+"/rules", map[string]any{"rules": rules}); r.Status != 409 || r.code() != "market_closed" {
 		t.Fatalf("rules on closed: %d %v", r.Status, r.Body)
 	}
-	// Publish, 2 rounds, rules v2, pause, resume, close; newest first.
+
 	if status, log := e.mmList(mm, "GET", "/mm/markets/"+id+"/audit"); status != 200 || len(log) != 7 || log[0].(map[string]any)["action"] != "Tutup market" ||
 		log[0].(map[string]any)["reason"] != "Musim selesai" || log[0].(map[string]any)["actor"] != "Dimas (Market Maker)" {
 		t.Fatalf("audit: %d %v", status, log)
 	}
 }
 
-// mmList is call for endpoints that answer a JSON array.
 func (e *testEnv) mmList(c *http.Client, method, path string, body ...any) (int, []any) {
 	e.t.Helper()
 	var b any
@@ -346,7 +336,6 @@ func TestMmParticipantsAndDisputes(t *testing.T) {
 		t.Fatalf("unknown participant: %d", r.Status)
 	}
 
-	// Disputes: review, then escalate to an admin case whose status the market dispute follows.
 	did := e.scalar(`INSERT INTO market_disputes (market_id, title, parties) VALUES ($1, 'Selisih kuantitas', 'CV Pangan vs PT Kemas') RETURNING id::text`, id).(string)
 	dact := func(action, note string) resp {
 		return e.call(mm, "POST", "/mm/markets/"+id+"/disputes/"+did, map[string]any{"action": action, "note": note})
@@ -456,7 +445,7 @@ func TestMmAnalytics(t *testing.T) {
 	if r := e.call(mm, "POST", "/mm/markets/"+id+"/rounds", map[string]any{"title": "R1", "quantity": 10, "openingPriceIdr": 1000, "durationMinutes": 30}); r.Status != 201 {
 		t.Fatalf("round: %v", r.Body)
 	}
-	// The queries run against the real ClickHouse schema when it is up.
+
 	if ch, err := analytics.Open("localhost:9000", "ecopurnity", "default", ""); err == nil && ch.Ping(t0()) == nil {
 		if _, err := ch.MmEfficiency(t0(), []string{id}); err != nil {
 			t.Fatalf("efficiency query: %v", err)
@@ -466,7 +455,7 @@ func TestMmAnalytics(t *testing.T) {
 		}
 		_ = ch.Close()
 	}
-	// Analytics reachable or down: 8 weeks, never an error.
+
 	for _, addr := range []string{"localhost:9000", "localhost:1"} {
 		ch, err := analytics.Open(addr, "ecopurnity", "default", "")
 		if err != nil {
@@ -496,7 +485,6 @@ func TestMmAnalytics(t *testing.T) {
 	}
 }
 
-// closeRound ends a round now and runs the auction clock.
 func (e *testEnv) closeRound(auctionID string) {
 	e.t.Helper()
 	e.exec(`UPDATE auctions SET starts_at = now() - interval '2 hours', ends_at = now() - interval '1 minute' WHERE id = $1`, auctionID)
@@ -523,7 +511,6 @@ func TestMmCollectiveSettlement(t *testing.T) {
 	in["autoInvite"] = false
 	id := e.createMarket(mm, in)
 
-	// Two platform buyers with demand in the market (60 + 40) and an off-platform participant filling the rest.
 	var buyers []string
 	for _, q := range []int{60, 40} {
 		_, uid := e.bidder(fmt.Sprintf("Pembeli %d", q))
@@ -552,7 +539,6 @@ func TestMmCollectiveSettlement(t *testing.T) {
 		t.Fatalf("round_result at close: %v", n)
 	}
 
-	// Preview: 60 / 40 / 20 at the winning price; 404 for everyone else.
 	other, _ := e.maker("Lain")
 	for _, c := range []*http.Client{e.client(), other} {
 		if r := e.call(c, "GET", path, nil); r.Status != 404 {
@@ -592,7 +578,6 @@ func TestMmCollectiveSettlement(t *testing.T) {
 		t.Fatalf("settled preview: %v", r.Body)
 	}
 
-	// A round nobody bid on cannot be settled.
 	r = e.call(mm, "POST", "/mm/markets/"+id+"/rounds", map[string]any{"title": "Kosong", "quantity": 10, "openingPriceIdr": 10000, "durationMinutes": 60})
 	empty := r.Body["id"].(string)
 	e.closeRound(empty)

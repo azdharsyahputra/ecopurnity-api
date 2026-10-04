@@ -1,26 +1,5 @@
 package server
 
-// Conversations (chat between parties, optionally about an RFQ, match or trade) and their messages.
-//
-// Sending a message, the one entry point for REST and the WebSocket:
-//
-//	func (s *Server) sendMessage(ctx context.Context, tx pgx.Tx, conversationID, authorUserID, clientMsgID, text string) (api.ConversationMessage, error)
-//
-//   - Runs inside the caller's transaction (s.inTx); the caller commits. Errors are *Error: 404 not_found when the
-//     conversation does not exist or authorUserID is not a participant (also for a malformed id), 422 validation with
-//     Fields["text"] (blank after trim, more than 4000 characters) or Fields["clientMsgId"] (not a uuid, or already used
-//     by the author for a message in another conversation).
-//   - clientMsgID "" means no idempotency key. With one, a retry (same author and key) returns the stored message
-//     unchanged and does nothing else: no new seq, no frame, no notification. The insert runs in a savepoint and the
-//     unique violation (23505) is caught, never ON CONFLICT DO NOTHING (that would burn a seq, docs/database.md).
-//   - On a new message: the seq comes from the messages insert trigger (gapless, commit order); the conversation's
-//     updatedAt moves; the author's last_read_seq moves to it; `message.created` (ConversationMessage + conversationId,
-//     envelope seq = message seq) is queued on conversation:{id}; every other platform participant gets a
-//     `transaction_update` notification.
-//   - The returned message always has Seq set (Id and Seq are the `chat.send` ack's messageId and seq).
-//
-// External participants (no user) never answer by themselves; the demo bots that do are in counterparties.go.
-
 import (
 	"context"
 	"encoding/json"
@@ -36,13 +15,11 @@ import (
 
 var errConvNotFound = &Error{Status: http.StatusNotFound, Code: "not_found", Message: "Percakapan tidak ditemukan"}
 
-// convParty is a participant: a party and, for a platform account, the user behind it.
 type convParty struct {
 	PartyID string
 	UserID  *string
 }
 
-// createConversation inserts a conversation with its participants; link is optional ("" = none).
 func createConversation(ctx context.Context, q dbtx, subject string, createdBy *string, linkType, linkID string, parties []convParty) (string, error) {
 	var lt, lid *string
 	if linkType != "" {
@@ -61,9 +38,8 @@ func createConversation(ctx context.Context, q dbtx, subject string, createdBy *
 	return id, nil
 }
 
-// addParticipant is a no-op when the party (and user) is already in the conversation.
 func addParticipant(ctx context.Context, q dbtx, convID string, p convParty) error {
-	// clock_timestamp: participants list in the order they joined, also within one transaction.
+
 	_, err := q.Exec(ctx, `
 		INSERT INTO conversation_participants (conversation_id, party_id, user_id, joined_at) VALUES ($1, $2, $3, clock_timestamp())
 		ON CONFLICT DO NOTHING`,
@@ -71,8 +47,6 @@ func addParticipant(ctx context.Context, q dbtx, convID string, p convParty) err
 	return err
 }
 
-// externalParty finds the external (non-platform) party with this name, or creates it.
-// ponytail: matched by name only, the only identity an external party has here; add a contact key when there is one.
 func externalParty(ctx context.Context, q dbtx, name, kind string, verified bool) (string, error) {
 	var id string
 	err := q.QueryRow(ctx, `SELECT id::text FROM parties WHERE kind = 'external' AND name = $1 ORDER BY created_at, id LIMIT 1`, name).Scan(&id)
@@ -119,7 +93,6 @@ func (s *Server) sendMessage(ctx context.Context, tx pgx.Tx, conversationID, aut
 	return postMessage(ctx, tx, conversationID, convParty{PartyID: party, UserID: &authorUserID}, name, text, key)
 }
 
-// postMessage appends a message as party (validated by the caller) with the side effects listed at the top of the file.
 func postMessage(ctx context.Context, tx pgx.Tx, conv string, by convParty, name, text string, clientMsgID *string) (api.ConversationMessage, error) {
 	m := api.ConversationMessage{By: name, Text: text, UserId: by.UserID, ClientMsgId: clientMsgID}
 	var seq int
@@ -130,7 +103,7 @@ func postMessage(ctx context.Context, tx pgx.Tx, conv string, by convParty, name
 			Scan(&m.Id, &seq, &m.At)
 	})
 	if uniqueViolation(err, "messages_author_user_id_client_msg_id_key") {
-		// A retry: hand back the stored message, change nothing.
+
 		var other string
 		err = tx.QueryRow(ctx, `SELECT conversation_id::text, id::text, seq, body, created_at FROM messages WHERE author_user_id = $1 AND client_msg_id = $2`,
 			by.UserID, clientMsgID).Scan(&other, &m.Id, &seq, &m.Text, &m.At)
@@ -179,8 +152,6 @@ func postMessage(ctx context.Context, tx pgx.Tx, conv string, by convParty, name
 	return m, nil
 }
 
-// loadConversations returns the caller's conversations (ids nil: all of them), newest first. lastOnly keeps only the
-// latest message of each (the inbox preview).
 func loadConversations(ctx context.Context, q dbtx, userID string, ids []string, lastOnly bool) ([]api.Conversation, error) {
 	rows, err := q.Query(ctx, `
 		SELECT c.id::text, c.subject, c.link_type, c.link_id::text,
@@ -279,8 +250,6 @@ func loadConversation(ctx context.Context, q dbtx, userID, id string) (api.Conve
 	return list[0], nil
 }
 
-// ── Handlers ─────────────────────────────────────────────────────
-
 func (s *Server) ListConversations(ctx context.Context, _ api.ListConversationsRequestObject) (api.ListConversationsResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -301,7 +270,7 @@ func (s *Server) GetConversation(ctx context.Context, req api.GetConversationReq
 	if !uuidPattern.MatchString(req.Id) {
 		return nil, errConvNotFound
 	}
-	// Opening the thread reads it to the head (chat.read semantics, `read` frame when it advanced).
+
 	switch s.markRead(ctx, sess.UserID, req.Id, 1<<62) {
 	case "not_found":
 		return nil, errConvNotFound
@@ -414,8 +383,6 @@ func (s *Server) SendMessage(ctx context.Context, req api.SendMessageRequestObje
 	return api.SendMessage201JSONResponse(out), nil
 }
 
-// chatSend is the WebSocket `chat.send` (ws.go): s.sendMessage in its own transaction, acked with {messageId, seq}.
-// clientMsgId is required here (the REST POST may omit it).
 func (c *wsConn) chatSend(ctx context.Context, f clientFrame) {
 	var m api.ConversationMessage
 	var err error = &Error{Code: "validation", Message: "clientMsgId wajib diisi", Fields: map[string]string{"clientMsgId": "clientMsgId wajib diisi"}}

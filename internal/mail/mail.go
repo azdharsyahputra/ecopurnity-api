@@ -1,4 +1,3 @@
-// Package mail sends transactional email (verification, password reset).
 package mail
 
 import (
@@ -10,10 +9,9 @@ import (
 type Message struct {
 	To      string
 	Subject string
-	Body    string // plain text
-	HTML    string // optional HTML alternative
-	// Link and Code are the message's call to action (reset link, verification code), kept separately so tests and
-	// the dev log can read them.
+	Body    string
+	HTML    string
+
 	Link string
 	Code string
 }
@@ -22,7 +20,6 @@ type Mailer interface {
 	Send(ctx context.Context, m Message) error
 }
 
-// Log is the fallback mailer when SMTP is not configured: it writes the message (link/code) to the log.
 type Log struct{ Logger *slog.Logger }
 
 func (l Log) Send(_ context.Context, m Message) error {
@@ -30,7 +27,6 @@ func (l Log) Send(_ context.Context, m Message) error {
 	return nil
 }
 
-// Memory keeps sent messages; for tests.
 type Memory struct {
 	mu   sync.Mutex
 	Sent []Message
@@ -43,7 +39,6 @@ func (m *Memory) Send(_ context.Context, msg Message) error {
 	return nil
 }
 
-// Count is how many messages were sent to `to`.
 func (m *Memory) Count(to string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -56,7 +51,6 @@ func (m *Memory) Count(to string) int {
 	return n
 }
 
-// Last returns the last message sent to `to`.
 func (m *Memory) Last(to string) (Message, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

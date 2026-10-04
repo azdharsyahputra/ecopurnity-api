@@ -19,7 +19,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/analytics"
 )
 
-// rtEnv is newEnv plus this server's listener and outbox publisher, stopped (and waited for) at cleanup.
 func rtEnv(t *testing.T) *testEnv {
 	e := newEnv(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -41,7 +40,6 @@ func waitFor(t *testing.T, what string, ok func() bool) {
 	}
 }
 
-// dial opens a socket as the cookie client c (nil: anonymous).
 func (e *testEnv) dial(c *http.Client) *websocket.Conn {
 	e.t.Helper()
 	opts := &websocket.DialOptions{}
@@ -52,7 +50,7 @@ func (e *testEnv) dial(c *http.Client) *websocket.Conn {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	ws.SetReadLimit(-1) // the slow-consumer test floods big frames
+	ws.SetReadLimit(-1)
 	e.t.Cleanup(func() { ws.CloseNow() })
 	return ws
 }
@@ -80,7 +78,6 @@ func wsRead(t *testing.T, ws *websocket.Conn) map[string]any {
 	return m
 }
 
-// request sends a frame with an id and returns the frames that arrive up to and including its ack.
 func request(t *testing.T, ws *websocket.Conn, frame map[string]any) (before []map[string]any, ack map[string]any) {
 	t.Helper()
 	id := fmt.Sprint(time.Now().UnixNano())
@@ -122,7 +119,6 @@ func (e *testEnv) seedAuction() string {
 	return id
 }
 
-// emitAuction commits n auction.state frames on auction:{id}, each taking the next seq as the app does.
 func (e *testEnv) emitAuction(id string, n int) {
 	e.t.Helper()
 	err := e.server.inTx(t0(), func(tx pgx.Tx) error {
@@ -157,7 +153,7 @@ func TestWSAuctionLiveAndPing(t *testing.T) {
 	if m := wsRead(t, ws); m["channel"] != "auction:"+auc || m["type"] != "auction.state" || m["seq"] != 1.0 {
 		t.Fatalf("live frame: %v", m)
 	}
-	// Unknown auction, unknown channel, bad shape.
+
 	for ch, code := range map[string]string{"auction:" + "00000000-0000-0000-0000-000000000000": "not_found", "auction:x": "not_found", "nope": "not_found"} {
 		if _, ack := request(t, ws, map[string]any{"type": "subscribe", "channel": ch}); ackCode(ack) != code {
 			t.Fatalf("%s: %v", ch, ack)
@@ -166,12 +162,12 @@ func TestWSAuctionLiveAndPing(t *testing.T) {
 	if _, ack := request(t, ws, map[string]any{"type": "subscribe", "channel": "public:stats", "sinceSeq": -1}); ackCode(ack) != "bad_frame" {
 		t.Fatalf("negative sinceSeq: %v", ack)
 	}
-	// Frames without an id answer failures with an error frame; chat frames need a session.
+
 	wsSend(t, ws, map[string]any{"type": "chat.read", "conversationId": auc, "seq": 1})
 	if m := wsRead(t, ws); m["type"] != "error" || m["code"] != "unauthenticated" {
 		t.Fatalf("anonymous chat: %v", m)
 	}
-	// Not JSON: 4400.
+
 	if err := ws.Write(t0(), websocket.MessageText, []byte("{")); err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +178,6 @@ func TestWSAuctionLiveAndPing(t *testing.T) {
 	}
 }
 
-// A REST bid reaches the room (masked, sequenced) and the bidder's own channel through outbox -> publisher -> LISTEN.
 func TestWSBidEndToEnd(t *testing.T) {
 	e := rtEnv(t)
 	_, auc, _ := e.buyerAuction("full", "reverse")
@@ -225,7 +220,7 @@ func TestWSReplayAndResync(t *testing.T) {
 	if ack["ok"] != true || ack["headSeq"] != 3.0 || len(frames) != 2 || frames[0]["seq"] != 2.0 || frames[1]["seq"] != 3.0 {
 		t.Fatalf("replay: %v %v", frames, ack)
 	}
-	// Live continues after the head, and the already replayed frames are not sent again.
+
 	e.emitAuction(auc, 1)
 	if m := wsRead(t, ws); m["seq"] != 4.0 {
 		t.Fatalf("live after replay: %v", m)
@@ -234,7 +229,7 @@ func TestWSReplayAndResync(t *testing.T) {
 		t.Fatalf("ahead of head: %v", ack)
 	}
 
-	e.emitAuction(auc, 200) // head 204
+	e.emitAuction(auc, 200)
 	if _, ack := request(t, ws, map[string]any{"type": "subscribe", "channel": ch, "sinceSeq": 3}); ackCode(ack) != "resync_required" {
 		t.Fatalf("201 missed: %v", ack)
 	}
@@ -242,7 +237,7 @@ func TestWSReplayAndResync(t *testing.T) {
 	if ack["headSeq"] != 204.0 || len(frames) != 200 || frames[0]["seq"] != 5.0 || frames[199]["seq"] != 204.0 {
 		t.Fatalf("200 missed: %d frames, %v", len(frames), ack)
 	}
-	// A frame gone from the outbox (retention) cannot be replayed.
+
 	e.exec(`DELETE FROM outbox WHERE topic = 'rt' AND aggregate_id = $1 AND (payload->>'seq')::bigint = 100`, ch)
 	if _, ack := request(t, ws, map[string]any{"type": "subscribe", "channel": ch, "sinceSeq": 50}); ackCode(ack) != "resync_required" {
 		t.Fatalf("beyond retention: %v", ack)
@@ -257,7 +252,6 @@ func TestWSPrivateChannels(t *testing.T) {
 	a, cID := e.userID(ca), e.userID(cc)
 	wa, wb, wc, anon := e.dial(ca), e.dial(cb), e.dial(cc), e.dial(nil)
 
-	// user:{id}
 	if _, ack := request(t, wa, map[string]any{"type": "subscribe", "channel": "user:" + a}); ack["ok"] != true {
 		t.Fatalf("own user channel: %v", ack)
 	}
@@ -268,7 +262,6 @@ func TestWSPrivateChannels(t *testing.T) {
 		t.Fatalf("anonymous user channel: %v", ack)
 	}
 
-	// conversation:{id} with A and C as participants.
 	var conv string
 	if err := e.db.Primary().QueryRow(t0(), `INSERT INTO conversations (subject, message_seq) VALUES ('Pengiriman', 5) RETURNING id`).Scan(&conv); err != nil {
 		t.Fatal(err)
@@ -290,7 +283,6 @@ func TestWSPrivateChannels(t *testing.T) {
 		}
 	}
 
-	// chat.read clamps to the head, persists, and broadcasts `read` (the reader's own sockets included).
 	if _, ack := request(t, wa, map[string]any{"type": "chat.read", "conversationId": conv, "seq": 9}); ack["ok"] != true {
 		t.Fatalf("read: %v", ack)
 	}
@@ -305,20 +297,18 @@ func TestWSPrivateChannels(t *testing.T) {
 		t.Fatalf("last_read_seq: %v", n)
 	}
 
-	// chat.typing reaches the other participant, not the typer.
 	if _, ack := request(t, wa, map[string]any{"type": "chat.typing", "conversationId": conv}); ack["ok"] != true {
 		t.Fatalf("typing: %v", ack)
 	}
 	if m := wsRead(t, wc); m["type"] != "typing" {
 		t.Fatalf("typing frame: %v", m)
 	}
-	// The typer's next frame is its next ack, not its own typing frame.
+
 	if before, ack := request(t, wa, map[string]any{"type": "ping"}); ack["ok"] != true || len(before) != 0 {
 		t.Fatalf("after typing: %v %v", before, ack)
 	}
 }
 
-// chat.send is the REST POST's sendMessage: acked with {messageId, seq}, fanned out as message.created, idempotent.
 func TestWSChatSend(t *testing.T) {
 	e := rtEnv(t)
 	ca, _ := e.signedIn("Ana Socket")
@@ -333,7 +323,7 @@ func TestWSChatSend(t *testing.T) {
 	if _, ack := request(t, wb, map[string]any{"type": "subscribe", "channel": "conversation:" + conv, "sinceSeq": 0}); ack["ok"] != true || ack["headSeq"] != 0.0 {
 		t.Fatalf("subscribe: %v", ack)
 	}
-	key := "0B6F7C1E-5A0E-4C55-9D43-2F2F5D1B7A10" // any case; stored lowercase
+	key := "0B6F7C1E-5A0E-4C55-9D43-2F2F5D1B7A10"
 	send := func(w *websocket.Conn, frame map[string]any) map[string]any {
 		t.Helper()
 		_, ack := request(t, w, frame)
@@ -349,7 +339,7 @@ func TestWSChatSend(t *testing.T) {
 	if m["type"] != "message.created" || m["seq"] != 1.0 || p["text"] != "Halo lewat socket" || p["clientMsgId"] != strings.ToLower(key) || p["id"] != res["messageId"] {
 		t.Fatalf("frame: %v", m)
 	}
-	// Retry: same message, no new frame (Budi's next frame is his own ack).
+
 	if again := send(wa, map[string]any{"type": "chat.send", "conversationId": conv, "clientMsgId": strings.ToLower(key), "text": "Halo lewat socket"}); again["ok"] != true ||
 		again["result"].(map[string]any)["messageId"] != res["messageId"] {
 		t.Fatalf("retry: %v", again)
@@ -357,7 +347,7 @@ func TestWSChatSend(t *testing.T) {
 	if before, ack := request(t, wb, map[string]any{"type": "ping"}); ack["ok"] != true || len(before) != 0 {
 		t.Fatalf("retry broadcast: %v", before)
 	}
-	// The REST view agrees.
+
 	if r := e.call(cb, "GET", "/me/conversations/"+conv, nil); r.Status != 200 || r.Body["seq"] != 1.0 || len(r.Body["messages"].([]any)) != 1 {
 		t.Fatalf("rest: %d %v", r.Status, r.Body)
 	}
@@ -379,7 +369,7 @@ func TestWSChatSend(t *testing.T) {
 
 func TestWSSlowConsumer(t *testing.T) {
 	e := rtEnv(t)
-	ws := e.dial(nil) // never reads until the server gave up on it
+	ws := e.dial(nil)
 	wsSend(t, ws, map[string]any{"type": "subscribe", "channel": "public:stats"})
 	h := e.server.rt()
 	waitFor(t, "subscription", func() bool { return h.has("public:stats") })
@@ -401,7 +391,7 @@ func TestWSSlowConsumer(t *testing.T) {
 	if got := c.code.Load(); got != int32(closeSlow) {
 		t.Fatalf("close code %d", got)
 	}
-	// The client drains what was sent, then sees the close.
+
 	ctx, cancel := context.WithTimeout(t0(), 15*time.Second)
 	defer cancel()
 	for {
@@ -462,7 +452,7 @@ func TestPublisher(t *testing.T) {
 	if n := count(); n != 1 {
 		t.Fatalf("events rows: %d", n)
 	}
-	// A row whose mark was lost (crash after the insert) is not inserted twice.
+
 	e.exec(`UPDATE outbox SET ch_published_at = NULL WHERE id = $1`, evID)
 	waitFor(t, "re-marked", func() bool { return published(evID, "ch_published_at") })
 	if n := count(); n != 1 {
@@ -470,8 +460,6 @@ func TestPublisher(t *testing.T) {
 	}
 }
 
-// chScratch is a throwaway ClickHouse database holding a copy of `events` (no materialized views, so the dev
-// aggregates are untouched), or nil when ClickHouse is not running.
 func chScratch(t *testing.T) (*analytics.Client, driver.Conn) {
 	addr := os.Getenv("TEST_CLICKHOUSE_ADDR")
 	if addr == "" {

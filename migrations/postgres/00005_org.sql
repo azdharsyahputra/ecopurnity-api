@@ -1,22 +1,14 @@
 -- +goose Up
--- Organization workspace (PRD §9): profile, roles and permissions, approval rules, inventory, procurement, collective
--- pools, business auctions with award and PO, supplier directory and relations, purchase history.
--- Paths: /orgs, /orgs/{orgId}/..., /mm/pools. Rules live in the frontend's src/domain/org.ts. See migrations/CONVENTIONS.md.
--- References: verification_requests (00002), markets, auctions (00003), trades, settlements, settlement_lines (00004).
-
--- ── Supplier directory (platform-wide) ───────────────────────────
 
 CREATE TABLE suppliers (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name        text NOT NULL CHECK (length(btrim(name)) > 0),
   categories  category_id[] NOT NULL DEFAULT '{}',
   region      text NOT NULL,
-  -- Directory seed rating; the API's `rating` blends it (weight 10 reviews) with buyer reviews and org ratings.
   seed_rating numeric(2,1) NOT NULL DEFAULT 0 CHECK (seed_rating BETWEEN 0 AND 5),
-  verified    boolean NOT NULL DEFAULT false,              -- platform-verified business
-  documents   text[] NOT NULL DEFAULT '{}',                -- legal document file names; `verify` needs >= 2 unless verified
-  capacity    text NOT NULL DEFAULT '',                    -- free text, e.g. "600 ton kraft/bulan"
-  -- Counterparty on trades (PO lines, pool sub-POs); created on first use like any party.
+  verified    boolean NOT NULL DEFAULT false,
+  documents   text[] NOT NULL DEFAULT '{}',
+  capacity    text NOT NULL DEFAULT '',
   party_id    uuid UNIQUE REFERENCES parties(id),
   created_at  timestamptz NOT NULL DEFAULT now(),
   updated_at  timestamptz NOT NULL DEFAULT now()
@@ -27,7 +19,7 @@ COMMENT ON TABLE suppliers IS 'A supplier in the platform directory that every o
 
 CREATE TABLE supplier_scorecards (
   supplier_id uuid NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
-  month       date NOT NULL CHECK (month = date_trunc('month', month)::date),  -- first day; API shows YYYY-MM
+  month       date NOT NULL CHECK (month = date_trunc('month', month)::date),
   price       numeric(5,2) NOT NULL CHECK (price BETWEEN 0 AND 100),
   reliability numeric(5,2) NOT NULL CHECK (reliability BETWEEN 0 AND 100),
   quality     numeric(5,2) NOT NULL CHECK (quality BETWEEN 0 AND 100),
@@ -37,27 +29,24 @@ CREATE TABLE supplier_scorecards (
 );
 COMMENT ON TABLE supplier_scorecards IS 'One month of a supplier''s 0-100 scorecard (price, reliability, quality, delivery).';
 
--- ── Profile, documents, settings ─────────────────────────────────
--- orgs.name is the profile name; everything else of OrgProfile lives here.
-
 CREATE TABLE org_profiles (
   org_id       uuid PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
-  org_type     text CHECK (org_type IN ('PT','CV','Koperasi','UMKM','Asosiasi','Kelompok tani','Yayasan')),  -- null for seeded orgs
-  industry     text NOT NULL DEFAULT '',                   -- POST /orgs sets "<type> · <category label>"
-  location     text NOT NULL DEFAULT '',                   -- address line ("Bandung, Jawa Barat")
-  region       text,                                       -- public BusinessProfile.region; else last part of location
+  org_type     text CHECK (org_type IN ('PT','CV','Koperasi','UMKM','Asosiasi','Kelompok tani','Yayasan')),
+  industry     text NOT NULL DEFAULT '',
+  location     text NOT NULL DEFAULT '',
+  region       text,
   description  text NOT NULL DEFAULT '',
-  categories   category_id[] NOT NULL DEFAULT '{}',        -- ordered; analytics sorts categories by this order
+  categories   category_id[] NOT NULL DEFAULT '{}',
   nib          text NOT NULL DEFAULT '' CHECK (nib = '' OR nib ~ '^[0-9]{13}$'),
-  npwp         text NOT NULL DEFAULT '',                   -- POST /orgs takes 15/16 digits raw, PUT /profile the dotted format
+  npwp         text NOT NULL DEFAULT '',
   akta         text NOT NULL DEFAULT '',
   hours_days   smallint[] NOT NULL DEFAULT '{0,1,2,3,4}' CHECK (hours_days <@ '{0,1,2,3,4,5,6}'),
   hours_from   time NOT NULL DEFAULT '08:00',
   hours_to     time NOT NULL DEFAULT '17:00',
-  website      text,                                       -- not in the API yet
-  logo_url     text,                                       -- not in the API yet
+  website      text,
+  logo_url     text,
   verification text NOT NULL DEFAULT 'unverified' CHECK (verification IN ('unverified','pending','verified','rejected')),
-  verification_request_id uuid REFERENCES verification_requests(id),  -- latest request sent to the admin queue
+  verification_request_id uuid REFERENCES verification_requests(id),
   created_at   timestamptz NOT NULL DEFAULT now(),
   updated_at   timestamptz NOT NULL DEFAULT now()
 );
@@ -69,11 +58,10 @@ CREATE TABLE org_documents (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id      uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
   kind        text NOT NULL CHECK (kind IN ('nib','npwp','akta','other')),
-  name        text NOT NULL CHECK (length(btrim(name)) > 0),  -- file name
+  name        text NOT NULL CHECK (length(btrim(name)) > 0),
   uploaded_by uuid REFERENCES users(id),
   uploaded_at timestamptz NOT NULL DEFAULT now()
 );
--- A new nib/npwp/akta replaces the previous one (upsert on this index); `other` accumulates.
 CREATE UNIQUE INDEX org_documents_kind_key ON org_documents (org_id, kind) WHERE kind <> 'other';
 CREATE INDEX org_documents_org_idx ON org_documents (org_id, uploaded_at);
 COMMENT ON TABLE org_documents IS 'A legal document an organization uploaded for business verification.';
@@ -81,19 +69,13 @@ COMMENT ON TABLE org_documents IS 'A legal document an organization uploaded for
 CREATE TABLE org_settings (
   org_id             uuid PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
   departments        text[] NOT NULL DEFAULT '{Direksi,Pengadaan,Keuangan,Operasional,Penjualan}',
-  savings_target_idr idr NOT NULL DEFAULT 10000000,       -- overview stats.savingsTargetIdr (monthly)
-  service_regions    text[] NOT NULL DEFAULT '{}',        -- inventory logistics.regions
+  savings_target_idr idr NOT NULL DEFAULT 10000000,
+  service_regions    text[] NOT NULL DEFAULT '{}',
   created_at         timestamptz NOT NULL DEFAULT now(),
   updated_at         timestamptz NOT NULL DEFAULT now()
 );
 CREATE TRIGGER org_settings_updated_at BEFORE UPDATE ON org_settings FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 COMMENT ON TABLE org_settings IS 'Team settings of an organization that are not roles or approval rules (1:1 orgs).';
-
--- ── Roles and permission matrix ──────────────────────────────────
--- Built-in roles (owner, procurement, finance, operations, sales) get a row per org at creation like custom ones, so
--- the matrix is editable per org and org_members.role has a real FK. Permissions are 'module.action' strings: the
--- matrix is always read and replaced whole per role, `can()` is one `= ANY` on the member's role row, and the CHECK
--- pins the value set (9 modules x 4 actions). Owner is hard-wired to everything in the application regardless.
 
 CREATE TABLE org_roles (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -101,7 +83,7 @@ CREATE TABLE org_roles (
   key         text NOT NULL CHECK (key IN ('owner','procurement','finance','operations','sales') OR key LIKE 'custom-%'),
   label       text NOT NULL CHECK (length(btrim(label)) > 0),
   custom      boolean GENERATED ALWAYS AS (key LIKE 'custom-%') STORED,
-  position    smallint NOT NULL DEFAULT 0,                 -- order in OrgSettings.roles
+  position    smallint NOT NULL DEFAULT 0,
   permissions text[] NOT NULL DEFAULT '{}' CHECK (
     array_to_string(permissions, ',') ~
     '^((procurement|auctions|collective|suppliers|inventory|transactions|analytics|team|profile)\.(view|create|approve|manage)(,|$))*$'),
@@ -112,8 +94,6 @@ CREATE TABLE org_roles (
 CREATE TRIGGER org_roles_updated_at BEFORE UPDATE ON org_roles FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 COMMENT ON TABLE org_roles IS 'A role of an organization (built-in or custom) with its permission matrix as module.action strings.';
 
--- Existing orgs get the built-in roles with the default matrix (src/domain/org.ts DEFAULT_PERMISSIONS) and any other
--- role their members already hold, so the FK below validates. New orgs: the application inserts the same rows.
 INSERT INTO org_roles (org_id, key, label, position, permissions)
 SELECT o.id, r.key, r.label, r.position, r.permissions
 FROM orgs o CROSS JOIN (VALUES
@@ -129,17 +109,16 @@ INSERT INTO org_roles (org_id, key, label, position)
 SELECT DISTINCT m.org_id, m.role, m.role, 99 FROM org_members m
 WHERE NOT EXISTS (SELECT 1 FROM org_roles r WHERE r.org_id = m.org_id AND r.key = m.role);
 
--- Deferred so an org, its roles and its first member can be inserted in any order within one transaction.
 ALTER TABLE org_members ADD CONSTRAINT org_members_role_fkey
   FOREIGN KEY (org_id, role) REFERENCES org_roles (org_id, key) DEFERRABLE INITIALLY DEFERRED;
 
 CREATE TABLE org_approval_rules (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id         uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-  position       smallint NOT NULL DEFAULT 0,              -- rule order decides the order of required approvers
+  position       smallint NOT NULL DEFAULT 0,
   label          text NOT NULL CHECK (length(btrim(label)) > 0),
-  min_amount_idr idr NOT NULL,                             -- applies when the value is strictly above this
-  approvers      text[] NOT NULL CHECK (cardinality(approvers) > 0),  -- role keys; not FK-checked (spec: not validated)
+  min_amount_idr idr NOT NULL,
+  approvers      text[] NOT NULL CHECK (cardinality(approvers) > 0),
   applies_to     text[] NOT NULL CHECK (applies_to <@ '{procurement,auction}'),
   created_at     timestamptz NOT NULL DEFAULT now(),
   updated_at     timestamptz NOT NULL DEFAULT now()
@@ -147,8 +126,6 @@ CREATE TABLE org_approval_rules (
 CREATE INDEX org_approval_rules_org_idx ON org_approval_rules (org_id, position);
 CREATE TRIGGER org_approval_rules_updated_at BEFORE UPDATE ON org_approval_rules FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 COMMENT ON TABLE org_approval_rules IS 'An approval rule: above an amount, procurement and/or auctions need sign-off from these roles.';
-
--- ── Inventory ────────────────────────────────────────────────────
 
 CREATE TABLE org_warehouses (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -167,7 +144,7 @@ CREATE TABLE org_production_lines (
   id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id       uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
   line         text NOT NULL CHECK (length(btrim(line)) > 0),
-  output_value qty NOT NULL,                               -- per month
+  output_value qty NOT NULL,
   output_unit  text NOT NULL,
   utilization  numeric(4,3) NOT NULL DEFAULT 0 CHECK (utilization BETWEEN 0 AND 1),
   created_at   timestamptz NOT NULL DEFAULT now(),
@@ -182,7 +159,7 @@ CREATE TABLE org_fleet (
   org_id       uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
   vehicle_type text NOT NULL CHECK (length(btrim(vehicle_type)) > 0),
   count        int NOT NULL CHECK (count >= 0),
-  capacity     text NOT NULL DEFAULT '',                   -- free text, e.g. "5 ton"
+  capacity     text NOT NULL DEFAULT '',
   created_at   timestamptz NOT NULL DEFAULT now(),
   updated_at   timestamptz NOT NULL DEFAULT now()
 );
@@ -193,10 +170,10 @@ COMMENT ON TABLE org_fleet IS 'A vehicle type in an organization''s fleet (inven
 CREATE TABLE inventory_items (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id         uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-  sku            text NOT NULL DEFAULT '',                 -- not unique: imports may leave it blank
+  sku            text NOT NULL DEFAULT '',
   name           text NOT NULL CHECK (length(btrim(name)) > 0),
-  category_id    category_id,                              -- optional on single add
-  warehouse      text NOT NULL DEFAULT '',                 -- free text as sent; not FK to org_warehouses
+  category_id    category_id,
+  warehouse      text NOT NULL DEFAULT '',
   quantity       qty NOT NULL,
   unit           text NOT NULL,
   moq            qty NOT NULL DEFAULT 0,
@@ -228,10 +205,6 @@ CREATE INDEX supply_schedules_org_idx ON supply_schedules (org_id, next_at);
 CREATE TRIGGER supply_schedules_updated_at BEFORE UPDATE ON supply_schedules FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 COMMENT ON TABLE supply_schedules IS 'A recurring inbound or outbound supply of an item with a counterparty.';
 
--- ── Collective pools (platform-wide, PRD §9.5 / F6) ──────────────
--- pool_markets is folded in: a pool forms at most one market and its round (market_id, auction_id, formed_by), so a
--- link table would only add a join.
-
 CREATE TABLE collective_pools (
   id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   title               text NOT NULL CHECK (length(btrim(title)) > 0),
@@ -241,16 +214,16 @@ CREATE TABLE collective_pools (
   deadline            timestamptz NOT NULL,
   unit                text NOT NULL,
   base_unit_price_idr idr NOT NULL CHECK (base_unit_price_idr > 0),
-  ref_qty             qty NOT NULL CHECK (ref_qty > 0),        -- lot size the base price is quoted for
-  threshold_qty       qty NOT NULL CHECK (threshold_qty > 0),  -- combined demand that justifies a market (8 x ref at creation)
+  ref_qty             qty NOT NULL CHECK (ref_qty > 0),
+  threshold_qty       qty NOT NULL CHECK (threshold_qty > 0),
   status              text NOT NULL DEFAULT 'open' CHECK (status IN ('open','market_requested','market_live','settled')),
   market_requested_at timestamptz,
   market_id           uuid REFERENCES markets(id),
-  auction_id          uuid UNIQUE REFERENCES auctions(id),     -- the round the maker opened for the whole pool lot
-  formed_by           uuid REFERENCES users(id),               -- market maker who formed the market
+  auction_id          uuid UNIQUE REFERENCES auctions(id),
+  formed_by           uuid REFERENCES users(id),
   formed_at           timestamptz,
-  settlement_id       uuid UNIQUE REFERENCES settlements(id),  -- round settlement (00004): winner, price, at, by
-  created_by          uuid REFERENCES users(id),               -- null for seeded pools
+  settlement_id       uuid UNIQUE REFERENCES settlements(id),
+  created_by          uuid REFERENCES users(id),
   created_at          timestamptz NOT NULL DEFAULT now(),
   updated_at          timestamptz NOT NULL DEFAULT now(),
   CHECK (status <> 'market_requested' OR market_requested_at IS NOT NULL),
@@ -268,15 +241,13 @@ COMMENT ON TABLE collective_pools IS 'A collective procurement pool: businesses 
 CREATE TABLE pool_members (
   id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   pool_id            uuid NOT NULL REFERENCES collective_pools(id) ON DELETE CASCADE,
-  org_id             uuid REFERENCES orgs(id) ON DELETE CASCADE,  -- platform org; null for an external business
-  name               text,                                         -- external business name (org members show orgs.name)
+  org_id             uuid REFERENCES orgs(id) ON DELETE CASCADE,
+  name               text,
   quantity           qty NOT NULL CHECK (quantity > 0),
-  opt_in             boolean NOT NULL DEFAULT false,               -- show the name to other members, else "Bisnis lain #n"
-  -- Delivery address of this member's sub-PO: request delivery location, else main warehouse, else profile location.
+  opt_in             boolean NOT NULL DEFAULT false,
   drop_point         text,
-  -- This member's line of the pool settlement (00004): settled quantity, share, amount and its sub-PO trade.
   settlement_line_id uuid UNIQUE REFERENCES settlement_lines(id),
-  created_at         timestamptz NOT NULL DEFAULT now(),          -- join order; "#n" masking follows it
+  created_at         timestamptz NOT NULL DEFAULT now(),
   updated_at         timestamptz NOT NULL DEFAULT now(),
   UNIQUE (pool_id, org_id),
   CHECK (org_id IS NOT NULL OR btrim(coalesce(name, '')) <> '')
@@ -285,8 +256,6 @@ CREATE INDEX pool_members_pool_idx ON pool_members (pool_id, created_at);
 CREATE INDEX pool_members_org_idx ON pool_members (org_id) WHERE org_id IS NOT NULL;
 CREATE TRIGGER pool_members_updated_at BEFORE UPDATE ON pool_members FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 COMMENT ON TABLE pool_members IS 'A business''s demand in a collective pool (one row per org; external businesses by name).';
-
--- ── Procurement requests (PRD §9.4) ──────────────────────────────
 
 CREATE TABLE procurement_requests (
   id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -303,10 +272,7 @@ CREATE TABLE procurement_requests (
   visibility         text NOT NULL CHECK (visibility IN ('public','private','invite','aggregate')),
   status             text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','pending_approval','approved','published',
                        'in_auction','in_collective','awarded','po_issued','rejected','cancelled')),
-  -- Snapshot from the approval rules at create/submit; later rule changes do not touch it. Role keys, not FK-checked.
   required_approvers text[] NOT NULL DEFAULT '{}',
-  -- Pool the request joined (`collective`); kept after settlement (po_issued), cleared on leave. The request's
-  -- auction is the org_auctions row pointing here that is not rejected (see org_auctions_procurement_key).
   pool_id            uuid REFERENCES collective_pools(id),
   created_by         uuid NOT NULL REFERENCES users(id),
   created_at         timestamptz NOT NULL DEFAULT now(),
@@ -330,7 +296,7 @@ COMMENT ON TABLE org_procurement_invites IS 'A supplier invited to an invite-onl
 CREATE TABLE procurement_approvals (
   id                     uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   procurement_request_id uuid NOT NULL REFERENCES procurement_requests(id) ON DELETE CASCADE,
-  role                   text NOT NULL,                    -- role key the decision was made for
+  role                   text NOT NULL,
   decision               text NOT NULL CHECK (decision IN ('approved','rejected')),
   note                   text,
   decided_by             uuid NOT NULL REFERENCES users(id),
@@ -340,8 +306,6 @@ CREATE TABLE procurement_approvals (
 );
 COMMENT ON TABLE procurement_approvals IS 'One required role''s approve/reject decision on a procurement request.';
 
--- ── Business auctions (PRD §9.6) ─────────────────────────────────
-
 CREATE TABLE org_auctions (
   id                     uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id                 uuid NOT NULL REFERENCES orgs(id),
@@ -350,35 +314,30 @@ CREATE TABLE org_auctions (
   category_id            category_id NOT NULL,
   type                   text NOT NULL CHECK (type IN ('forward','reverse','sealed','dutch')),
   objective              text NOT NULL CHECK (objective IN ('procurement','selling')),
-  -- rules (multiLot is derived from the lot count)
   min_step_idr           idr NOT NULL DEFAULT 0,
   bid_visibility         text NOT NULL CHECK (bid_visibility IN ('full','rank_only','sealed')),
   auto_extension         boolean NOT NULL DEFAULT true,
   withdraw_rule          text NOT NULL CHECK (withdraw_rule IN ('anytime','before_last_30','never')),
   award_rule             text NOT NULL CHECK (award_rule IN ('lowest','weighted','split','bundled')),
-  weight_price           numeric(6,2) NOT NULL DEFAULT 60 CHECK (weight_price >= 0),  -- weights need not sum to 100
+  weight_price           numeric(6,2) NOT NULL DEFAULT 60 CHECK (weight_price >= 0),
   weight_quality         numeric(6,2) NOT NULL DEFAULT 20 CHECK (weight_quality >= 0),
   weight_delivery        numeric(6,2) NOT NULL DEFAULT 10 CHECK (weight_delivery >= 0),
   weight_reliability     numeric(6,2) NOT NULL DEFAULT 10 CHECK (weight_reliability >= 0),
-  -- qualification
   qual_documents         text[] NOT NULL DEFAULT '{}',
   qual_min_rating        numeric(2,1) NOT NULL DEFAULT 0 CHECK (qual_min_rating BETWEEN 0 AND 5),
   qual_regions           text[] NOT NULL DEFAULT '{}',
-  -- schedule
-  starts_at              timestamptz,                      -- null = as soon as it opens
+  starts_at              timestamptz,
   duration_minutes       int NOT NULL CHECK (duration_minutes > 0),
-  procurement_request_id uuid REFERENCES procurement_requests(id),  -- set only when the request was linked (approved/published)
-  -- Stored: pending_approval, rejected, and the status set when it opens; the API derives live/closed from the lots.
+  procurement_request_id uuid REFERENCES procurement_requests(id),
   status                 text NOT NULL CHECK (status IN ('pending_approval','scheduled','live','closed','awarded','rejected')),
-  value_idr              idr NOT NULL,                     -- sum of lot quantity x reserve price
-  required_approvers     text[] NOT NULL DEFAULT '{}',     -- snapshot from approval rules at creation
+  value_idr              idr NOT NULL,
+  required_approvers     text[] NOT NULL DEFAULT '{}',
   created_by             uuid NOT NULL REFERENCES users(id),
   created_at             timestamptz NOT NULL DEFAULT now(),
   updated_at             timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX org_auctions_org_idx ON org_auctions (org_id, created_at DESC);
 CREATE INDEX org_auctions_pending_idx ON org_auctions (org_id) WHERE status = 'pending_approval';
--- A request runs in at most one auction at a time; a rejected auction hands it back.
 CREATE UNIQUE INDEX org_auctions_procurement_key ON org_auctions (procurement_request_id)
   WHERE procurement_request_id IS NOT NULL AND status <> 'rejected';
 CREATE TRIGGER org_auctions_updated_at BEFORE UPDATE ON org_auctions FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -387,13 +346,13 @@ COMMENT ON TABLE org_auctions IS 'A business auction (OAU) of an organization: o
 CREATE TABLE org_auction_lots (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_auction_id    uuid NOT NULL REFERENCES org_auctions(id) ON DELETE CASCADE,
-  position          smallint NOT NULL CHECK (position > 0),  -- API lot id is 'lot-' || position
+  position          smallint NOT NULL CHECK (position > 0),
   item              text NOT NULL CHECK (length(btrim(item)) > 0),
   quantity          qty NOT NULL CHECK (quantity > 0),
   unit              text NOT NULL,
   spec              text NOT NULL DEFAULT '',
-  reserve_price_idr idr NOT NULL CHECK (reserve_price_idr > 0),  -- per unit; also the opening price
-  auction_id        uuid UNIQUE REFERENCES auctions(id),         -- economy auction once the lot is live
+  reserve_price_idr idr NOT NULL CHECK (reserve_price_idr > 0),
+  auction_id        uuid UNIQUE REFERENCES auctions(id),
   created_at        timestamptz NOT NULL DEFAULT now(),
   updated_at        timestamptz NOT NULL DEFAULT now(),
   UNIQUE (org_auction_id, position)
@@ -422,15 +381,13 @@ CREATE TABLE org_auction_approvals (
 );
 COMMENT ON TABLE org_auction_approvals IS 'One required role''s approve/reject decision on a business auction.';
 
--- Evaluation snapshot: one row per bidder per lot (their best price), written once the lot closes, mapped onto the
--- supplier directory for scorecards. Award lines point at these, so allocations always name a real offer.
 CREATE TABLE org_auction_offers (
   id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_auction_lot_id uuid NOT NULL REFERENCES org_auction_lots(id) ON DELETE CASCADE,
-  party_id           uuid NOT NULL REFERENCES parties(id),     -- the bidder
-  supplier_id        uuid REFERENCES suppliers(id),            -- directory match; null when the bidder is not listed
-  price_idr          idr NOT NULL,                             -- best per-unit price (lowest buying, highest selling)
-  capacity           qty NOT NULL,                             -- most this bidder can deliver, in the lot unit
+  party_id           uuid NOT NULL REFERENCES parties(id),
+  supplier_id        uuid REFERENCES suppliers(id),
+  price_idr          idr NOT NULL,
+  capacity           qty NOT NULL,
   submitted_at       timestamptz NOT NULL,
   created_at         timestamptz NOT NULL DEFAULT now(),
   UNIQUE (org_auction_lot_id, party_id)
@@ -450,7 +407,7 @@ CREATE TABLE purchase_orders (
   id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id       uuid NOT NULL REFERENCES orgs(id),
   org_award_id uuid NOT NULL UNIQUE REFERENCES org_awards(id),
-  po_number    text NOT NULL,                              -- PO-{initials}-{4 digits}; retry on conflict
+  po_number    text NOT NULL,
   issued_by    uuid NOT NULL REFERENCES users(id),
   issued_at    timestamptz NOT NULL DEFAULT now(),
   UNIQUE (org_id, po_number)
@@ -461,11 +418,11 @@ CREATE TABLE org_award_lines (
   id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_award_id         uuid NOT NULL REFERENCES org_awards(id) ON DELETE CASCADE,
   org_auction_lot_id   uuid NOT NULL REFERENCES org_auction_lots(id),
-  position             smallint NOT NULL DEFAULT 0,        -- order within the lot
-  org_auction_offer_id uuid NOT NULL REFERENCES org_auction_offers(id),  -- AllocationLine.offerId
+  position             smallint NOT NULL DEFAULT 0,
+  org_auction_offer_id uuid NOT NULL REFERENCES org_auction_offers(id),
   quantity             qty NOT NULL CHECK (quantity > 0),
-  price_idr            idr NOT NULL,                       -- per unit
-  trade_id             uuid UNIQUE REFERENCES trades(id),  -- set when the PO is issued
+  price_idr            idr NOT NULL,
+  trade_id             uuid UNIQUE REFERENCES trades(id),
   created_at           timestamptz NOT NULL DEFAULT now(),
   updated_at           timestamptz NOT NULL DEFAULT now(),
   UNIQUE (org_award_id, org_auction_lot_id, position)
@@ -473,8 +430,6 @@ CREATE TABLE org_award_lines (
 CREATE INDEX org_award_lines_offer_idx ON org_award_lines (org_auction_offer_id);
 CREATE TRIGGER org_award_lines_updated_at BEFORE UPDATE ON org_award_lines FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 COMMENT ON TABLE org_award_lines IS 'One allocation of an award: a quantity of a lot to one offer, and the trade it became.';
-
--- ── Supplier relations and purchase history (PRD §9.7, §9.9) ─────
 
 CREATE TABLE org_suppliers (
   org_id       uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -491,7 +446,6 @@ CREATE INDEX org_suppliers_rating_idx ON org_suppliers (supplier_id) WHERE my_ra
 CREATE TRIGGER org_suppliers_updated_at BEFORE UPDATE ON org_suppliers FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 COMMENT ON TABLE org_suppliers IS 'An organization''s relation to a directory supplier and its own 1-5 rating.';
 
--- Purchases made before or outside the platform's trades, for analytics. Awarded auctions are read from awards.
 CREATE TABLE org_purchase_history (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id          uuid NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
@@ -502,12 +456,12 @@ CREATE TABLE org_purchase_history (
   supplier_id     uuid NOT NULL REFERENCES suppliers(id),
   quantity        qty NOT NULL CHECK (quantity > 0),
   unit            text NOT NULL,
-  unit_price_idr  idr NOT NULL,                            -- paid
+  unit_price_idr  idr NOT NULL,
   budget_unit_idr idr NOT NULL,
   market_unit_idr idr NOT NULL,
   via             text NOT NULL CHECK (via IN ('auction','collective','direct')),
-  bidders         int CHECK (bidders >= 0),                -- auction rows only
-  opening_idr     idr,                                     -- auction rows only
+  bidders         int CHECK (bidders >= 0),
+  opening_idr     idr,
   created_at      timestamptz NOT NULL DEFAULT now(),
   UNIQUE (org_id, code)
 );

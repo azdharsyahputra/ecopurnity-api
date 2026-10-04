@@ -1,44 +1,30 @@
--- ClickHouse analytics schema (25.8). Never the system of record: everything here is derived from the Postgres outbox
--- and can be dropped and replayed. Flow: publisher -> events -> materialized views -> fact tables -> aggregate tables.
--- Payload contract per topic and the example reads are in README.md. Plain statements, idempotent (IF NOT EXISTS).
--- Ids are text (Postgres uuids or codes), money is UInt64 Rupiah, quantities Float64, times UTC.
--- Missing optional ids are '' (not NULL) so they can sit in sorting keys.
-
 CREATE DATABASE IF NOT EXISTS ecopurnity;
 
--- ── Raw events ───────────────────────────────────────────────────
--- One row per outbox row. ReplacingMergeTree collapses a re-published outbox row (same topic, time, id) on merge, so
--- the raw log heals itself. The aggregates cannot heal, so the publisher must not insert an id twice (README: dedupe).
--- Kept forever: it is the replay source when a fact table or view changes (INSERT INTO fact SELECT ... FROM events).
 CREATE TABLE IF NOT EXISTS ecopurnity.events
 (
     outbox_id    UInt64,
     topic        LowCardinality(String),
-    aggregate_id String,                       -- id of the entity the event is about (auction, trade, listing, ...)
-    occurred_at  DateTime64(3, 'UTC'),         -- outbox.created_at = commit time of the change
-    payload      String CODEC(ZSTD(3)),        -- JSON text, shape per topic in README.md
-    INDEX outbox_id_idx outbox_id TYPE minmax GRANULARITY 1   -- publisher's "already inserted?" check
+    aggregate_id String,
+    occurred_at  DateTime64(3, 'UTC'),
+    payload      String CODEC(ZSTD(3)),
+    INDEX outbox_id_idx outbox_id TYPE minmax GRANULARITY 1
 )
 ENGINE = ReplacingMergeTree
 PARTITION BY toYYYYMM(occurred_at)
 ORDER BY (topic, occurred_at, outbox_id);
 
--- ── Facts ────────────────────────────────────────────────────────
-
--- Every bid. Sorted per auction in time order: the admin findings (runs, price jumps) and distinct-bidder counts read
--- one auction chronologically.
 CREATE TABLE IF NOT EXISTS ecopurnity.bids
 (
     outbox_id    UInt64,
     at           DateTime64(3, 'UTC'),
     auction_id   String,
-    market_id    String,                       -- '' for personal buyer auctions
+    market_id    String,
     category_id  LowCardinality(String),
     region       LowCardinality(String),
     auction_type LowCardinality(String),
-    price_idr    UInt64,                       -- unit price
+    price_idr    UInt64,
     min_step_idr UInt64,
-    bidder_hash  UInt64                        -- cityHash64(bidder party id): pseudonymous, never shown to clients
+    bidder_hash  UInt64
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(at)
@@ -59,16 +45,14 @@ SELECT
 FROM ecopurnity.events
 WHERE topic = 'auction.bid';
 
--- One row per trade status change ('trade.settled' lands as status 'settled'). Payload is the trade snapshot, so every
--- row carries all dimensions. Sorted by market (mm growth, price history); org reads use the bloom index.
 CREATE TABLE IF NOT EXISTS ecopurnity.trades
 (
     outbox_id         UInt64,
     at                DateTime64(3, 'UTC'),
     trade_id          String,
     code              String,
-    status            LowCardinality(String),  -- TransactionStatus or 'settled'
-    via               LowCardinality(String),  -- auction | collective | direct
+    status            LowCardinality(String),
+    via               LowCardinality(String),
     item              String,
     category_id       LowCardinality(String),
     region            LowCardinality(String),
@@ -82,8 +66,8 @@ CREATE TABLE IF NOT EXISTS ecopurnity.trades
     unit              LowCardinality(String),
     unit_price_idr    UInt64,
     value_idr         UInt64,
-    budget_unit_idr   UInt64,                  -- procurement budget per unit, 0 when none
-    market_unit_idr   UInt64,                  -- market reference per unit at deal time, 0 when none
+    budget_unit_idr   UInt64,
+    market_unit_idr   UInt64,
     INDEX buyer_org_idx buyer_org_id TYPE bloom_filter GRANULARITY 1
 )
 ENGINE = MergeTree
@@ -116,13 +100,12 @@ SELECT
 FROM ecopurnity.events
 WHERE topic IN ('trade.status', 'trade.settled');
 
--- Listings as created (supply and demand). value_idr = quantity x indicative unit price, computed by the producer.
 CREATE TABLE IF NOT EXISTS ecopurnity.listings
 (
     outbox_id   UInt64,
     at          DateTime64(3, 'UTC'),
     listing_id  String,
-    kind        LowCardinality(String),        -- supply | demand
+    kind        LowCardinality(String),
     category_id LowCardinality(String),
     region      LowCardinality(String),
     item        String,
@@ -151,7 +134,6 @@ SELECT
 FROM ecopurnity.events
 WHERE topic = 'listing.created';
 
--- Market round prices (RoundResult). A round is re-published while live; the newest outbox row wins, read with FINAL.
 CREATE TABLE IF NOT EXISTS ecopurnity.round_results
 (
     outbox_id    UInt64,
@@ -159,8 +141,8 @@ CREATE TABLE IF NOT EXISTS ecopurnity.round_results
     round        UInt32,
     auction_id   String,
     title        String,
-    status       LowCardinality(String),       -- live | closed
-    at           DateTime64(3, 'UTC'),         -- round start
+    status       LowCardinality(String),
+    at           DateTime64(3, 'UTC'),
     opening_idr  UInt64,
     current_idr  Nullable(UInt64),
     median_idr   Nullable(UInt64),
@@ -185,8 +167,6 @@ SELECT
 FROM ecopurnity.events
 WHERE topic = 'market.round_result';
 
--- Closed auctions with their outcome: bidders, opening vs clearing, and demand/supply/matched value (mm efficiency,
--- org auction results).
 CREATE TABLE IF NOT EXISTS ecopurnity.auction_results
 (
     outbox_id    UInt64,
@@ -200,10 +180,10 @@ CREATE TABLE IF NOT EXISTS ecopurnity.auction_results
     region       LowCardinality(String),
     bidders      UInt32,
     opening_idr  UInt64,
-    clearing_idr Nullable(UInt64),             -- NULL when nothing was awarded
-    demand_idr   UInt64,                       -- requested quantity x reference price
-    supply_idr   UInt64,                       -- qualified offered quantity x reference price
-    matched_idr  UInt64                        -- awarded quantity x reference price
+    clearing_idr Nullable(UInt64),
+    demand_idr   UInt64,
+    supply_idr   UInt64,
+    matched_idr  UInt64
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(at)
@@ -229,12 +209,11 @@ SELECT
 FROM ecopurnity.events
 WHERE topic = 'auction.closed';
 
--- Public activity feed (ActivityEvent). Only the recent tail is ever read.
 CREATE TABLE IF NOT EXISTS ecopurnity.activity
 (
     at         DateTime64(3, 'UTC'),
     id         String,
-    type       LowCardinality(String),         -- ActivityType
+    type       LowCardinality(String),
     title      String,
     amount_idr Nullable(UInt64),
     market_id  String
@@ -255,11 +234,9 @@ SELECT
 FROM ecopurnity.events
 WHERE topic = 'activity';
 
--- Mirror of Postgres audit_log (AuditEntry), searchable by text. No TTL. Replacing on (at, id) so a backfill from
--- Postgres that overlaps the outbox stream collapses.
 CREATE TABLE IF NOT EXISTS ecopurnity.audit_log
 (
-    id            UInt64,                      -- audit_log.id in Postgres
+    id            UInt64,
     at            DateTime64(3, 'UTC'),
     actor_user_id String,
     actor_label   String,
@@ -270,7 +247,7 @@ CREATE TABLE IF NOT EXISTS ecopurnity.audit_log
     org_id        String,
     market_id     String,
     reason        String,
-    changes       String,                      -- JSON array [{field, before?, after}]
+    changes       String,
     search        String MATERIALIZED lowerUTF8(concat(actor_label, ' ', action, ' ', entity_label, ' ', reason)),
     INDEX search_ngram search TYPE ngrambf_v1(3, 8192, 3, 0) GRANULARITY 1,
     INDEX entity_idx entity_id TYPE bloom_filter GRANULARITY 1,
@@ -298,11 +275,6 @@ SELECT
 FROM ecopurnity.events
 WHERE topic = 'audit';
 
--- ── Aggregates ───────────────────────────────────────────────────
--- Dimension order (category_id, market_id, ...) everywhere: the explorer filters by category, mm analytics by market.
--- category has 7 values, so a market-only filter still prunes well on the second key column.
-
--- Completed trades per day: explorer volume series, public volume, mm transactions per week.
 CREATE TABLE IF NOT EXISTS ecopurnity.trade_daily
 (
     category_id LowCardinality(String),
@@ -322,8 +294,6 @@ FROM ecopurnity.trades
 WHERE status = 'completed'
 GROUP BY category_id, market_id, region, day;
 
--- Deal unit prices per market per day (median as a quantile state, low/high as min/max). Weekly priceHistory and the
--- explorer price index both merge these. Fed at 'agreement' (the price is fixed when the deal is struck).
 CREATE TABLE IF NOT EXISTS ecopurnity.market_price_daily
 (
     category_id LowCardinality(String),
@@ -347,7 +317,6 @@ FROM ecopurnity.trades
 WHERE status = 'agreement' AND market_id != '' AND unit_price_idr > 0
 GROUP BY category_id, market_id, day;
 
--- Active parties per day (bid, listed, or struck a deal). uniq states merge across any day range and dimension.
 CREATE TABLE IF NOT EXISTS ecopurnity.participants_daily
 (
     category_id LowCardinality(String),
@@ -377,13 +346,10 @@ ARRAY JOIN [buyer_party_id, supplier_party_id] AS party
 WHERE status = 'agreement' AND party != ''
 GROUP BY category_id, market_id, region, day;
 
--- Org purchases per month (org analytics: spend, savings, unit prices, price trend, demand, supplier spend).
--- Every trade an org buys in, counted when the deal is struck. Imported purchase history is published as the same
--- 'trade.status' agreement events.
 CREATE TABLE IF NOT EXISTS ecopurnity.org_purchase_monthly
 (
     buyer_org_id      String,
-    month             Date,                    -- first day of the month
+    month             Date,
     category_id       LowCardinality(String),
     item              String,
     unit              LowCardinality(String),
@@ -404,14 +370,12 @@ SELECT
     sum(value_idr) AS spend_idr,
     sum(toUInt64(round(t.budget_unit_idr * t.quantity))) AS budget_idr,
     sum(toUInt64(round(t.market_unit_idr * t.quantity))) AS market_idr,
-    sum(t.quantity) AS quantity,             -- t. because the alias quantity would shadow the column
+    sum(t.quantity) AS quantity,
     count() AS purchases
 FROM ecopurnity.trades AS t
 WHERE status = 'agreement' AND buyer_org_id != ''
 GROUP BY buyer_org_id, month, category_id, item, unit, supplier_party_id, via;
 
--- Fraud feature: bids per bidder per minute per auction (abnormal_bidding rate, one bidder across many auctions).
--- Per-auction features (bid runs, price jumps, distinct bidders) read bids directly, it is already sorted per auction.
 CREATE TABLE IF NOT EXISTS ecopurnity.bid_rate_minute
 (
     bidder_hash UInt64,

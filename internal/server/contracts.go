@@ -15,17 +15,13 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// Standing supply contracts (PRD F6): the same order re-placed every period; each run is an ordinary trade
-// (createTrade + contract_orders). Rules: trade_rules.go. Due orders are placed by ContractTick (trade_clock.go).
-
-// wib: contract runs start at 08:00 Jakarta time.
 var wib = time.FixedZone("WIB", 7*3600)
 
 type contractRow struct {
 	View          api.ContractView
 	ID, Code      string
-	Party         map[string]string  // side -> party id
-	User          map[string]*string // side -> user id
+	Party         map[string]string
+	User          map[string]*string
 	Status, Every string
 	ProposedBy    string
 }
@@ -67,7 +63,7 @@ func scanContract(row pgx.Row) (contractRow, error) {
 		SupplierTxId *string   `json:"supplierTxId,omitempty"`
 	}{}
 	for _, o := range os {
-		// One trade row serves both sides, so both ids are the same trade.
+
 		v.Orders = append(v.Orders, struct {
 			At           time.Time `json:"at"`
 			BuyerTxId    *string   `json:"buyerTxId,omitempty"`
@@ -77,7 +73,6 @@ func scanContract(row pgx.Row) (contractRow, error) {
 	return c, nil
 }
 
-// as returns the view for `side` with the actions open to it.
 func (c contractRow) as(side string) api.ContractView {
 	v := c.View
 	v.Side = api.Role(side)
@@ -97,7 +92,6 @@ func (c contractRow) sideOf(party string) string {
 
 var errContractNotFound = &Error{Status: http.StatusNotFound, Code: "not_found", Message: "Kontrak tidak ditemukan"}
 
-// myContract loads one of the party's contracts (locked for update when asked).
 func myContract(ctx context.Context, q dbtx, party, id string, forUpdate bool) (contractRow, error) {
 	if party == "" || !isUUID(id) {
 		return contractRow{}, errContractNotFound
@@ -297,8 +291,6 @@ func (s *Server) ApplyContractAction(ctx context.Context, req api.ApplyContractA
 	return api.ApplyContractAction200JSONResponse(view), nil
 }
 
-// placeContractOrder places the next run of a contract the caller has locked: a trade titled
-// `<item> · order n/runs (<code>)`, nextAt advanced by the period, `ended` after the last run; both users notified.
 func placeContractOrder(ctx context.Context, tx pgx.Tx, contractID string, actor *string) error {
 	var code, item, unit, terms, every, buyer, supplier, address string
 	var runs, n int

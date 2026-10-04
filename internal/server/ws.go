@@ -17,19 +17,16 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// WebSocket endpoint GET /api/v1/ws: the contract is api/asyncapi.yaml, the guide docs/realtime.md. It is outside the
-// OpenAPI spec, so Handler mounts it before the request validator.
-
 const (
-	wsMaxFrame     = 16 << 10 // inbound; bigger closes with 1009 (the library does it)
-	wsQueue        = 256      // outbound frames per socket; full closes with 4503
+	wsMaxFrame     = 16 << 10
+	wsQueue        = 256
 	wsWriteTimeout = 10 * time.Second
-	wsIdle         = 60 * time.Second // no client frame for this long closes with 4408
-	wsSessionCheck = time.Minute      // how soon a revoked session or a suspension reaches an open socket
+	wsIdle         = 60 * time.Second
+	wsSessionCheck = time.Minute
 	wsMaxSubs      = 100
 	wsReplayMax    = 200
 	wsMaxPerUser   = 10
-	wsMaxPerIP     = 20 // anonymous
+	wsMaxPerIP     = 20
 
 	closeMalformed websocket.StatusCode = 4400
 	closeSession   websocket.StatusCode = 4401
@@ -39,34 +36,30 @@ const (
 	closeSlow      websocket.StatusCode = 4503
 )
 
-// wsConn is one socket. The reader goroutine (serveWS) handles client frames; the writer goroutine drains `out`.
 type wsConn struct {
 	s    *Server
 	ws   *websocket.Conn
-	user *session // nil: anonymous (suspended accounts too)
-	key  string   // connection-limit key
+	user *session
+	key  string
 
 	out    chan []byte
 	done   chan struct{}
 	once   sync.Once
-	code   atomic.Int32 // close code we sent (tests)
-	lastIn atomic.Int64 // unix nanos of the last client frame
+	code   atomic.Int32
+	lastIn atomic.Int64
 
 	mu   sync.Mutex
 	subs map[string]*wsSub
 
-	// Reader goroutine only.
 	frames, chats *rate.Limiter
 	typing        map[string]time.Time
 	dropFrom      time.Time
 	drops         int
 }
 
-// wsSub is one subscribed channel. A sequenced channel is not `ready` while its replay is read: live frames wait in
-// buf and are flushed after the ack (those the replay already covered are dropped).
 type wsSub struct {
 	ready bool
-	last  int64 // highest seq sent
+	last  int64
 	buf   []queued
 }
 
@@ -75,7 +68,6 @@ type queued struct {
 	seq   int64
 }
 
-// clientFrame is every client frame's fields in one struct (asyncapi: control channel).
 type clientFrame struct {
 	Type           string `json:"type"`
 	ID             string `json:"id"`
@@ -83,8 +75,8 @@ type clientFrame struct {
 	SinceSeq       *int64 `json:"sinceSeq"`
 	ConversationID string `json:"conversationId"`
 	Seq            *int64 `json:"seq"`
-	ClientMsgID    string `json:"clientMsgId"` // chat.send
-	Text           string `json:"text"`        // chat.send
+	ClientMsgID    string `json:"clientMsgId"`
+	Text           string `json:"text"`
 }
 
 var frameMessages = map[string]string{
@@ -101,13 +93,13 @@ var frameMessages = map[string]string{
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	h := s.rt()
 	if !h.live.Load() {
-		// No fan-out feed on this instance: a socket here would never see a frame. The client backs off and retries.
+
 		writeError(w, &Error{Status: http.StatusServiceUnavailable, Code: "unavailable", Message: "Realtime sedang tidak tersedia"})
 		return
 	}
 	sess := state(r.Context()).session
 	if sess != nil && sess.Status == "suspended" {
-		sess = nil // suspended = anonymous: public channels only (REST answers 403 for everything private anyway)
+		sess = nil
 	}
 	c := &wsConn{s: s, user: sess, key: "ip:" + clientIP(r), out: make(chan []byte, wsQueue), done: make(chan struct{}),
 		subs: map[string]*wsSub{}, frames: rate.NewLimiter(20, 40), chats: rate.NewLimiter(1, 5), typing: map[string]time.Time{}}
@@ -120,7 +112,7 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: s.wsOrigins()})
-	if err != nil { // Accept answered already (403 for a foreign Origin)
+	if err != nil {
 		h.release(c.key)
 		return
 	}
@@ -134,7 +126,6 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	c.close(websocket.StatusNormalClosure, "")
 }
 
-// wsOrigins: same-origin is always allowed; the frontend origin (APP_URL) too, for the dev server's proxy.
 func (s *Server) wsOrigins() []string {
 	if u, err := url.Parse(s.AppURL); err == nil && u.Host != "" {
 		return []string{u.Host}
@@ -142,7 +133,6 @@ func (s *Server) wsOrigins() []string {
 	return nil
 }
 
-// close sends the close frame once; the reader and writer goroutines end with the connection.
 func (c *wsConn) close(code websocket.StatusCode, reason string) {
 	c.once.Do(func() {
 		c.code.Store(int32(code))
@@ -151,7 +141,6 @@ func (c *wsConn) close(code websocket.StatusCode, reason string) {
 	})
 }
 
-// send queues a frame; a full queue means the client is not reading: close with 4503 (it reconnects and resumes).
 func (c *wsConn) send(b []byte) {
 	select {
 	case <-c.done:
@@ -195,7 +184,6 @@ func (c *wsConn) writeLoop() {
 	}
 }
 
-// sessionEnded re-reads the socket's session: 4401 when it is gone or expired, 4403 when the account was suspended.
 func (s *Server) sessionEnded(hash []byte) websocket.StatusCode {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -209,7 +197,7 @@ func (s *Server) sessionEnded(hash []byte) websocket.StatusCode {
 	case err == nil && status == "suspended":
 		return closeSuspended
 	}
-	return 0 // also on a database error: keep the socket rather than kick everyone during a blip
+	return 0
 }
 
 func (c *wsConn) readLoop() {
@@ -262,7 +250,6 @@ func (c *wsConn) handle(ctx context.Context, data []byte) {
 	}
 }
 
-// answer acks a frame that had an id, or reports a failure of one that had none with an error frame.
 func (c *wsConn) answer(id string, headSeq *int64, code string) {
 	var v any
 	switch {
@@ -284,7 +271,6 @@ func (c *wsConn) answer(id string, headSeq *int64, code string) {
 	c.send(b)
 }
 
-// drop answers rate_limited; more than 100 drops within 10 s closes with 4429.
 func (c *wsConn) drop(id string) {
 	if now := time.Now(); now.Sub(c.dropFrom) > 10*time.Second {
 		c.dropFrom, c.drops = now, 0
@@ -339,7 +325,6 @@ func (c *wsConn) subscribe(ctx context.Context, f clientFrame) {
 	c.answer(f.ID, nil, "")
 }
 
-// listen registers ch on this socket and in the hub; a sequenced channel starts not ready (buffering).
 func (c *wsConn) listen(ch string, ready bool) {
 	c.mu.Lock()
 	c.subs[ch] = &wsSub{ready: ready}
@@ -354,9 +339,6 @@ func (c *wsConn) unlisten(ch string) {
 	c.s.rt().remove(ch, c)
 }
 
-// subscribeSequenced is docs/realtime.md "Server side of subscribe {sinceSeq}": register first (live frames buffer),
-// then read the head and the missed frames in one snapshot, send replay + ack, then the buffered frames past the head.
-// Without sinceSeq it is the same with nothing to replay.
 func (c *wsConn) subscribeSequenced(ctx context.Context, f clientFrame, kind, id string) {
 	c.listen(f.Channel, false)
 	head, frames, code := c.s.replay(ctx, kind, id, c.userID(), f.SinceSeq)
@@ -382,7 +364,6 @@ func (c *wsConn) subscribeSequenced(ctx context.Context, f clientFrame, kind, id
 	sub.buf = nil
 }
 
-// push is the hub handing this socket a live frame.
 func (c *wsConn) push(ch string, frame []byte, seq int64, skipUser string) {
 	if skipUser != "" && skipUser == c.userID() {
 		return
@@ -398,22 +379,18 @@ func (c *wsConn) push(ch string, frame []byte, seq int64, skipUser string) {
 			return
 		}
 		sub.buf = append(sub.buf, queued{frame, seq})
-	case seq > 0 && seq <= sub.last: // already sent (replay, or a re-notified row)
+	case seq > 0 && seq <= sub.last:
 	default:
 		sub.last = max(sub.last, seq)
 		c.send(frame)
 	}
 }
 
-// convHeadSQL reads a conversation's head for a participant ($2 = user id); no row when not a participant.
 const convHeadSQL = `
 	SELECT c.message_seq FROM conversations c WHERE c.id = $1 AND EXISTS (
 		SELECT 1 FROM conversation_participants cp LEFT JOIN parties p ON p.id = cp.party_id
 		WHERE cp.conversation_id = c.id AND (cp.user_id = $2 OR p.user_id = $2))`
 
-// replay reads the channel head and the frames after sinceSeq (nil: none) from the primary, in one snapshot.
-// Frames come from the outbox exactly as they were sent live. Missing frames (older than the outbox retention, or
-// events that never had one, such as seeded bids) answer resync_required, as do more than 200.
 func (s *Server) replay(ctx context.Context, kind, id, userID string, sinceSeq *int64) (int64, [][]byte, string) {
 	tx, err := s.DB.Primary().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -460,7 +437,6 @@ func (s *Server) replay(ctx context.Context, kind, id, userID string, sinceSeq *
 	return head, frames, ""
 }
 
-// chat handles chat.* frames: signed-in participants only.
 func (c *wsConn) chat(ctx context.Context, f clientFrame) {
 	if c.user == nil {
 		c.answer(f.ID, nil, "unauthenticated")
@@ -473,7 +449,7 @@ func (c *wsConn) chat(ctx context.Context, f clientFrame) {
 			c.drop(f.ID)
 			return
 		}
-		c.chatSend(ctx, f) // conversations.go: the REST POST's sendMessage
+		c.chatSend(ctx, f)
 	case f.Type != "chat.typing" && f.Type != "chat.read":
 		c.answer(f.ID, nil, "bad_frame")
 	case !uuidPattern.MatchString(conv):
@@ -487,8 +463,6 @@ func (c *wsConn) chat(ctx context.Context, f clientFrame) {
 	}
 }
 
-// typing fans a typing frame out to the conversation's other participants on every instance, without the outbox:
-// pg_notify with the frame inline. At most one per 3 s per conversation; extra frames are acked and dropped.
 func (s *Server) typing(ctx context.Context, c *wsConn, conv string) string {
 	now := time.Now()
 	if now.Sub(c.typing[conv]) < 3*time.Second {
@@ -518,7 +492,6 @@ func (s *Server) typing(ctx context.Context, c *wsConn, conv string) string {
 	return ""
 }
 
-// markRead stores max(last_read_seq, min(seq, head)) for the caller and emits `read` when it advanced.
 func (s *Server) markRead(ctx context.Context, userID, conv string, seq int64) string {
 	code := ""
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
@@ -537,7 +510,7 @@ func (s *Server) markRead(ctx context.Context, userID, conv string, seq int64) s
 			UPDATE conversation_participants SET last_read_seq = $3, last_read_at = now()
 			WHERE conversation_id = $1 AND user_id = $2 AND last_read_seq < $3 RETURNING last_read_at`, conv, userID, seq).Scan(&at)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil // nothing advanced: nothing to broadcast
+			return nil
 		}
 		if err != nil {
 			return err

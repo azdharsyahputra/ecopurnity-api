@@ -43,6 +43,13 @@ with the same name is defined on `*server.Server`. This is how the existing ones
 - Lists that are empty must serialise as `[]`, not `null`.
 - Money: integer Rupiah (`int64` in Go), quantities `float64`. Times UTC `time.Time`.
 
+## No comments in code
+
+The backend has no code comments (Go and SQL). Explain behaviour in the docs instead (`docs/*.md`, the operation
+`description` in `openapi/`), and name things so the code reads on its own. Only compiler directives (`//go:build`,
+`//go:embed`, `//go:generate`) and goose markers (`-- +goose Up/Down`) stay. `make gen` strips comments from the
+generated code too.
+
 ## Spec changes
 
 Edit `openapi/` (paths/*.yaml, schemas/*.yaml), then:

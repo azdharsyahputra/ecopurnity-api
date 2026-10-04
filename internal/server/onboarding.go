@@ -12,10 +12,6 @@ import (
 	"github.com/azdharsyahputra/ecopurnity-api/internal/api"
 )
 
-// CompleteOnboarding saves the onboarding answers and marks the user onboarded.
-//
-// Unlike the mock (x-note), it is safe to repeat: preferences and location are overwritten, but the first listing,
-// the organization and the market maker application are only created the first time.
 func (s *Server) CompleteOnboarding(ctx context.Context, req api.CompleteOnboardingRequestObject) (api.CompleteOnboardingResponseObject, error) {
 	sess, err := requireUser(ctx)
 	if err != nil {
@@ -126,8 +122,6 @@ func valueOr(p *int) int {
 	return *p
 }
 
-// ── Organizations ────────────────────────────────────────────────
-
 type newOrg struct {
 	Name, Industry, Location string
 	Type                     *string
@@ -136,8 +130,6 @@ type newOrg struct {
 	OwnerUserID              string
 }
 
-// builtInRoles is the default permission matrix per role (frontend src/domain/org.ts DEFAULT_PERMISSIONS); every new
-// org gets these rows so members' roles have a real foreign key and stay editable per org.
 var builtInRoles = []struct {
 	Key, Label  string
 	Permissions []string
@@ -166,8 +158,6 @@ func allPermissions() []string {
 
 var notSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
-// createOrg creates an organization with its profile, built-in roles, owner membership and party (used by onboarding
-// and POST /orgs). Returns the org id; a duplicate name is reported as 422 on fields.name.
 func createOrg(ctx context.Context, tx pgx.Tx, o newOrg) (string, error) {
 	name := strings.TrimSpace(o.Name)
 	slug := strings.Trim(notSlug.ReplaceAllString(strings.ToLower(name), "-"), "-")
@@ -210,7 +200,7 @@ func createOrg(ctx context.Context, tx pgx.Tx, o newOrg) (string, error) {
 			return "", err
 		}
 	}
-	// Team settings and the default approval rules every new workspace starts with (frontend mock baseSettings).
+
 	if _, err := tx.Exec(ctx, `
 		WITH s AS (INSERT INTO org_settings (org_id) VALUES ($1))
 		INSERT INTO org_approval_rules (org_id, position, label, min_amount_idr, approvers, applies_to) VALUES
