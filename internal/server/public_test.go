@@ -117,4 +117,18 @@ func TestPublicAnalyticsReads(t *testing.T) {
 	if r := e.call(e.client(), "GET", "/explorer/overview", nil); r.Status != 200 || len(r.Body["volume"].([]any)) != 30 {
 		t.Fatalf("down overview: %d %v", r.Status, r.Body)
 	}
+
+	_, buyerID := e.bidder("Pembeli Fallback")
+	_, supplierID := e.bidder("Supplier Fallback")
+	title := fmt.Sprintf("Gula semut aren %d kg", time.Now().UnixNano()%1000)
+	e.completedTrade(buyerID, supplierID, title)
+	found := false
+	for _, a := range e.callList(e.client(), "/public/activity?limit=100") {
+		if a["title"] == "Transaksi selesai: "+title && a["type"] == "transaction_completed" && a["amountIdr"] != nil {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("with ClickHouse down, the activity feed falls back to Postgres")
+	}
 }

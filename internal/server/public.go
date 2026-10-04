@@ -47,21 +47,76 @@ func (s *Server) GetPublicStats(ctx context.Context, _ api.GetPublicStatsRequest
 
 func (s *Server) publicActivity(ctx context.Context, n int) []api.ActivityEvent {
 	out := []api.ActivityEvent{}
-	ctx, cancel, ok := s.analyticsCtx(ctx)
-	defer cancel()
-	if !ok {
+	if cctx, cancel, ok := s.analyticsCtx(ctx); ok {
+		events, err := s.Analytics.PublicActivity(cctx, n)
+		cancel()
+		s.chWarn("public activity", err)
+		for _, a := range events {
+			ev := api.ActivityEvent{Id: a.ID, Type: api.ActivityType(a.Type), Title: a.Title, At: a.At}
+			if a.AmountIdr != nil {
+				ev.AmountIdr = ptr(int(*a.AmountIdr))
+			}
+			out = append(out, ev)
+		}
+	}
+	if len(out) > 0 {
 		return out
 	}
-	events, err := s.Analytics.PublicActivity(ctx, n)
-	s.chWarn("public activity", err)
-	for _, a := range events {
-		ev := api.ActivityEvent{Id: a.ID, Type: api.ActivityType(a.Type), Title: a.Title, At: a.At}
-		if a.AmountIdr != nil {
-			ev.AmountIdr = ptr(int(*a.AmountIdr))
+	fallback, err := recentActivity(ctx, s.DB.Reader(), n)
+	if err != nil && s.Log != nil {
+		s.Log.Warn("public activity: postgres fallback", "err", err)
+	}
+	return fallback
+}
+
+const recentActivitySQL = `
+	SELECT id, type, title, amount, at FROM (
+		SELECT 'bid-' || b.id AS id, 'bid_placed' AS type, 'Bid baru di auction ' || a.title AS title,
+		       CASE WHEN a.visibility = 'full' THEN round(b.price_idr * a.quantity)::bigint END AS amount, b.created_at AS at
+		FROM bids b JOIN auctions a ON a.id = b.auction_id
+		WHERE b.status <> 'withdrawn'
+		UNION ALL
+		SELECT 'trx-' || t.id, 'transaction_completed', 'Transaksi selesai: ' || t.title, t.total_idr, t.updated_at
+		FROM trades t WHERE t.status = 'completed'
+		UNION ALL
+		SELECT 'aus-' || a.id, 'auction_started', 'Auction dimulai: ' || a.title,
+		       round(a.opening_price_idr * a.quantity)::bigint, a.starts_at
+		FROM auctions a WHERE a.starts_at <= now() AND a.status IN ('live', 'extended', 'closed', 'awarded')
+		UNION ALL
+		SELECT 'auc-' || a.id, 'auction_closed', 'Auction ditutup: ' || a.title, NULL, a.ends_at
+		FROM auctions a WHERE a.ends_at <= now() AND a.status IN ('closed', 'awarded')
+		UNION ALL
+		SELECT 'opp-' || o.id, 'opportunity_detected', 'Opportunity baru: ' || o.title, o.potential_value_idr, o.detected_at
+		FROM opportunities o WHERE o.status <> 'dismissed'
+		UNION ALL
+		SELECT 'mkt-' || m.id, 'market_formed', 'Market terbentuk: ' || m.name, NULL, m.created_at
+		FROM markets m WHERE m.status IN ('active', 'paused')
+	) x
+	WHERE at <= now()
+	ORDER BY at DESC
+	LIMIT $1`
+
+func recentActivity(ctx context.Context, q dbtx, n int) ([]api.ActivityEvent, error) {
+	out := []api.ActivityEvent{}
+	rows, err := q.Query(ctx, recentActivitySQL, n)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ev api.ActivityEvent
+		var typ string
+		var amount *int64
+		if err := rows.Scan(&ev.Id, &typ, &ev.Title, &amount, &ev.At); err != nil {
+			return out, err
+		}
+		ev.Type = api.ActivityType(typ)
+		if amount != nil {
+			ev.AmountIdr = ptr(int(*amount))
 		}
 		out = append(out, ev)
 	}
-	return out
+	return out, rows.Err()
 }
 
 func (s *Server) ListPublicActivity(ctx context.Context, req api.ListPublicActivityRequestObject) (api.ListPublicActivityResponseObject, error) {

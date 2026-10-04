@@ -442,8 +442,10 @@ func TestSearchAndPublicWithoutAnalytics(t *testing.T) {
 	if r := e.call(e.client(), "GET", "/public/stats", nil); r.Status != 200 || r.Body["activeMarkets"] != 0.0 {
 		t.Fatalf("stats: %d %v", r.Status, r.Body)
 	}
-	if got := e.callList(e.client(), "/public/activity?limit=5"); len(got) != 0 {
-		t.Fatalf("activity: %v", got)
+	for _, a := range e.callList(e.client(), "/public/activity?limit=5") {
+		if a["id"] == nil || a["type"] == nil || a["title"] == nil || a["at"] == nil {
+			t.Fatalf("activity from postgres: %v", a)
+		}
 	}
 	r := e.call(e.client(), "GET", "/explorer/overview?range=7d", nil)
 	if r.Status != 200 || len(r.Body["volume"].([]any)) != 7 || len(r.Body["priceIndex"].([]any)) != 7 || r.Body["demandSupply"] == nil {
