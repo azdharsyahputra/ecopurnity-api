@@ -1,10 +1,52 @@
 # Ecopurnity API
 
-Backend for the Ecopurnity frontend. Go · PostgreSQL (primary + streaming replica) · ClickHouse.
+Backend of **Ecopurnity**, an economic opportunity engine: it finds markets that don't exist yet from supply, demand and
+networks, lets market makers form them, and runs the whole deal (real-time auctions, RFQs, escrow payments, shipments,
+QC, disputes, payouts) for individuals, SMEs and organisations.
 
-The contract comes first: `api/openapi.yaml` describes all 163 endpoints the frontend calls. It was written from the
-frontend's reference mock (`../ecopurnity/src/mocks`), so request/response shapes, status codes, error codes, role checks and
-side effects match what the UI already depends on.
+Live API: <https://api.ecopurnity.my.id> · App: <https://ecopurnity.my.id> · Frontend repo: `ecopurnity-fe`
+
+The contract comes first: `api/openapi.yaml` (OpenAPI 3.1) describes all 172 endpoints the frontend calls, and
+`api/asyncapi.yaml` the realtime channels. Request/response shapes, status codes, error codes, role checks and side
+effects match what the UI depends on; CI fails if the spec, the generated code or the frontend's endpoint list drift.
+
+## What sets it apart
+
+- **Opportunity engine.** A background job clusters open listings by item, category, region and unit and detects market
+  gaps, supply gaps, collective demand and capacity matches; opportunities are scored per user and flow into the market
+  makers' pipeline.
+- **Markets with transparent rules.** Market makers form markets from opportunities (or from SME collective pools) with
+  versioned rules (eligibility, visibility, steps, quantities, award method) that apply from the next round.
+- **Real-time auctions done right.** Reverse, forward, sealed and Dutch auctions; masked bidder identities; anti-sniping
+  extensions; per-auction withdraw rules; bid capacity and Smart Allocation (split awards); a gapless per-auction
+  sequence so clients replay missed bids after a reconnect. The auction clock is safe to run on every instance.
+- **Collective procurement.** SMEs pool demand into one market round; the result is split pro-rata (largest remainder)
+  into per-member purchase orders.
+- **Money you can audit.** A double-entry ledger with a balanced-journal check at commit; escrow, PPN and fees per the
+  invoice; Midtrans Core API payments (VA, QRIS, e-wallets) settled only on a verified notification; partial QC refunds;
+  dispute rulings that move the money; payouts approved by an admin with the transfer reference on record.
+- **Trust and compliance.** Tiered KYC (email → KTP) with commitment limits; NIK and bank numbers encrypted at rest
+  (AES-GCM, keys derived from one secret); every view of decrypted personal data is audited; private file storage with
+  short-lived presigned links.
+- **Organisations.** Roles and permissions, approval rules (an owner can sign for a role with no members), procurement,
+  multi-lot auctions, supplier scorecards and spend analytics.
+- **Built to scale reads.** PostgreSQL primary + streaming replica with lag-aware read routing, ClickHouse for
+  analytics fed by a transactional outbox, LISTEN/NOTIFY fan-out for WebSockets across instances.
+
+## Tech stack
+
+| Concern | Technology |
+| --- | --- |
+| Language / HTTP | **Go 1.26**, `net/http` with code generated from the spec (**oapi-codegen** strict server), request validation against the spec |
+| Contract | **OpenAPI 3.1** (REST) and **AsyncAPI 3.0** (WebSocket), bundled from `openapi/` and linted with Redocly |
+| System of record | **PostgreSQL** primary + asynchronous streaming replica (**pgx v5**), migrations with **goose** (embedded) |
+| Analytics | **ClickHouse** (events + materialized views) fed through a transactional outbox |
+| Realtime | WebSocket (**coder/websocket**) with Postgres LISTEN/NOTIFY fan-out and outbox replay |
+| Payments | **Midtrans Core API** (official Go SDK), webhook + status reconciliation |
+| Files | S3-compatible object storage (**Cloudflare R2** in production, SeaweedFS locally), presigned uploads |
+| Email | SMTP with HTML templates (Mailpit locally) |
+| Security | argon2id passwords, opaque session tokens (hashed), HKDF-derived keys, AES-GCM for personal data |
+| Delivery | Docker, **GitHub Actions** CI/CD (tests on Postgres 15 + ClickHouse + S3, auto-deploy from `main`) |
 
 ## Layout
 
@@ -21,7 +63,13 @@ internal/server/          routing under /api/v1, request validation, error contr
 internal/config/          env configuration
 internal/db/              Postgres primary/replica cluster (read/write routing)
 internal/analytics/       ClickHouse client
-deploy/                   postgres replication scripts, clickhouse init
+internal/auth/            passwords, session tokens, email codes
+internal/secure/          key derivation and encryption of personal data
+internal/payments/        Midtrans Core API gateway (+ fake gateway for dev/tests)
+internal/storage/         S3-compatible storage (presigned URLs)
+internal/mail/            SMTP sender and email templates
+migrations/               postgres (goose) and clickhouse SQL
+deploy/                   local docker-compose helpers (postgres replication, clickhouse init, seaweedfs)
 scripts/                  openapi bundler, coverage check
 ```
 
@@ -33,7 +81,14 @@ make up            # postgres :5432 (replica :5433), clickhouse :9000/:8123, mai
 make run           # API on :8080  ->  GET /healthz, GET /readyz
 make reset         # stop and wipe volumes
 make seed-admin EMAIL=you@example.id   # grant the admin capability to an account you registered
+make test          # integration tests (need `make up`; each run uses a throwaway database)
 ```
+
+## CI/CD
+
+GitHub Actions (`.github/workflows/ci-cd.yml`) on every push and pull request: gofmt, `go vet`, generated code up to date
+(`make check-gen`), OpenAPI lint, and the full test suite against PostgreSQL 15, ClickHouse and S3 (SeaweedFS). A push to
+`main` that passes is deployed automatically (build, Postgres + ClickHouse migrations, restart).
 
 ## OpenAPI workflow
 
@@ -57,15 +112,11 @@ node scripts/check-coverage.mjs                        # every mock endpoint is 
 A request that writes and then returns the resource must read from the primary, because the replica applies WAL
 asynchronously.
 
-## Notes for the implementer
+## Contributing
 
-- Business rules are in the operation `description`s (state machines, fee/PPN split, limits, masking rules). The frontend
-  domain code (`../ecopurnity/src/domain/*.ts`, with tests) is the executable version of the same rules and can be ported
-  one-to-one.
-- Places where the mock is sloppy (unvalidated inputs, 500s on bad enums, odd status codes) are marked `x-note` on the
-  operation. Decide per case whether the real API should keep the mock's behaviour or be stricter; stricter is safe for
-  the frontend unless the note says the UI relies on it.
-- Realtime (WebSocket) is `api/asyncapi.yaml` (AsyncAPI 3.0), explained in `docs/realtime.md`.
+How to implement or change an endpoint (handler shape, errors, transactions, audit, notifications, realtime frames,
+tests) is in `docs/contributing.md`. Database rules are in `docs/database.md`, realtime in `docs/realtime.md`. Business
+rules also live in the frontend's `src/domain/*.ts` (with tests); ports here keep the same behaviour.
 
 ## Server code generation
 
@@ -78,7 +129,7 @@ handlers + models + embedded spec) and regenerates `internal/api/unimplemented.g
 - `server.Server` embeds `api.Unimplemented`, so an operation answers `501 not_implemented` until a method with its name
   (e.g. `func (s *Server) Login(ctx, api.LoginRequestObject) (api.LoginResponseObject, error)`) is defined on `*Server`.
   Return the typed response objects for documented outcomes, or a `*server.Error` for the error contract.
-- `go test ./internal/server` walks all 163 operations and fails if any is not routed.
+- `go test ./internal/server` walks all 172 operations and fails if any is not routed.
 - `make check-gen` fails when the committed generated code is stale.
 
 ## Realtime (WebSocket)
@@ -100,10 +151,10 @@ websocat -H 'Cookie: ecp_session=<cookie value>' ws://localhost:8080/api/v1/ws  
 
 ## Simulated counterparties (demo only)
 
-`SIMULATE_COUNTERPARTIES=true` (the `.env.example` default) starts a background tick
-(`internal/server/counterparties.go`) that plays the frontend mock's fictional suppliers: they quote on new RFQs, answer
-the buyer's counters and reply in chat, so one tester can walk the RFQ flow alone. **Production: leave it unset or
-`false`.** Without it, external parties (no platform account) never act on their own.
+`SIMULATE_COUNTERPARTIES=true` (the `.env.example` default) starts background ticks that play parties without a platform
+account: fictional suppliers quote on RFQs, answer counters and reply in chat (`internal/server/counterparties.go`), and
+external trade/contract counterparties accept, invoice, ship, confirm and review (`internal/server/trade_clock.go`), so
+one tester can walk every flow alone. **Leave it unset (false) in production.**
 
 ## Email
 
@@ -121,16 +172,22 @@ the configured SMTP (Mailpit locally) so you can check them. Provider examples a
 Email verification is a 6-digit code: 10 minutes, 5 attempts, one resend per minute; only an HMAC of the code (keyed by
 `APP_SECRET`) is stored.
 
-## Trades and money
+## Trades, money and payouts
 
 The F6 settlement flow (agreement, invoice, payment, staged shipments, QC, disputes, reviews) is one engine,
 `applyTradeAction` in `internal/server/trade_engine.go`; its header lists who may call it and the ledger journal each
 action posts. Money is a double-entry ledger (`ledger_entries`, balanced per journal at commit); `/me/finance` is derived
 from it (`internal/server/finance.go`). `RunTradeClock` places due standing-contract orders.
 
-`SIMULATE_COUNTERPARTIES=true` (in `.env.example`, for local demos) lets a bot play counterparties that are not on the
-platform (external parties): it accepts agreements and contract proposals, invoices, ships, confirms and reviews, so
-every flow can be finished alone. **Leave it unset (false) in production.**
+Sellers withdraw their available balance to a registered bank account; an admin transfers it by hand and records the
+transfer reference (or rejects it, which returns the money to the wallet). Admin → Pencairan, `internal/server/payouts.go`.
+
+## Verification (KYC)
+
+Email only, no SMS/WhatsApp. Level 0 *Email* (verified email, Rp 10 jt per commitment) and level 1 *KTP* (KTP + selfie
+reviewed by an admin, Rp 2 M per commitment). Every commitment (bid, Dutch accept, buyer auction, accepted quote, direct
+order) is checked against the limit (`commitGuard`, `403 kyc_limit`). The NIK is stored encrypted with an HMAC for
+uniqueness; admins see it decrypted only on the review page, and each view is audited.
 
 ## Payments (Midtrans Core API)
 
@@ -152,9 +209,8 @@ attempt. Midtrans fees (MDR) are absorbed by the platform for now.
   for pending payments every 30 s, so sandbox payments (Midtrans simulator) still complete.
 - **Smoke test** (sandbox, opt-in): `set -a; . ./.env; set +a; MIDTRANS_LIVE_TEST=1 go test ./internal/payments -run Live -v`
   charges a BCA VA and a QRIS, checks they are pending and cancels them.
-- **Not yet**: cards (need Midtrans JS tokenization in the browser plus the 3DS flow), refunds through Midtrans (a
-  payment that settles after the invoice was already paid is logged for a manual refund in the dashboard), MDR fees in
-  the ledger.
+- **Not supported**: credit cards (by decision). Refunds through Midtrans are manual (a payment that settles after the
+  invoice was already paid is logged for a refund in the dashboard); MDR fees are not in the ledger yet.
 
 ## File uploads (Cloudflare R2)
 
@@ -162,9 +218,13 @@ Uploads never pass through the API: `POST /uploads` returns a presigned PUT URL,
 the bucket, and the endpoint that uses the file verifies it (owner, purpose, size, sniffed content type) before
 attaching it. The bucket is private; files are read back with short-lived presigned GET URLs.
 
-- Trade files (`trade_proof` delivery proofs, `dispute_evidence`): JPEG/PNG/WebP/PDF up to 10 MB, attached through the
-  trade action's `uploadId`; read models give a 1 h presigned `url` to the trade's two sides (org members with
-  transactions.view) and admins on the dispute case only.
+| Purpose | Files | Used by |
+| --- | --- | --- |
+| `kyc_ktp`, `kyc_selfie` | JPEG/PNG/WebP, 8 MB | KTP verification (admins only, presigned on the review page) |
+| `org_document` | PDF/JPEG/PNG/WebP, 10 MB | business verification documents (NIB, NPWP, deed) |
+| `listing_attachment` | PDF/JPEG/PNG/WebP, 10 MB, max 8 per listing | listing photos and documents (public for public listings) |
+| `trade_proof` | PDF/JPEG/PNG/WebP, 10 MB | delivery proofs (the trade's two sides only) |
+| `dispute_evidence` | PDF/JPEG/PNG/WebP, 10 MB | dispute evidence (both sides and admins on the case) |
 
 Locally `docker compose` runs SeaweedFS (S3-compatible) and the API creates the bucket and its CORS rule at startup.
 
