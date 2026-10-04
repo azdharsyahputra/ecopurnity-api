@@ -192,122 +192,126 @@ func (s *Server) OpportunityTick(ctx context.Context) error {
 		if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtext($1))`, engineLockKey).Scan(&locked); err != nil || !locked {
 			return err
 		}
-		clusters, err := loadGroups(ctx, tx)
-		if err != nil {
-			return err
-		}
-		markets := map[string]bool{}
-		rows, err := tx.Query(ctx, `SELECT DISTINCT category_id, region FROM markets WHERE status IN ('active','formation')`)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var c, r string
-			if err := rows.Scan(&c, &r); err != nil {
-				rows.Close()
-				return err
-			}
-			markets[c+"|"+strings.ToLower(regionOf(r))] = true
-		}
-		rows.Close()
-		var opps []*engineOpp
-		rows, err = tx.Query(ctx, `
-			SELECT id::text, category_id, region, unit, status, title FROM opportunities WHERE status <> 'closed' ORDER BY detected_at, id`)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var o engineOpp
-			var c, r, u, title string
-			if err := rows.Scan(&o.id, &c, &r, &u, &o.status, &title); err != nil {
-				rows.Close()
-				return err
-			}
-			var ok bool
-			if o.item, ok = engineItem(title, r); !ok {
-				continue
-			}
-			o.words = significantWords(o.item)
+		return detectPass(ctx, tx)
+	})
+}
 
-			for _, g := range clusters[groupKey(c, r, u)] {
-				if g.taken || !g.matches(o.item, o.words) {
-					continue
-				}
-				if o.cluster == nil || len(g.listings) > len(o.cluster.listings) {
-					o.cluster = g
-				}
-			}
-			if o.cluster != nil {
-				o.cluster.taken = true
-			}
-			opps = append(opps, &o)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
+func detectPass(ctx context.Context, tx pgx.Tx) error {
+	clusters, err := loadGroups(ctx, tx)
+	if err != nil {
+		return err
+	}
+	markets := map[string]bool{}
+	rows, err := tx.Query(ctx, `SELECT DISTINCT category_id, region FROM markets WHERE status IN ('active','formation')`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var c, r string
+		if err := rows.Scan(&c, &r); err != nil {
+			rows.Close()
 			return err
 		}
+		markets[c+"|"+strings.ToLower(regionOf(r))] = true
+	}
+	rows.Close()
+	var opps []*engineOpp
+	rows, err = tx.Query(ctx, `
+		SELECT id::text, category_id, region, unit, status, title FROM opportunities WHERE status <> 'closed' ORDER BY detected_at, id`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var o engineOpp
+		var c, r, u, title string
+		if err := rows.Scan(&o.id, &c, &r, &u, &o.status, &title); err != nil {
+			rows.Close()
+			return err
+		}
+		var ok bool
+		if o.item, ok = engineItem(title, r); !ok {
+			continue
+		}
+		o.words = significantWords(o.item)
 
-		for _, o := range opps {
-			g := o.cluster
-			switch {
-			case o.status == "dismissed":
+		for _, g := range clusters[groupKey(c, r, u)] {
+			if g.taken || !g.matches(o.item, o.words) {
 				continue
-			case g == nil:
-				if o.status == "detected" {
-					if _, err := tx.Exec(ctx, `UPDATE opportunities SET status = 'closed' WHERE id = $1`, o.id); err != nil {
-						return err
-					}
+			}
+			if o.cluster == nil || len(g.listings) > len(o.cluster.listings) {
+				o.cluster = g
+			}
+		}
+		if o.cluster != nil {
+			o.cluster.taken = true
+		}
+		opps = append(opps, &o)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, o := range opps {
+		g := o.cluster
+		switch {
+		case o.status == "dismissed":
+			continue
+		case g == nil:
+			if o.status == "detected" {
+				if _, err := tx.Exec(ctx, `UPDATE opportunities SET status = 'closed' WHERE id = $1`, o.id); err != nil {
+					return err
 				}
-				continue
 			}
-			if err := refreshOpportunity(ctx, tx, o.id, g); err != nil {
+			continue
+		}
+		if err := refreshOpportunity(ctx, tx, o.id, g); err != nil {
+			return err
+		}
+		if err := syncListings(ctx, tx, o.id, g); err != nil {
+			return err
+		}
+		if o.status != "detected" {
+			continue
+		}
+		kind, mechanism, ok := classify(g, markets[g.category+"|"+strings.ToLower(g.region)])
+		if !ok {
+			if _, err := tx.Exec(ctx, `UPDATE opportunities SET status = 'closed' WHERE id = $1`, o.id); err != nil {
 				return err
 			}
-			if err := syncListings(ctx, tx, o.id, g); err != nil {
-				return err
-			}
-			if o.status != "detected" {
+			continue
+		}
+		d := describe(g, kind, mechanism)
+		if _, err := tx.Exec(ctx, `
+			UPDATE opportunities SET title = $2, kind = $3, suggested_mechanism = $4, confidence = $5, mechanism_reason = $6,
+			       description = $7, required_contribution = $8
+			WHERE id = $1 AND (title, kind, suggested_mechanism, confidence, mechanism_reason, description, required_contribution)
+			      IS DISTINCT FROM ($2, $3, $4, $5::numeric, $6, $7, $8)`,
+			o.id, d.title, kind, mechanism, math.Round(d.confidence*1000)/1000, d.reason, d.description, d.contribution); err != nil {
+			return err
+		}
+	}
+
+	keys := make([]string, 0, len(clusters))
+	for k := range clusters {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		for _, g := range clusters[k] {
+			if g.taken {
 				continue
 			}
 			kind, mechanism, ok := classify(g, markets[g.category+"|"+strings.ToLower(g.region)])
 			if !ok {
-				if _, err := tx.Exec(ctx, `UPDATE opportunities SET status = 'closed' WHERE id = $1`, o.id); err != nil {
-					return err
-				}
 				continue
 			}
-			d := describe(g, kind, mechanism)
-			if _, err := tx.Exec(ctx, `
-				UPDATE opportunities SET title = $2, kind = $3, suggested_mechanism = $4, confidence = $5, mechanism_reason = $6,
-				       description = $7, required_contribution = $8
-				WHERE id = $1 AND (title, kind, suggested_mechanism, confidence, mechanism_reason, description, required_contribution)
-				      IS DISTINCT FROM ($2, $3, $4, $5::numeric, $6, $7, $8)`,
-				o.id, d.title, kind, mechanism, math.Round(d.confidence*1000)/1000, d.reason, d.description, d.contribution); err != nil {
+			if err := createOpportunity(ctx, tx, g, kind, mechanism); err != nil {
 				return err
 			}
 		}
-
-		keys := make([]string, 0, len(clusters))
-		for k := range clusters {
-			keys = append(keys, k)
-		}
-		slices.Sort(keys)
-		for _, k := range keys {
-			for _, g := range clusters[k] {
-				if g.taken {
-					continue
-				}
-				kind, mechanism, ok := classify(g, markets[g.category+"|"+strings.ToLower(g.region)])
-				if !ok {
-					continue
-				}
-				if err := createOpportunity(ctx, tx, g, kind, mechanism); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	})
+	}
+	return nil
 }
 
 type openListing struct {

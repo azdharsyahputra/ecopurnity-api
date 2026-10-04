@@ -43,6 +43,7 @@ type Server struct {
 	Payments payments.Gateway
 
 	SimulateCounterparties bool
+	DemoPulse              bool
 
 	mailWG sync.WaitGroup
 

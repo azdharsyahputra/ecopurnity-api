@@ -51,6 +51,8 @@ type Config struct {
 
 	SimulateCounterparties bool
 
+	DemoPulse bool
+
 	MidtransServerKey  string
 	MidtransClientKey  string
 	MidtransProduction bool
@@ -112,6 +114,7 @@ func Load() (Config, error) {
 	c.CookieSecure = env("COOKIE_SECURE", "true") == "true"
 	c.GoogleDevLogin = env("GOOGLE_DEV_LOGIN", "false") == "true"
 	c.SimulateCounterparties = env("SIMULATE_COUNTERPARTIES", "false") == "true"
+	c.DemoPulse = env("DEMO_PULSE", "false") == "true"
 	c.MidtransServerKey = strings.TrimSpace(os.Getenv("MIDTRANS_SERVER_KEY"))
 	c.MidtransClientKey = strings.TrimSpace(os.Getenv("MIDTRANS_CLIENT_KEY"))
 	switch env("MIDTRANS_ENV", "sandbox") {

@@ -88,7 +88,7 @@ func run(log *slog.Logger) error {
 	api := &server.Server{
 		DB: pg, Analytics: ch, Log: log, Mail: mailer, Keys: keys, Storage: store,
 		AppURL: cfg.AppURL, CookieSecure: cfg.CookieSecure, SessionTTL: cfg.SessionTTL, GoogleDevLogin: cfg.GoogleDevLogin,
-		SimulateCounterparties: cfg.SimulateCounterparties, Payments: gateway,
+		SimulateCounterparties: cfg.SimulateCounterparties, Payments: gateway, DemoPulse: cfg.DemoPulse,
 	}
 	defer api.WaitMail()
 	go api.RunAuctionClock(ctx, time.Second)
@@ -96,6 +96,7 @@ func run(log *slog.Logger) error {
 	go api.RunNotificationMailer(ctx, 5*time.Second)
 	go api.RunTradeClock(ctx, 2*time.Second)
 	go api.RunPaymentReconciler(ctx, 30*time.Second)
+	go api.RunDemoPulse(ctx, time.Minute)
 	if cfg.SimulateCounterparties {
 		log.Warn("SIMULATE_COUNTERPARTIES is on: bots play external trade parties and RFQ suppliers (demo only)")
 		go api.RunCounterparties(ctx, time.Second)
