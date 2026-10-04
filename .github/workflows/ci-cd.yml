@@ -55,6 +55,7 @@ jobs:
       group: deploy-dev-api
       cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v4
       - name: Deploy to the dev server
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -64,5 +65,6 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          # The key's forced command on the gateway only accepts: deploy api|web <sha>
-          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes "$DEPLOY_TARGET" deploy api "$GITHUB_SHA"
+          # The commit goes to the server as a tar on stdin; the key's forced command on the gateway only accepts
+          # "deploy api|web <sha>" (no shell), and the app server builds, migrates and restarts.
+          git archive --format=tar "$GITHUB_SHA" | ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes "$DEPLOY_TARGET" deploy api "$GITHUB_SHA"
