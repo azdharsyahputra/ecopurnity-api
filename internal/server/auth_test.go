@@ -1,7 +1,10 @@
 package server
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -382,5 +385,79 @@ func TestRateLimitOnLogin(t *testing.T) {
 	}
 	if last.Status != http.StatusTooManyRequests || last.code() != "rate_limited" || last.Header.Get("Retry-After") == "" {
 		t.Fatalf("rate limit: %d %v", last.Status, last.Body)
+	}
+}
+
+func TestGoogleOAuth(t *testing.T) {
+	e := newEnv(t)
+	claims := map[string]any{"aud": "cid", "sub": "g-1", "email": "Budi@Gmail.com", "email_verified": true, "name": "Budi"}
+	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.FormValue("code") != "good" || r.FormValue("client_secret") != "shh" || r.FormValue("redirect_uri") != "http://app.test/auth/google/callback" {
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+			return
+		}
+		p, _ := json.Marshal(claims)
+		_ = json.NewEncoder(w).Encode(map[string]string{"id_token": "h." + base64.RawURLEncoding.EncodeToString(p) + ".s"})
+	}))
+	defer google.Close()
+	e.server.GoogleClientID, e.server.GoogleClientSecret, e.server.GoogleTokenURL = "cid", "shh", google.URL
+
+	// start: sets the state cookie and redirects to Google with that state.
+	start := func(c *http.Client) string {
+		c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		res, err := c.Get(e.srv.URL + BasePath + "/auth/google/start")
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		loc, _ := url.Parse(res.Header.Get("Location"))
+		if res.StatusCode != 302 || loc.Host != "accounts.google.com" || loc.Query().Get("client_id") != "cid" || loc.Query().Get("state") == "" {
+			t.Fatalf("start: %d %s", res.StatusCode, loc)
+		}
+		return loc.Query().Get("state")
+	}
+	login := func(c *http.Client, code, state string) resp {
+		return e.call(c, "POST", "/auth/google", map[string]string{"code": code, "state": state})
+	}
+
+	c := e.client()
+	state := start(c)
+	if r := login(e.client(), "good", state); r.code() != "google_failed" { // no cookie: someone else's browser
+		t.Fatalf("without cookie: %d %v", r.Status, r.Body)
+	}
+	if r := login(c, "good", "forged"); r.code() != "google_failed" {
+		t.Fatalf("forged state: %d %v", r.Status, r.Body)
+	}
+	if r := login(c, "bad", state); r.code() != "google_failed" {
+		t.Fatalf("bad code: %d %v", r.Status, r.Body)
+	}
+	r := login(c, "good", start(c))
+	if r.Status != 200 || r.Body["email"] != "budi@gmail.com" || r.Body["emailVerified"] != true || r.Body["name"] != "Budi" {
+		t.Fatalf("login: %d %v", r.Status, r.Body)
+	}
+	if again := login(c, "good", start(c)); again.Body["id"] != r.Body["id"] {
+		t.Fatalf("second login made a new account: %v", again.Body)
+	}
+
+	// An unverified password account with the same email is taken over: password dropped, email verified.
+	claims["sub"], claims["email"] = "g-2", "sari@gmail.com"
+	if r := e.call(e.client(), "POST", "/auth/register", map[string]string{"name": "Sari", "email": "sari@gmail.com", "password": "rahasia-123"}); r.Status != 201 {
+		t.Fatalf("register: %d %v", r.Status, r.Body)
+	}
+	if r := login(c, "good", start(c)); r.Status != 200 || r.Body["emailVerified"] != true {
+		t.Fatalf("link: %d %v", r.Status, r.Body)
+	}
+	if r := e.call(e.client(), "POST", "/auth/login", map[string]string{"email": "sari@gmail.com", "password": "rahasia-123"}); r.Status != 401 {
+		t.Fatalf("old password still works: %d", r.Status)
+	}
+
+	claims["sub"] = "g-3" // same email, different Google account
+	if r := login(c, "good", start(c)); r.code() != "email_taken" {
+		t.Fatalf("other sub: %d %v", r.Status, r.Body)
+	}
+	claims["email_verified"] = false
+	if r := login(c, "good", start(c)); r.code() != "google_failed" {
+		t.Fatalf("unverified: %d %v", r.Status, r.Body)
 	}
 }

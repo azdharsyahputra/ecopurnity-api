@@ -37,8 +37,12 @@ type Server struct {
 	CookieSecure   bool
 	SessionTTL     time.Duration
 	GoogleDevLogin bool
-	Keys           secure.Keys
-	Storage        *storage.Store
+	// GoogleClientID/Secret turn on the real OAuth code flow (google.go); empty leaves the dev stub.
+	GoogleClientID     string
+	GoogleClientSecret string
+	GoogleTokenURL     string // tests only; defaults to Google's token endpoint
+	Keys               secure.Keys
+	Storage            *storage.Store
 
 	Payments payments.Gateway
 
@@ -100,9 +104,10 @@ func (s *Server) Handler() (http.Handler, error) {
 	creds := newLimiter(6*time.Second, 10).limitPaths(
 		BasePath+"/auth/login", BasePath+"/auth/register", BasePath+"/auth/appeal",
 		BasePath+"/auth/forgot-password", BasePath+"/auth/reset-password", BasePath+"/auth/verify-email",
-		BasePath+"/auth/resend-verification",
+		BasePath+"/auth/resend-verification", BasePath+"/auth/google",
 	)
 
+	mux.HandleFunc("GET "+BasePath+"/auth/google/start", s.googleStart)
 	mux.Handle("GET "+BasePath+"/ws", s.withSession(http.HandlerFunc(s.serveWS)))
 	mux.Handle(BasePath+"/", creds(s.withSession(validate(apiHandler))))
 	return s.recoverPanics(mux), nil

@@ -107,12 +107,25 @@
     operationId: loginWithGoogle
     summary: Sign in or sign up with Google
     description: |
-      Mock OAuth: the "provider" always returns the same Google account (`tamu.google@gmail.com`, email already verified).
-      The account is created on first use, then the user is signed in (sets the `ecp_session` cookie). A real
-      implementation exchanges an OAuth code and takes the identity from the provider.
+      Finishes the Google OAuth code flow. The browser starts at `GET /auth/google/start` (not in this spec: it sets a
+      short-lived `ecp_oauth_state` cookie and redirects to Google); Google returns to `{APP_URL}/auth/google/callback`
+      with `code` and `state`, which the web app posts here. The server checks `state` against the cookie, exchanges
+      the code and takes the identity (verified email only) from Google. The account is created on first use, or linked
+      to the existing account with that email, then the user is signed in (sets the `ecp_session` cookie).
+
+      Without `GOOGLE_CLIENT_ID` the provider is a stub: with `GOOGLE_DEV_LOGIN=true` any call signs in the fixed
+      account `tamu.google@gmail.com` (body ignored); otherwise 501.
     tags: [Auth]
     x-access: public
     security: []
+    requestBody:
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              code: { type: string, description: The authorization code Google returned. }
+              state: { type: string, description: The `state` Google returned. }
     responses:
       '200':
         description: Signed in.
@@ -123,7 +136,13 @@
         content:
           application/json:
             schema: { $ref: '#/components/schemas/User' }
-    x-note: Takes no body in the mock and always answers 200, including when it creates the account (not 201).
+      '400':
+        description: 'google_failed: missing/invalid state, a rejected code, or an unverified Google email.'
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiError' }
+      '409': { $ref: '#/components/responses/Conflict', description: 'email_taken: the email belongs to an account linked to a different Google account.' }
+    x-note: Always answers 200, including when it creates the account (not 201).
 
 /auth/logout:
   post:

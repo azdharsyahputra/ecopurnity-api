@@ -461,37 +461,6 @@ func (s *Server) AppealSuspension(ctx context.Context, req api.AppealSuspensionR
 	return api.AppealSuspension200JSONResponse{Ok: true}, nil
 }
 
-func (s *Server) LoginWithGoogle(ctx context.Context, _ api.LoginWithGoogleRequestObject) (api.LoginWithGoogleResponseObject, error) {
-	if !s.GoogleDevLogin {
-		return nil, api.ErrNotImplemented
-	}
-	const email, sub = "tamu.google@gmail.com", "dev-google-account"
-	var out api.User
-	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		var id, status string
-		err := tx.QueryRow(ctx, `SELECT id, status FROM users WHERE google_sub = $1 OR email = $2`, sub, email).Scan(&id, &status)
-		switch {
-		case errors.Is(err, pgx.ErrNoRows):
-			if id, err = insertUser(ctx, tx, "Tamu Google", email, nil, ptr(sub), true); err != nil {
-				return err
-			}
-		case err != nil:
-			return err
-		case status == "suspended":
-			return errSuspended
-		}
-		if err := s.startSession(ctx, tx, id); err != nil {
-			return err
-		}
-		out, err = loadUser(ctx, tx, id)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	return api.LoginWithGoogle200JSONResponse{Body: out}, nil
-}
-
 func ptr[T any](v T) *T { return &v }
 
 func deref(s *string) string {

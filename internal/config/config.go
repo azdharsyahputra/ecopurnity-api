@@ -47,7 +47,9 @@ type Config struct {
 	S3CreateBucket    bool
 	S3CORSOrigins     []string
 
-	GoogleDevLogin bool
+	GoogleDevLogin     bool
+	GoogleClientID     string
+	GoogleClientSecret string
 
 	SimulateCounterparties bool
 
@@ -113,6 +115,11 @@ func Load() (Config, error) {
 	c.AppURL = env("APP_URL", "http://localhost:5173")
 	c.CookieSecure = env("COOKIE_SECURE", "true") == "true"
 	c.GoogleDevLogin = env("GOOGLE_DEV_LOGIN", "false") == "true"
+	c.GoogleClientID = strings.TrimSpace(os.Getenv("GOOGLE_CLIENT_ID"))
+	c.GoogleClientSecret = strings.TrimSpace(os.Getenv("GOOGLE_CLIENT_SECRET"))
+	if (c.GoogleClientID == "") != (c.GoogleClientSecret == "") {
+		return c, fmt.Errorf("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set together")
+	}
 	c.SimulateCounterparties = env("SIMULATE_COUNTERPARTIES", "false") == "true"
 	c.DemoPulse = env("DEMO_PULSE", "false") == "true"
 	c.MidtransServerKey = strings.TrimSpace(os.Getenv("MIDTRANS_SERVER_KEY"))

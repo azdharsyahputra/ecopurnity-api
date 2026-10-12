@@ -88,6 +88,7 @@ func run(log *slog.Logger) error {
 	api := &server.Server{
 		DB: pg, Analytics: ch, Log: log, Mail: mailer, Keys: keys, Storage: store,
 		AppURL: cfg.AppURL, CookieSecure: cfg.CookieSecure, SessionTTL: cfg.SessionTTL, GoogleDevLogin: cfg.GoogleDevLogin,
+		GoogleClientID: cfg.GoogleClientID, GoogleClientSecret: cfg.GoogleClientSecret,
 		SimulateCounterparties: cfg.SimulateCounterparties, Payments: gateway, DemoPulse: cfg.DemoPulse,
 	}
 	defer api.WaitMail()
