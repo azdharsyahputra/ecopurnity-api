@@ -47,9 +47,9 @@ func (m *Midtrans) Charge(_ context.Context, c Charge) (Instructions, error) {
 	case "qris":
 		req.Qris = &coreapi.QrisDetails{Acquirer: "gopay"}
 	case "gopay":
-		req.Gopay = &coreapi.GopayDetails{}
+		req.Gopay = &coreapi.GopayDetails{EnableCallback: c.ReturnURL != "", CallbackUrl: c.ReturnURL}
 	case "shopeepay":
-		req.ShopeePay = &coreapi.ShopeePayDetails{}
+		req.ShopeePay = &coreapi.ShopeePayDetails{CallbackUrl: c.ReturnURL}
 	default:
 		return Instructions{}, fmt.Errorf("midtrans: unsupported method %q", c.Method)
 	}

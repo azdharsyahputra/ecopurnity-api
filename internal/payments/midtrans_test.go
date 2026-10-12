@@ -77,12 +77,15 @@ func TestMidtransChargeRequestAndInstructions(t *testing.T) {
 	if got["echannel"].(map[string]any)["bill_info2"] != "TRX-1-2" {
 		t.Fatal(got)
 	}
-	if in, err = m.Charge(context.Background(), Charge{OrderID: "TRX-1-3", Amount: 5, Method: "gopay"}); err != nil ||
+	if in, err = m.Charge(context.Background(), Charge{OrderID: "TRX-1-3", Amount: 5, Method: "gopay", ReturnURL: "https://app.test/app/transactions/1"}); err != nil ||
 		!strings.HasSuffix(in.QRURL, "/qr-code") || !strings.Contains(in.DeeplinkURL, "checkout") || time.Until(in.ExpiresAt) > 16*time.Minute {
 		t.Fatal(in, err)
 	}
 	if ex := got["custom_expiry"].(map[string]any); ex["expiry_duration"] != float64(15) {
 		t.Fatal(ex)
+	}
+	if g := got["gopay"].(map[string]any); g["enable_callback"] != true || g["callback_url"] != "https://app.test/app/transactions/1" {
+		t.Fatal(g)
 	}
 
 	if _, err := m.Charge(context.Background(), Charge{OrderID: "TRX-1-4", Amount: 5, Method: "qris"}); err == nil || !strings.Contains(err.Error(), "bank is invalid") {

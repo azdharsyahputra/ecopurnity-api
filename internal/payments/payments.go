@@ -35,6 +35,7 @@ type Charge struct {
 	Method, Bank  string
 	CustomerName  string
 	CustomerEmail string
+	ReturnURL     string // where the e-wallet app sends the payer back (gopay, shopeepay); other methods have no redirect
 }
 
 type Instructions struct {

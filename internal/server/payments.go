@@ -245,7 +245,12 @@ func (s *Server) createPayment(ctx context.Context, tradeID string, in api.Payme
 
 		orderID := fmt.Sprintf("%s-%d-%s", t.Code, attempt, strings.ToLower(rand.Text()[:4]))
 		amount := breakdown(t.Total, t.PlatformRate, t.MakerRate).BuyerPays
-		ins, err := s.Payments.Charge(ctx, payments.Charge{OrderID: orderID, Amount: amount, Method: method, Bank: bank, CustomerName: name, CustomerEmail: email})
+		back := "/app/transactions/" + t.ID
+		if p.orgID != nil {
+			back = "/org/" + *p.orgID + "/transactions/" + t.ID
+		}
+		ins, err := s.Payments.Charge(ctx, payments.Charge{OrderID: orderID, Amount: amount, Method: method, Bank: bank, CustomerName: name, CustomerEmail: email,
+			ReturnURL: strings.TrimRight(s.AppURL, "/") + back})
 		if err != nil {
 			s.Log.Error("payment charge", "order", orderID, "err", err)
 			return errGateway
